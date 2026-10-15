@@ -37,12 +37,41 @@ type Gateway struct {
 	Port int    `yaml:"port" json:"port"`
 	// Autostart launches a registered model on its first request.
 	Autostart bool `yaml:"autostart" json:"autostart"`
-	// Swap stops the gateway's other instances before starting one (one model per GPU set).
-	Swap bool `yaml:"swap" json:"swap"`
+	// Placement decides what may run together: "memory" fits models into free GPU memory and
+	// evicts least-recently-used instances of EvictOwners when needed; "exclusive" runs one
+	// model at a time (evicts every evictable instance); "off" launches without checks.
+	Placement string `yaml:"placement" json:"placement"`
+	// EvictOwners lists instance owners placement may stop ("gateway", "mcp", "cli").
+	EvictOwners []string `yaml:"evict_owners" json:"evict_owners"`
+	// IdleUnload stops evictable instances idle this long (0 never); models may override.
+	IdleUnload spec.Duration `yaml:"idle_unload" json:"idle_unload"`
+	// RestartCrashed restarts gateway-started instances that crash or hang (at most 3 times in 10 minutes).
+	RestartCrashed bool `yaml:"restart_crashed" json:"restart_crashed"`
+	// HealthInterval probes ready instances; 3 consecutive failures mark one unhealthy.
+	HealthInterval spec.Duration `yaml:"health_interval" json:"health_interval"`
+	// MaxConcurrency bounds in-flight requests per model (0 unlimited); models may override.
+	MaxConcurrency int `yaml:"max_concurrency" json:"max_concurrency"`
+	// MaxQueue bounds requests waiting for a slot per model; more are refused with 429.
+	MaxQueue int `yaml:"max_queue" json:"max_queue"`
+	// QueueTimeout bounds the wait for a slot.
+	QueueTimeout spec.Duration `yaml:"queue_timeout" json:"queue_timeout"`
+	// UpstreamHeaderTimeout bounds the wait for an engine's response headers (prefill included).
+	UpstreamHeaderTimeout spec.Duration `yaml:"upstream_header_timeout" json:"upstream_header_timeout"`
+	// UpstreamIdleTimeout aborts a response when the engine sends nothing for this long.
+	UpstreamIdleTimeout spec.Duration `yaml:"upstream_idle_timeout" json:"upstream_idle_timeout"`
+	// MetricsPublic serves /metrics without a key.
+	MetricsPublic bool `yaml:"metrics_public" json:"metrics_public"`
 	// StreamUsage asks engines for a final usage chunk on streamed chat/completions
 	// (stream_options.include_usage) so streamed tokens are metered exactly.
 	StreamUsage bool `yaml:"stream_usage" json:"stream_usage"`
 }
+
+// Placement modes.
+const (
+	PlacementMemory    = "memory"
+	PlacementExclusive = "exclusive"
+	PlacementOff       = "off"
+)
 
 // Logging configures the usage database (state/usage.db).
 type Logging struct {
@@ -64,12 +93,19 @@ type EngineOverride struct {
 	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
 	Env  map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	Args []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	// Memory replaces the manifest's memory block for this install, e.g. {mode: none}
+	// for a Strata build that runs on a Tenstorrent card instead of the NVIDIA GPUs.
+	Memory *spec.Memory `yaml:"memory,omitempty" json:"memory,omitempty"`
 }
 
 // Default is the configuration used when config.yaml is absent.
 func Default() *Config {
 	return &Config{
-		Gateway: Gateway{Host: "127.0.0.1", Port: 7777, Autostart: true, Swap: true, StreamUsage: true},
+		Gateway: Gateway{Host: "127.0.0.1", Port: 7777, Autostart: true, Placement: PlacementMemory,
+			EvictOwners: []string{"gateway"}, RestartCrashed: true, HealthInterval: spec.Duration(15 * time.Second),
+			MaxQueue: 64, QueueTimeout: spec.Duration(5 * time.Minute),
+			UpstreamHeaderTimeout: spec.Duration(10 * time.Minute), UpstreamIdleTimeout: spec.Duration(5 * time.Minute),
+			StreamUsage: true},
 		Logging: Logging{Enabled: true, BodyMaxBytes: 1 << 20, SampleInterval: spec.Duration(30 * time.Second)},
 	}
 }
@@ -108,6 +144,19 @@ func Load() (*Config, error) {
 func (c *Config) validate() error {
 	if c.Gateway.Port < 0 || c.Gateway.Port > 65535 {
 		return fmt.Errorf("%s: gateway.port %d out of range", ConfigPath(), c.Gateway.Port)
+	}
+	switch c.Gateway.Placement {
+	case PlacementMemory, PlacementExclusive, PlacementOff:
+	default:
+		return fmt.Errorf("%s: gateway.placement %q (want memory, exclusive or off)", ConfigPath(), c.Gateway.Placement)
+	}
+	for _, o := range c.Gateway.EvictOwners {
+		if o != "gateway" && o != "mcp" && o != "cli" {
+			return fmt.Errorf("%s: gateway.evict_owners: %q (want gateway, mcp or cli)", ConfigPath(), o)
+		}
+	}
+	if c.Gateway.MaxConcurrency < 0 || c.Gateway.MaxQueue < 0 {
+		return fmt.Errorf("%s: gateway.max_concurrency and max_queue must be >= 0", ConfigPath())
 	}
 	if c.Logging.BodyMaxBytes <= 0 {
 		return fmt.Errorf("%s: logging.body_max_bytes must be positive", ConfigPath())
@@ -167,6 +216,12 @@ type Model struct {
 	Flags map[string]string `yaml:"flags,omitempty" json:"flags,omitempty"`
 	// Args are extra engine arguments per engine id.
 	Args map[string][]string `yaml:"args,omitempty" json:"args,omitempty"`
+	// VRAMMiB declares the model's total GPU memory need, overriding estimates and measurements.
+	VRAMMiB int64 `yaml:"vram_mib,omitempty" json:"vram_mib,omitempty"`
+	// IdleUnload overrides gateway.idle_unload for this model.
+	IdleUnload spec.Duration `yaml:"idle_unload,omitempty" json:"idle_unload,omitempty"`
+	// MaxConcurrency overrides gateway.max_concurrency for this model.
+	MaxConcurrency int `yaml:"max_concurrency,omitempty" json:"max_concurrency,omitempty"`
 }
 
 // NameRe is what model and instance names must match (they become file names and API model ids).
@@ -179,6 +234,9 @@ func (m *Model) Validate() error {
 	}
 	if m.Source == "" {
 		return fmt.Errorf("model %s: empty source", m.Name)
+	}
+	if m.VRAMMiB < 0 || m.MaxConcurrency < 0 || m.IdleUnload < 0 {
+		return fmt.Errorf("model %s: vram_mib, max_concurrency and idle_unload must be >= 0", m.Name)
 	}
 	for k, v := range m.Flags {
 		f, ok := spec.FlagByKey(k)

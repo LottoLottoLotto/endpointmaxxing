@@ -113,7 +113,7 @@ func commands() []*command {
 		cmdServe(), cmdMCP(),
 		cmdRoute(), cmdModel(), aliasOf("models", "list registered models", modelListCmd()),
 		cmdEngine(), aliasOf("engines", "list engines", engineListCmd()),
-		cmdUsage(), cmdRequests(), cmdEvents(), cmdSamples(), cmdPrune(),
+		cmdUsage(), cmdRequests(), cmdEvents(), cmdSamples(), cmdPrune(), cmdKey(), cmdService(),
 		cmdFlags(), cmdDoctor(), cmdVersion(), cmdCommands(),
 	}
 }

@@ -48,6 +48,7 @@ type Manifest struct {
 	Flags        map[string]FlagMap `yaml:"flags,omitempty" json:"flags,omitempty"`
 	Capabilities Capabilities       `yaml:"capabilities" json:"capabilities"`
 	Routing      Routing            `yaml:"routing,omitempty" json:"routing,omitempty"`
+	Memory       Memory             `yaml:"memory,omitempty" json:"memory,omitempty"`
 
 	// Source is "builtin" or the manifest's file path.
 	Source string `yaml:"-" json:"source"`
@@ -110,6 +111,25 @@ type Capabilities struct {
 	APIs          []string `yaml:"apis" json:"apis"`
 	// Features are free-form tags (vision, speculative, tensor-parallel, ...).
 	Features []string `yaml:"features,omitempty" json:"features,omitempty"`
+}
+
+// Memory says how much GPU memory a launch needs, for placement.
+type Memory struct {
+	// Mode: "weights" (default) needs model file size × factor + overhead, split over the GPUs;
+	// "fraction" claims --mem-fraction (or default_fraction) of each GPU it runs on;
+	// "exclusive" needs whole GPUs; "none" uses no NVIDIA GPU memory (CPU, or other accelerators).
+	Mode            string  `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Factor          float64 `yaml:"factor,omitempty" json:"factor,omitempty"`
+	OverheadMiB     int64   `yaml:"overhead_mib,omitempty" json:"overhead_mib,omitempty"`
+	DefaultFraction float64 `yaml:"default_fraction,omitempty" json:"default_fraction,omitempty"`
+}
+
+// MemoryMode returns the memory mode with the default applied.
+func (m *Manifest) MemoryMode() string {
+	if m.Memory.Mode == "" {
+		return "weights"
+	}
+	return m.Memory.Mode
 }
 
 // Routing ranks engines when several can serve a model: higher wins.
@@ -285,6 +305,22 @@ func (m *Manifest) Validate() []string {
 		if _, ok := APIs[a]; !ok {
 			bad("capabilities.apis: %q unknown (known: %s)", a, strings.Join(sortedKeys(APIs), ", "))
 		}
+	}
+	switch m.MemoryMode() {
+	case "weights":
+		if m.Memory.Factor != 0 && m.Memory.Factor < 1 {
+			bad("memory.factor: must be >= 1")
+		}
+		if m.Memory.OverheadMiB < 0 {
+			bad("memory.overhead_mib: must be >= 0")
+		}
+	case "fraction":
+		if m.Memory.DefaultFraction <= 0 || m.Memory.DefaultFraction > 1 {
+			bad("memory.default_fraction: fraction mode needs a value in (0, 1]")
+		}
+	case "exclusive", "none":
+	default:
+		bad("memory.mode: %q unknown (weights, fraction, exclusive, none)", m.Memory.Mode)
 	}
 	for f := range m.Routing.Priority {
 		if !contains(m.Capabilities.Formats, f) {

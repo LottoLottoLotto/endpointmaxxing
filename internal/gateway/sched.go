@@ -1,0 +1,532 @@
+package gateway
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lotto/substrate/internal/app"
+	"github.com/lotto/substrate/internal/errs"
+	"github.com/lotto/substrate/internal/gpu"
+	"github.com/lotto/substrate/internal/runtime"
+	"github.com/lotto/substrate/internal/spec"
+	"github.com/lotto/substrate/internal/store"
+)
+
+// Run starts the background loops until ctx ends: exit monitor (and crash
+// restarts), health checks, idle unload, resource sampling and retention.
+func (g *Gateway) Run(ctx context.Context) {
+	go g.every(ctx, 5*time.Second, g.monitor)
+	if iv := time.Duration(g.Cfg.HealthInterval); iv > 0 {
+		go g.every(ctx, iv, g.healthCheck)
+	}
+	go g.every(ctx, 15*time.Second, g.idleUnload)
+	if iv := time.Duration(g.App.Cfg.Logging.SampleInterval); g.App.Cfg.Logging.Enabled && iv > 0 {
+		go g.every(ctx, iv, g.sample)
+	}
+	if days := g.App.Cfg.Logging.RetentionDays; g.App.Cfg.Logging.Enabled && days > 0 {
+		go g.every(ctx, 24*time.Hour, func() {
+			db, err := g.App.DB()
+			if err != nil {
+				return
+			}
+			n, err := db.Prune(time.Now().AddDate(0, 0, -days))
+			if err != nil {
+				g.Log.Printf("retention: %v", err)
+				return
+			}
+			g.Log.Printf("retention: pruned %v", n)
+		})
+	}
+}
+
+func (g *Gateway) every(ctx context.Context, d time.Duration, fn func()) {
+	fn()
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			fn()
+		}
+	}
+}
+
+// ---- routing and starts ----
+
+// pick returns the ready instances serving model with api, in round-robin
+// order, starting one when allowed. started reports an autostart.
+func (g *Gateway) pick(ctx context.Context, model, api string) ([]*runtime.Instance, bool, error) {
+	if ins, err := g.ready(ctx, model, api); len(ins) > 0 || err != nil {
+		return ins, false, err
+	}
+	if model == "" {
+		return nil, false, errs.New(errs.Usage, "request has no model, and not exactly one instance is ready")
+	}
+	if !g.Autostart {
+		return nil, false, errs.New(errs.NotFound, "no ready instance serves %q (autostart is off)", model)
+	}
+	if err := g.App.Refresh(); err != nil {
+		return nil, false, err
+	}
+	if _, ok := g.App.RegisteredModel(model); !ok {
+		return nil, false, errs.New(errs.NotFound, "model %q is neither running nor registered (see `substrate model add`)", model)
+	}
+	// A start outlives the client that triggered it: other requests wait on it.
+	in, err := g.ensure(context.WithoutCancel(ctx), model, "", api, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	return []*runtime.Instance{in}, true, nil
+}
+
+func (g *Gateway) modelLock(model string) *sync.Mutex {
+	g.locksMu.Lock()
+	defer g.locksMu.Unlock()
+	m := g.startLocks[model]
+	if m == nil {
+		m = &sync.Mutex{}
+		g.startLocks[model] = m
+	}
+	return m
+}
+
+// ensure returns a ready instance of model, launching it with placement and
+// eviction. Starts of one model are serialized; different models start in parallel.
+func (g *Gateway) ensure(ctx context.Context, model, engine, api string, timeout time.Duration) (*runtime.Instance, error) {
+	mu := g.modelLock(model)
+	mu.Lock()
+	defer mu.Unlock()
+	if api != "" {
+		if ins, err := g.ready(ctx, model, api); len(ins) > 0 || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			return ins[0], nil
+		}
+		// Refuse before loading an engine that cannot answer this API.
+		t, err := g.App.ResolveModel(model)
+		if err != nil {
+			return nil, err
+		}
+		id, err := g.App.EngineFor(t, engine)
+		if err != nil {
+			return nil, err
+		}
+		if e, err := g.App.Engine(id); err == nil && !e.HasAPI(api) {
+			return nil, errs.New(errs.Unsupported, "%s would run on %s, which does not implement %s", model, id, spec.APIs[api])
+		}
+	}
+	res, err := g.App.Ensure(ctx, model, app.LaunchOpts{Engine: engine, Owner: "gateway", Evict: g.evict(model), Activity: g.activity}, timeout)
+	if err != nil {
+		return nil, err
+	}
+	in := res.Instance
+	if res.Started {
+		g.Log.Printf("%s ready at %s in %s (%s)", in.ID, in.BaseURL, time.Since(in.StartedAt).Round(time.Second), placementNote(in))
+	}
+	g.setStatus(in.ID, runtime.StatusReady)
+	g.touch(in.ID)
+	if api != "" && !in.HasAPI(api) {
+		return nil, errs.New(errs.Unsupported, "%s is served by %s, which does not implement %s", model, in.Engine, spec.APIs[api])
+	}
+	return in, nil
+}
+
+func placementNote(in *runtime.Instance) string {
+	if len(in.GPUs) == 0 {
+		return "no placement"
+	}
+	gs := make([]string, len(in.GPUs))
+	for i, g := range in.GPUs {
+		gs[i] = fmt.Sprint(g)
+	}
+	return fmt.Sprintf("GPU %s, %d MiB planned per GPU", strings.Join(gs, ","), in.PlannedMiB)
+}
+
+// ready lists ready instances for model and api, rotated round-robin; an error
+// means instances exist but none serves api.
+func (g *Gateway) ready(ctx context.Context, model, api string) ([]*runtime.Instance, error) {
+	ins, _ := runtime.List()
+	var ok, wrongAPI []*runtime.Instance
+	for _, in := range ins {
+		if model != "" && in.Name != model {
+			continue
+		}
+		if g.instanceStatus(ctx, in) != runtime.StatusReady {
+			continue
+		}
+		if !in.HasAPI(api) {
+			wrongAPI = append(wrongAPI, in)
+			continue
+		}
+		ok = append(ok, in)
+	}
+	if model == "" {
+		if len(ok) == 1 {
+			return ok, nil
+		}
+		return nil, nil
+	}
+	if len(ok) == 0 {
+		if len(wrongAPI) > 0 {
+			return nil, errs.New(errs.Unsupported, "%s is served by %s, which does not implement %s", model, wrongAPI[0].Engine, spec.APIs[api])
+		}
+		return nil, nil
+	}
+	g.activeMu.Lock()
+	k := g.rr[model] % len(ok)
+	g.rr[model]++
+	g.activeMu.Unlock()
+	return append(ok[k:], ok[:k]...), nil
+}
+
+// evict returns the evictor placement calls to make room for model.
+func (g *Gateway) evict(model string) app.Evictor {
+	return func(ids []string) error {
+		for _, id := range ids {
+			in, err := runtime.Get(id)
+			if err != nil {
+				continue // already gone
+			}
+			g.waitIdle(id, 2*time.Minute)
+			g.Log.Printf("evicting %s to make room for %s", id, model)
+			if err := in.StopFor("evicted for " + model); err != nil {
+				return err
+			}
+			g.setStatus(id, runtime.StatusExited)
+		}
+		return nil
+	}
+}
+
+// activity reports an instance's idleness and last use for placement's LRU order.
+func (g *Gateway) activity(id string) (bool, time.Time) {
+	g.activeMu.Lock()
+	defer g.activeMu.Unlock()
+	last := g.lastUsed[id]
+	if last.IsZero() {
+		if in, err := runtime.Get(id); err == nil {
+			last = in.StartedAt
+			if in.ReadyAt != nil {
+				last = *in.ReadyAt
+			}
+		}
+	}
+	return g.active[id] == 0, last
+}
+
+func (g *Gateway) touch(id string) {
+	g.activeMu.Lock()
+	g.lastUsed[id] = time.Now()
+	g.activeMu.Unlock()
+}
+
+func (g *Gateway) acquire(id string) {
+	g.activeMu.Lock()
+	g.active[id]++
+	g.lastUsed[id] = time.Now()
+	g.activeMu.Unlock()
+}
+
+func (g *Gateway) release(id string) {
+	g.activeMu.Lock()
+	g.active[id]--
+	g.lastUsed[id] = time.Now()
+	if g.active[id] == 0 {
+		delete(g.active, id)
+		g.idle.Broadcast()
+	}
+	g.activeMu.Unlock()
+}
+
+func (g *Gateway) waitIdle(id string, max time.Duration) {
+	timer := time.AfterFunc(max, func() {
+		g.activeMu.Lock()
+		g.idle.Broadcast()
+		g.activeMu.Unlock()
+	})
+	defer timer.Stop()
+	deadline := time.Now().Add(max)
+	g.activeMu.Lock()
+	for g.active[id] > 0 && time.Now().Before(deadline) {
+		g.idle.Wait()
+	}
+	g.activeMu.Unlock()
+}
+
+// ---- idle unload ----
+
+func (g *Gateway) idleTTL(model string) time.Duration {
+	if m, ok := g.App.RegisteredModel(model); ok && m.IdleUnload > 0 {
+		return time.Duration(m.IdleUnload)
+	}
+	return time.Duration(g.Cfg.IdleUnload)
+}
+
+// idleUnload stops evictable instances nobody used for their idle TTL.
+func (g *Gateway) idleUnload() {
+	ins, _ := runtime.List()
+	for _, in := range ins {
+		if !contains(g.Cfg.EvictOwners, in.Owner) || in.ReadyAt == nil || !in.Alive() {
+			continue
+		}
+		ttl := g.idleTTL(in.Name)
+		if ttl <= 0 {
+			continue
+		}
+		idle, last := g.activity(in.ID)
+		if !idle || time.Since(last) < ttl {
+			continue
+		}
+		g.Log.Printf("%s idle for %s: unloading", in.ID, time.Since(last).Round(time.Second))
+		if err := in.StopFor(fmt.Sprintf("idle for %s", time.Since(last).Round(time.Second))); err != nil {
+			g.Log.Printf("idle unload %s: %v", in.ID, err)
+		}
+		g.setStatus(in.ID, runtime.StatusExited)
+	}
+}
+
+// ---- crashes, health, restarts ----
+
+// restartBudget allows a few automatic restarts per model in a window.
+type restartBudget struct {
+	mu   sync.Mutex
+	hist map[string][]time.Time
+}
+
+const (
+	restartLimit  = 3
+	restartWindow = 10 * time.Minute
+)
+
+func (b *restartBudget) take(model string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.hist == nil {
+		b.hist = map[string][]time.Time{}
+	}
+	var keep []time.Time
+	for _, t := range b.hist[model] {
+		if time.Since(t) < restartWindow {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) >= restartLimit {
+		b.hist[model] = keep
+		return false
+	}
+	b.hist[model] = append(keep, time.Now())
+	return true
+}
+
+// restart relaunches a registered model the gateway was serving, within budget.
+func (g *Gateway) restart(in *runtime.Instance, why string) {
+	if !g.Cfg.RestartCrashed || in.Owner != "gateway" {
+		return
+	}
+	if _, ok := g.App.RegisteredModel(in.Name); !ok {
+		return
+	}
+	if !g.restarts.take(in.Name) {
+		g.Log.Printf("%s: %s; not restarting (%d restarts in %s)", in.ID, why, restartLimit, restartWindow)
+		runtime.RecordEvent("restart_gave_up", in, why)
+		return
+	}
+	runtime.RecordEvent("restart", in, why)
+	g.metrics.restarted(in)
+	go func() {
+		g.Log.Printf("%s: %s; restarting", in.ID, why)
+		if _, err := g.ensure(context.Background(), in.Name, in.Engine, "", 0); err != nil {
+			g.Log.Printf("restart %s: %v", in.ID, err)
+		}
+	}()
+}
+
+// monitor records engine exits nobody asked for (crashes, OOM kills) and restarts gateway models.
+func (g *Gateway) monitor() {
+	ins, _ := runtime.List()
+	for _, in := range ins {
+		if in.ExitNoted || in.Alive() {
+			continue
+		}
+		in.NoteExit()
+		g.setStatus(in.ID, runtime.StatusExited)
+		g.Log.Printf("%s (%s) exited unexpectedly; log: %s", in.ID, in.Engine, in.Log)
+		if in.ReadyAt != nil { // a crash after serving, not a failed start (those already errored)
+			g.restart(in, "crashed")
+		}
+	}
+}
+
+// unhealthyAfter is how many consecutive failed probes mark a live instance unhealthy.
+const unhealthyAfter = 3
+
+// healthCheck probes every ready instance; a hung engine stops receiving traffic and is restarted.
+func (g *Gateway) healthCheck() {
+	ins, _ := runtime.List()
+	for _, in := range ins {
+		if in.ReadyAt == nil || !in.Alive() {
+			continue
+		}
+		ok := in.Healthy(context.Background())
+		g.statusMu.Lock()
+		s := g.status[in.ID]
+		if s == nil {
+			s = &instState{}
+			g.status[in.ID] = s
+		}
+		wasUnhealthy := s.status == statusUnhealthy
+		if ok {
+			s.fails, s.status, s.at = 0, runtime.StatusReady, time.Now()
+		} else {
+			s.fails++
+			if s.fails >= unhealthyAfter {
+				s.status, s.at = statusUnhealthy, time.Now()
+			}
+		}
+		becameUnhealthy := !ok && !wasUnhealthy && s.status == statusUnhealthy
+		g.statusMu.Unlock()
+		switch {
+		case ok && wasUnhealthy:
+			g.Log.Printf("%s healthy again", in.ID)
+			runtime.RecordEvent("healthy", in, "")
+		case becameUnhealthy:
+			g.Log.Printf("%s failed %d health checks: no longer routed", in.ID, unhealthyAfter)
+			runtime.RecordEvent("unhealthy", in, fmt.Sprintf("%d consecutive failed health checks", unhealthyAfter))
+			if g.Cfg.RestartCrashed && in.Owner == "gateway" {
+				g.waitIdle(in.ID, 30*time.Second)
+				if err := in.StopFor("unhealthy"); err != nil {
+					g.Log.Printf("stopping %s: %v", in.ID, err)
+					continue
+				}
+				g.restart(in, "unhealthy")
+			}
+		}
+	}
+}
+
+// ---- concurrency limits ----
+
+// errQueueFull is answered with 429 (the client should back off and retry).
+var errQueueFull = errors.New("queue full")
+
+type limiter struct {
+	slots   chan struct{}
+	waiting int
+}
+
+type limiters struct {
+	mu      sync.Mutex
+	byModel map[string]*limiter
+}
+
+func (g *Gateway) maxConcurrency(model string) int {
+	if m, ok := g.App.RegisteredModel(model); ok && m.MaxConcurrency > 0 {
+		return m.MaxConcurrency
+	}
+	return g.Cfg.MaxConcurrency
+}
+
+// acquire takes one of max slots for model, queueing up to maxQueue waiters for at most timeout.
+func (l *limiters) acquire(ctx context.Context, model string, max, maxQueue int, timeout time.Duration) (func(), error) {
+	if max <= 0 {
+		return func() {}, nil
+	}
+	l.mu.Lock()
+	lim := l.byModel[model]
+	if lim == nil || cap(lim.slots) != max {
+		lim = &limiter{slots: make(chan struct{}, max)}
+		l.byModel[model] = lim
+	}
+	release := func() { <-lim.slots }
+	select {
+	case lim.slots <- struct{}{}:
+		l.mu.Unlock()
+		return release, nil
+	default:
+	}
+	if lim.waiting >= maxQueue {
+		l.mu.Unlock()
+		return nil, errs.Wrap(errs.Capacity, fmt.Errorf("%s: %d requests in flight and %d queued: %w", model, max, lim.waiting, errQueueFull))
+	}
+	lim.waiting++
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		lim.waiting--
+		l.mu.Unlock()
+	}()
+	var expire <-chan time.Time
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		expire = t.C
+	}
+	select {
+	case lim.slots <- struct{}{}:
+		return release, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-expire:
+		return nil, errs.New(errs.Timeout, "%s: no free slot within %s (queue_timeout)", model, timeout)
+	}
+}
+
+// queued reports waiting requests per model (metrics).
+func (l *limiters) queued() map[string]int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := map[string]int{}
+	for m, lim := range l.byModel {
+		out[m] = lim.waiting
+	}
+	return out
+}
+
+// ---- sampling ----
+
+// sample records GPU readings and each live instance's GPU memory and RSS.
+func (g *Gateway) sample() {
+	now := time.Now().UnixMilli()
+	gs, err := gpu.List()
+	if err != nil {
+		g.Log.Printf("sampler: %v", err)
+	}
+	usage, _ := gpu.ProcessUsage(gs)
+	var gss []store.GPUSample
+	for _, x := range gs {
+		gss = append(gss, store.GPUSample{TS: now, GPU: x.Index, Name: x.Name, MemUsedMiB: x.MemUsedMiB,
+			MemTotalMiB: x.MemTotalMiB, UtilPct: x.UtilPct, PowerW: x.PowerW})
+	}
+	var iss []store.InstanceSample
+	ins, _ := runtime.List()
+	for _, in := range ins {
+		if !in.Alive() {
+			continue
+		}
+		pids := runtime.SessionPIDs(in.PID)
+		s := store.InstanceSample{TS: now, Instance: in.ID, Engine: in.Engine, Model: in.Name,
+			RSSMiB: runtime.RSSMiB(pids), Processes: int64(len(pids))}
+		for _, m := range usage.Of(pids) {
+			s.GPUMemMiB += m
+		}
+		iss = append(iss, s)
+	}
+	g.metrics.setSamples(gs, iss)
+	if len(gss) == 0 && len(iss) == 0 {
+		return
+	}
+	db, err := g.App.DB()
+	if err == nil {
+		err = db.InsertSamples(gss, iss)
+	}
+	if err != nil {
+		g.Log.Printf("sampler: %v", err)
+	}
+}

@@ -31,7 +31,7 @@ health:
 flags:
   ctx: [-c, "{value}"]
   gpus:
-    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+    env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}
   gpu_layers: [-ngl, "{value}"]
   parallel: [-np, "{value}"]
   # VBR is buun's default cache; "vbr" selects its full ladder explicitly.
@@ -50,3 +50,6 @@ capabilities:
 
 routing:
   priority: {gguf: 50, safetensors: 20}
+
+# VBR sizes the KV cache to the VRAM left after weights, so give it room; measured footprints take over after one run.
+memory: {mode: weights, factor: 1.1, overhead_mib: 2048}

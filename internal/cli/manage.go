@@ -22,6 +22,7 @@ import (
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/gateway"
 	"github.com/lotto/substrate/internal/gpu"
+	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/model"
 	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/route"
@@ -68,6 +69,9 @@ func modelAddCmd() *command {
 		build: func(fs *flag.FlagSet) action {
 			engine := fs.String("engine", "", "pin the model to this engine")
 			force := fs.Bool("force", false, "replace an existing entry")
+			vram := fs.Int64("vram-mib", 0, "declare the model's total GPU memory need (overrides estimates and measurements)")
+			idle := fs.Duration("idle-unload", 0, "unload after this long without requests (overrides gateway.idle_unload)")
+			maxConc := fs.Int("max-concurrency", 0, "in-flight request limit for this model (overrides gateway.max_concurrency)")
 			flags := map[string]string{}
 			addUnified(fs, flags)
 			return func(e *env, pos, extra []string) error {
@@ -95,6 +99,7 @@ func modelAddCmd() *command {
 				}
 				m := app.FromInfo(name, info)
 				m.Engine = *engine
+				m.VRAMMiB, m.IdleUnload, m.MaxConcurrency = *vram, spec.Duration(*idle), *maxConc
 				if len(flags) > 0 {
 					m.Flags = flags
 				}
@@ -712,15 +717,15 @@ func isLoopback(host string) bool {
 }
 
 func cmdServe() *command {
-	return &command{name: "serve", synopsis: "[--host H] [--port P] [--no-autostart] [--no-swap] [--api-key K]",
-		summary: "run the unified OpenAI/Anthropic-compatible gateway (metered)",
+	return &command{name: "serve", synopsis: "[--host H] [--port P] [--placement memory|exclusive|off] [--no-autostart] [--api-key K]",
+		summary: "run the unified OpenAI/Anthropic-compatible gateway (placement, limits, keys, metering, /metrics)",
 		build: func(fs *flag.FlagSet) action {
 			host := fs.String("host", "", "listen address (default: config gateway.host)")
 			port := fs.Int("port", 0, "listen port (default: config gateway.port)")
 			noAuto := fs.Bool("no-autostart", false, "never start models on demand")
-			noSwap := fs.Bool("no-swap", false, "keep other gateway-started models running when starting one")
-			key := fs.String("api-key", "", "require this key from clients (default $SUBSTRATE_API_KEY)")
-			insecure := fs.Bool("insecure", false, "allow a non-loopback address without an API key")
+			placementMode := fs.String("placement", "", "memory, exclusive or off (default: config gateway.placement)")
+			key := fs.String("api-key", "", "master (admin) key (default $SUBSTRATE_API_KEY); per-client keys: substrate key add")
+			insecure := fs.Bool("insecure", false, "allow a non-loopback address without any API key")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("serve", pos, 0, 0); err != nil {
 					return err
@@ -739,14 +744,25 @@ func cmdServe() *command {
 				if *key == "" {
 					*key = os.Getenv("SUBSTRATE_API_KEY")
 				}
-				if !isLoopback(*host) && *key == "" && !*insecure {
-					return errs.New(errs.Usage, "serve: %s is reachable from other machines; set --api-key (or $SUBSTRATE_API_KEY), or pass --insecure", *host)
+				ks, err := keys.Load()
+				if err != nil {
+					return err
+				}
+				if !isLoopback(*host) && *key == "" && len(ks.Keys) == 0 && !*insecure {
+					return errs.New(errs.Usage, "serve: %s is reachable from other machines; create keys (substrate key add) or set --api-key, or pass --insecure", *host)
+				}
+				switch *placementMode {
+				case "":
+				case config.PlacementMemory, config.PlacementExclusive, config.PlacementOff:
+					a.Cfg.Gateway.Placement = *placementMode
+				default:
+					return errs.New(errs.Usage, "serve: --placement %q (want memory, exclusive or off)", *placementMode)
 				}
 				logger := log.New(e.stderr, "substrate: ", log.LstdFlags)
 				a.Warn = logger.Printf
 				gw := gateway.New(a, logger)
 				defer gw.Close()
-				gw.Autostart, gw.Swap, gw.APIKey = g.Autostart && !*noAuto, g.Swap && !*noSwap, *key
+				gw.Autostart, gw.APIKey = g.Autostart && !*noAuto, *key
 
 				ln, err := net.Listen("tcp", net.JoinHostPort(*host, fmt.Sprint(*port)))
 				if err != nil {
@@ -756,8 +772,8 @@ func cmdServe() *command {
 				ctx, stop := signal.NotifyContext(e.ctx, os.Interrupt, syscall.SIGTERM)
 				defer stop()
 				gw.Run(ctx)
-				logger.Printf("gateway on http://%s/v1 (autostart=%v swap=%v logging=%v bodies=%v)", ln.Addr(), gw.Autostart, gw.Swap,
-					a.Cfg.Logging.Enabled, a.Cfg.Logging.Bodies)
+				logger.Printf("gateway on http://%s/v1 (placement=%s autostart=%v keys=%d logging=%v bodies=%v)", ln.Addr(),
+					a.Cfg.Gateway.Placement, gw.Autostart, len(ks.Keys), a.Cfg.Logging.Enabled, a.Cfg.Logging.Bodies)
 				drained := make(chan struct{})
 				go func() {
 					defer close(drained)

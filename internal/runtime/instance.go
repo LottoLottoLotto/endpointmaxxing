@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lotto/substrate/internal/errs"
+	"github.com/lotto/substrate/internal/gpu"
 	"github.com/lotto/substrate/internal/lock"
 	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/spec"
@@ -49,6 +50,10 @@ type Instance struct {
 	ReadyAt   *time.Time        `json:"ready_at,omitempty"`
 	// ExitNoted is set once the instance's exit has been recorded as an event.
 	ExitNoted bool `json:"exit_noted,omitempty"`
+	// GPUs and PlannedMiB (per GPU) record the placement decision; a loading instance
+	// reserves PlannedMiB minus what it already uses, so concurrent launches don't overcommit.
+	GPUs       []int `json:"gpus,omitempty"`
+	PlannedMiB int64 `json:"planned_mib,omitempty"`
 
 	StopSignal  string        `json:"stop_signal,omitempty"`
 	StopTimeout time.Duration `json:"stop_timeout"`
@@ -84,6 +89,9 @@ func record(kind string, in *Instance, dur *time.Duration, detail string) {
 	}
 	Recorder(e)
 }
+
+// RecordEvent records a lifecycle event for in (unhealthy, healthy, restart, ...).
+func RecordEvent(kind string, in *Instance, detail string) { record(kind, in, nil, detail) }
 
 func instancesDir() string { return filepath.Join(paths.State(), "instances") }
 func logsDir() string      { return filepath.Join(paths.State(), "logs") }
@@ -372,7 +380,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		PID: cmd.Process.Pid, Host: p.Host, Port: p.Port, BaseURL: p.BaseURL, HealthURL: p.HealthURL,
 		APIs: p.APIs, Argv: p.Argv, Env: p.Env, Cwd: p.Cwd, Log: logPath, Owner: owner,
 		StartedAt: time.Now().UTC(), StopSignal: p.stopSignal, StopTimeout: p.stopTimeout, ReadyIn: p.readyIn,
-		APIKey: p.apiKey,
+		APIKey: p.apiKey, GPUs: p.GPUs, PlannedMiB: p.PlannedMiB,
 	}
 	for i := 0; i < 50 && in.StartTick == 0; i++ {
 		if in.StartTick = procStart(in.PID); in.StartTick == 0 {
@@ -472,11 +480,14 @@ func (in *Instance) noteExit() {
 
 // Stop signals the process group, escalates to SIGKILL after the stop timeout,
 // records the stop and removes the instance record.
-func (in *Instance) Stop() error {
-	return lock.With(lockFor(in.ID), func() error { return in.stop() })
+func (in *Instance) Stop() error { return in.StopFor("") }
+
+// StopFor is Stop with a reason recorded on the stop event (evicted, idle, unhealthy).
+func (in *Instance) StopFor(reason string) error {
+	return lock.With(lockFor(in.ID), func() error { return in.stop(reason) })
 }
 
-func (in *Instance) stop() error {
+func (in *Instance) stop(reason string) error {
 	if in.Alive() {
 		sig := syscall.SIGTERM
 		if s, ok := spec.Signals[in.StopSignal]; ok {
@@ -504,9 +515,9 @@ func (in *Instance) stop() error {
 		// Children that left the group (or a group that outlived its leader) still hold the GPU.
 		killSession(in.PID)
 		up := time.Since(in.StartedAt)
-		detail := ""
+		detail := reason
 		if forced {
-			detail = "killed after stop timeout"
+			detail = strings.TrimPrefix(detail+"; killed after stop timeout", "; ")
 		}
 		record("stop", in, &up, detail)
 	} else {
@@ -520,10 +531,32 @@ func (in *Instance) stop() error {
 
 // killSession SIGKILLs every process left in the engine's session (sid == leader pid).
 func killSession(sid int) {
+	victims := append(SessionPIDs(sid), sid)
 	syscall.Kill(-sid, syscall.SIGKILL)
-	for _, p := range SessionPIDs(sid) {
+	for _, p := range victims {
 		syscall.Kill(p, syscall.SIGKILL)
 	}
+	// Wait (up to 10s) until they are gone and the driver no longer lists them, so their
+	// GPU memory is free before anyone re-plans (a restart would otherwise evict needlessly).
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && len(SessionPIDs(sid)) > 0 {
+		time.Sleep(100 * time.Millisecond)
+	}
+	for time.Now().Before(deadline) && holdsGPU(victims) {
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func holdsGPU(pids []int) bool {
+	gs, err := gpu.List()
+	if err != nil || len(gs) == 0 {
+		return false
+	}
+	u, err := gpu.ProcessUsage(gs)
+	if err != nil {
+		return false
+	}
+	return len(u.Of(pids)) > 0
 }
 
 // SessionPIDs lists live processes whose session id is sid (an engine and all its workers).

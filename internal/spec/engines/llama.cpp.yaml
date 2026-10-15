@@ -31,7 +31,7 @@ health:
 flags:
   ctx: [-c, "{value}"]
   gpus:
-    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+    env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}
   gpu_layers: [-ngl, "{value}"]
   parallel: [-np, "{value}"]
   kv_cache_type:
@@ -49,3 +49,6 @@ capabilities:
 
 routing:
   priority: {gguf: 60}
+
+# Weights plus KV cache and compute buffers; placement learns the real footprint after the first run.
+memory: {mode: weights, factor: 1.1, overhead_mib: 1536}

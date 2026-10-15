@@ -31,7 +31,7 @@ health:
 flags:
   ctx: [--max-model-len, "{value}"]
   gpus:
-    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+    env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}
   tp: [--tensor-parallel-size, "{value}"]
   parallel: [--max-num-seqs, "{value}"]
   mem_fraction: [--gpu-memory-utilization, "{value}"]
@@ -52,3 +52,7 @@ capabilities:
 
 routing:
   priority: {safetensors: 80, gguf: 10}
+
+# vLLM preallocates --gpu-memory-utilization of each GPU (default 0.9); the CUDA context and
+# buffers outside the pool add about 1.3 GiB (measured on an RTX 3090).
+memory: {mode: fraction, default_fraction: 0.9, overhead_mib: 1536}

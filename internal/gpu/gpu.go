@@ -1,4 +1,6 @@
 // Package gpu reads NVIDIA GPU state through nvidia-smi (absent tool = no GPUs).
+// Indices are nvidia-smi's (PCI bus order); launches set CUDA_DEVICE_ORDER=PCI_BUS_ID
+// so CUDA_VISIBLE_DEVICES means the same numbers.
 package gpu
 
 import (
@@ -12,12 +14,16 @@ import (
 // GPU is one device reading.
 type GPU struct {
 	Index       int     `json:"index"`
+	UUID        string  `json:"uuid"`
 	Name        string  `json:"name"`
 	MemUsedMiB  int64   `json:"memory_used_mib"`
 	MemTotalMiB int64   `json:"memory_total_mib"`
 	UtilPct     int64   `json:"utilization_pct"`
 	PowerW      float64 `json:"power_w"`
 }
+
+// FreeMiB is total minus used.
+func (g GPU) FreeMiB() int64 { return g.MemTotalMiB - g.MemUsedMiB }
 
 // Available reports whether nvidia-smi is on PATH.
 func Available() bool {
@@ -56,36 +62,59 @@ func List() ([]GPU, error) {
 	if !Available() {
 		return nil, nil
 	}
-	rows, err := query("--query-gpu=index,name,memory.used,memory.total,utilization.gpu,power.draw")
+	rows, err := query("--query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu,power.draw")
 	if err != nil {
 		return nil, err
 	}
 	var out []GPU
 	for _, f := range rows {
-		if len(f) != 6 {
+		if len(f) != 7 {
 			continue
 		}
-		p, _ := strconv.ParseFloat(f[5], 64) // "[N/A]" on some boards
-		out = append(out, GPU{Index: int(i64(f[0])), Name: f[1], MemUsedMiB: i64(f[2]), MemTotalMiB: i64(f[3]), UtilPct: i64(f[4]), PowerW: p})
+		p, _ := strconv.ParseFloat(f[6], 64) // "[N/A]" on some boards
+		out = append(out, GPU{Index: int(i64(f[0])), UUID: f[1], Name: f[2], MemUsedMiB: i64(f[3]),
+			MemTotalMiB: i64(f[4]), UtilPct: i64(f[5]), PowerW: p})
 	}
 	return out, nil
 }
 
-// ProcessMemory maps pid to GPU memory in MiB, summed over GPUs.
-func ProcessMemory() (map[int]int64, error) {
+// Usage is GPU memory held by processes: pid -> GPU index -> MiB.
+type Usage map[int]map[int]int64
+
+// Of sums the memory of pids per GPU.
+func (u Usage) Of(pids []int) map[int]int64 {
+	out := map[int]int64{}
+	for _, p := range pids {
+		for g, m := range u[p] {
+			out[g] += m
+		}
+	}
+	return out
+}
+
+// ProcessUsage reads per-process GPU memory; gpus maps UUIDs to indices (from List).
+func ProcessUsage(gpus []GPU) (Usage, error) {
 	if !Available() {
 		return nil, nil
 	}
-	rows, err := query("--query-compute-apps=pid,used_memory")
+	rows, err := query("--query-compute-apps=pid,gpu_uuid,used_memory")
 	if err != nil {
 		return nil, err
 	}
-	out := map[int]int64{}
+	idx := map[string]int{}
+	for _, g := range gpus {
+		idx[g.UUID] = g.Index
+	}
+	out := Usage{}
 	for _, f := range rows {
-		if len(f) != 2 {
+		if len(f) != 3 {
 			continue
 		}
-		out[int(i64(f[0]))] += i64(f[1])
+		pid := int(i64(f[0]))
+		if out[pid] == nil {
+			out[pid] = map[int]int64{}
+		}
+		out[pid][idx[f[1]]] += i64(f[2])
 	}
 	return out, nil
 }

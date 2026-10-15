@@ -1,14 +1,14 @@
 // Package gateway serves one OpenAI/Anthropic-compatible endpoint in front of
-// every engine instance: it routes by the request's model, starts registered
-// models on demand, meters every request into the usage database, samples GPU
-// and instance memory, and exposes a management API for agents.
+// every engine instance. It routes by the request's model across engines,
+// places and starts models on demand within GPU memory, limits concurrency,
+// fails over between replicas, authenticates per-client keys with quotas,
+// meters every request into the usage database, and exports Prometheus metrics.
 package gateway
 
 import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,14 +20,14 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lotto/substrate/internal/app"
+	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/gpu"
 	"github.com/lotto/substrate/internal/meter"
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/spec"
@@ -39,22 +39,31 @@ const maxBody = 256 << 20
 
 // Gateway is the HTTP front door.
 type Gateway struct {
-	App         *app.App
-	Autostart   bool
-	Swap        bool
-	StreamUsage bool
-	// APIKey, when set, is required from clients (Bearer or x-api-key).
+	App       *app.App
+	Cfg       config.Gateway
+	Autostart bool
+	// APIKey is the master (admin) key; per-client keys live in keys.yaml.
 	APIKey string
 	Log    *log.Logger
 
-	startMu  sync.Mutex // serializes start/swap decisions
+	transport *http.Transport
+
+	locksMu    sync.Mutex
+	startLocks map[string]*sync.Mutex // per model: one start at a time, other models proceed
+
 	activeMu sync.Mutex
-	active   map[string]int
+	active   map[string]int       // in-flight requests per instance
+	lastUsed map[string]time.Time // per instance
 	idle     *sync.Cond
 	rr       map[string]int
 
 	statusMu sync.Mutex
-	status   map[string]cachedStatus
+	status   map[string]*instState
+
+	lim      limiters
+	auth     authState
+	metrics  *metrics
+	restarts restartBudget
 
 	recMu   sync.RWMutex // guards rec against sends after Close
 	rec     chan *store.Request
@@ -62,20 +71,37 @@ type Gateway struct {
 	dropped int64
 }
 
-type cachedStatus struct {
+// instState is the gateway's view of one instance's health.
+type instState struct {
 	status string
 	at     time.Time
+	fails  int // consecutive failed health probes
 }
 
 // statusTTL bounds how stale a cached ready status may be before re-probing.
 const statusTTL = 2 * time.Second
 
-// New returns a gateway over a.
+// statusUnhealthy marks a live instance that failed its health checks: never routed to.
+const statusUnhealthy = "unhealthy"
+
+// New returns a gateway over a, configured from a.Cfg.Gateway.
 func New(a *app.App, logger *log.Logger) *Gateway {
-	g := &Gateway{App: a, Autostart: a.Cfg.Gateway.Autostart, Swap: a.Cfg.Gateway.Swap,
-		StreamUsage: a.Cfg.Gateway.StreamUsage, Log: logger,
-		active: map[string]int{}, rr: map[string]int{}, status: map[string]cachedStatus{}}
+	c := a.Cfg.Gateway
+	g := &Gateway{App: a, Cfg: c, Autostart: c.Autostart, Log: logger,
+		startLocks: map[string]*sync.Mutex{}, active: map[string]int{}, lastUsed: map[string]time.Time{},
+		rr: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics()}
 	g.idle = sync.NewCond(&g.activeMu)
+	g.lim.byModel = map[string]*limiter{}
+	if a.Cfg.Logging.Enabled {
+		g.auth.dbFunc = a.DB
+	}
+	g.transport = &http.Transport{
+		Proxy:                 nil, // engines are local; never route through HTTP_PROXY
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConnsPerHost:   64,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: time.Duration(c.UpstreamHeaderTimeout),
+	}
 	if a.Cfg.Logging.Enabled {
 		g.rec = make(chan *store.Request, 4096)
 		g.recDone = make(chan struct{})
@@ -99,6 +125,8 @@ func (g *Gateway) writer(rec <-chan *store.Request) {
 }
 
 func (g *Gateway) logRequest(r *store.Request) {
+	g.metrics.observe(r)
+	g.auth.charge(r)
 	g.recMu.RLock()
 	defer g.recMu.RUnlock()
 	if g.rec == nil {
@@ -129,92 +157,25 @@ func (g *Gateway) Close() {
 	}
 }
 
-// Run starts the background loops (exit monitor, resource sampler, retention) until ctx ends.
-func (g *Gateway) Run(ctx context.Context) {
-	go g.every(ctx, 5*time.Second, g.monitor)
-	if iv := time.Duration(g.App.Cfg.Logging.SampleInterval); g.App.Cfg.Logging.Enabled && iv > 0 {
-		go g.every(ctx, iv, g.sample)
+// Handler returns the gateway's routes.
+func (g *Gateway) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /metrics", g.authed(roleMetrics, g.serveMetrics))
+	mux.HandleFunc("GET /v1/models", g.authed(roleAny, g.models))
+	for _, path := range spec.APIs {
+		mux.HandleFunc("POST "+path, g.authed(roleAny, g.proxy))
+		mux.HandleFunc("POST "+path+"/", g.authed(roleAny, g.proxy))
 	}
-	if days := g.App.Cfg.Logging.RetentionDays; g.App.Cfg.Logging.Enabled && days > 0 {
-		go g.every(ctx, 24*time.Hour, func() {
-			db, err := g.App.DB()
-			if err != nil {
-				return
-			}
-			n, err := db.Prune(time.Now().AddDate(0, 0, -days))
-			if err != nil {
-				g.Log.Printf("retention: %v", err)
-				return
-			}
-			g.Log.Printf("retention: pruned %v", n)
-		})
-	}
-}
-
-func (g *Gateway) every(ctx context.Context, d time.Duration, fn func()) {
-	fn()
-	t := time.NewTicker(d)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			fn()
-		}
-	}
-}
-
-// monitor records engine exits that nobody stopped (crashes, OOM kills).
-func (g *Gateway) monitor() {
-	ins, _ := runtime.List()
-	for _, in := range ins {
-		if in.ExitNoted || in.Alive() {
-			continue
-		}
-		in.NoteExit()
-		g.setStatus(in.ID, runtime.StatusExited)
-		g.Log.Printf("%s (%s) exited unexpectedly; log: %s", in.ID, in.Engine, in.Log)
-	}
-}
-
-// sample records GPU readings and each live instance's GPU memory and RSS.
-func (g *Gateway) sample() {
-	now := time.Now().UnixMilli()
-	gs, err := gpu.List()
-	if err != nil {
-		g.Log.Printf("sampler: %v", err)
-	}
-	procMem, _ := gpu.ProcessMemory()
-	var gss []store.GPUSample
-	for _, x := range gs {
-		gss = append(gss, store.GPUSample{TS: now, GPU: x.Index, Name: x.Name, MemUsedMiB: x.MemUsedMiB,
-			MemTotalMiB: x.MemTotalMiB, UtilPct: x.UtilPct, PowerW: x.PowerW})
-	}
-	var iss []store.InstanceSample
-	ins, _ := runtime.List()
-	for _, in := range ins {
-		if !in.Alive() {
-			continue
-		}
-		pids := runtime.SessionPIDs(in.PID)
-		s := store.InstanceSample{TS: now, Instance: in.ID, Engine: in.Engine, Model: in.Name,
-			RSSMiB: runtime.RSSMiB(pids), Processes: int64(len(pids))}
-		for _, p := range pids {
-			s.GPUMemMiB += procMem[p]
-		}
-		iss = append(iss, s)
-	}
-	if len(gss) == 0 && len(iss) == 0 {
-		return
-	}
-	db, err := g.App.DB()
-	if err == nil {
-		err = db.InsertSamples(gss, iss)
-	}
-	if err != nil {
-		g.Log.Printf("sampler: %v", err)
-	}
+	mux.HandleFunc("GET /substrate/v1/instances", g.authed(roleAdmin, g.mgmtInstances))
+	mux.HandleFunc("POST /substrate/v1/ensure", g.authed(roleAdmin, g.mgmtEnsure))
+	mux.HandleFunc("POST /substrate/v1/stop", g.authed(roleAdmin, g.mgmtStop))
+	mux.HandleFunc("GET /substrate/v1/usage", g.authed(roleAny, g.mgmtUsage))
+	mux.HandleFunc("GET /substrate/v1/requests", g.authed(roleAny, g.mgmtRequests))
+	mux.HandleFunc("GET /substrate/v1/events", g.authed(roleAdmin, g.mgmtEvents))
+	return mux
 }
 
 // apiForPath maps request paths to manifest API names.
@@ -227,49 +188,18 @@ func apiForPath(p string) (string, bool) {
 	return "", false
 }
 
-// Handler returns the gateway's routes.
-func (g *Gateway) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /v1/models", g.auth(g.models))
-	for _, path := range spec.APIs {
-		mux.HandleFunc("POST "+path, g.auth(g.proxy))
-		mux.HandleFunc("POST "+path+"/", g.auth(g.proxy))
-	}
-	mux.HandleFunc("GET /substrate/v1/instances", g.auth(g.mgmtInstances))
-	mux.HandleFunc("POST /substrate/v1/ensure", g.auth(g.mgmtEnsure))
-	mux.HandleFunc("POST /substrate/v1/stop", g.auth(g.mgmtStop))
-	mux.HandleFunc("GET /substrate/v1/usage", g.auth(g.mgmtUsage))
-	mux.HandleFunc("GET /substrate/v1/requests", g.auth(g.mgmtRequests))
-	mux.HandleFunc("GET /substrate/v1/events", g.auth(g.mgmtEvents))
-	return mux
-}
-
-func (g *Gateway) auth(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if g.APIKey != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if r.Header.Get("x-api-key") != "" {
-				got = r.Header.Get("x-api-key")
-			}
-			if subtle.ConstantTimeCompare([]byte(got), []byte(g.APIKey)) != 1 {
-				apiError(w, http.StatusUnauthorized, "authentication_error", "invalid API key")
-				return
-			}
-		}
-		h(w, r)
-	}
-}
-
-// instanceStatus probes an instance, caching ready results briefly.
+// instanceStatus probes an instance, caching ready results briefly; unhealthy sticks until the health loop clears it.
 func (g *Gateway) instanceStatus(ctx context.Context, in *runtime.Instance) string {
 	g.statusMu.Lock()
-	c, ok := g.status[in.ID]
+	s := g.status[in.ID]
+	if s != nil && s.status == statusUnhealthy {
+		g.statusMu.Unlock()
+		return statusUnhealthy
+	}
+	fresh := s != nil && s.status == runtime.StatusReady && time.Since(s.at) < statusTTL
 	g.statusMu.Unlock()
-	if ok && c.status == runtime.StatusReady && time.Since(c.at) < statusTTL && in.Alive() {
-		return c.status
+	if fresh && in.Alive() {
+		return runtime.StatusReady
 	}
 	st := in.Status(ctx)
 	g.setStatus(in.ID, st)
@@ -278,7 +208,15 @@ func (g *Gateway) instanceStatus(ctx context.Context, in *runtime.Instance) stri
 
 func (g *Gateway) setStatus(id, st string) {
 	g.statusMu.Lock()
-	g.status[id] = cachedStatus{st, time.Now()}
+	s := g.status[id]
+	if s == nil {
+		s = &instState{}
+		g.status[id] = s
+	}
+	s.status, s.at = st, time.Now()
+	if st == runtime.StatusReady {
+		s.fails = 0
+	}
 	g.statusMu.Unlock()
 }
 
@@ -290,8 +228,9 @@ type modelEntry struct {
 	Substrate map[string]any `json:"substrate"`
 }
 
-// models lists running instances and registered models (one entry per name).
+// models lists running instances and registered models (one entry per name) the caller may use.
 func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
+	p := principalOf(r)
 	byName := map[string]*modelEntry{}
 	entry := func(name string, created int64) *modelEntry {
 		e := byName[name]
@@ -304,17 +243,20 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	}
 	ins, _ := runtime.List()
 	for _, in := range ins {
-		if !in.Alive() {
+		if !in.Alive() || !p.allows(in.Name) {
 			continue
 		}
 		e := entry(in.Name, in.StartedAt.Unix())
 		e.Substrate["instances"] = append(e.Substrate["instances"].([]map[string]any),
-			map[string]any{"id": in.ID, "engine": in.Engine, "status": g.instanceStatus(r.Context(), in), "apis": in.APIs})
+			map[string]any{"id": in.ID, "engine": in.Engine, "status": g.instanceStatus(r.Context(), in), "apis": in.APIs, "gpus": in.GPUs})
 	}
 	if err := g.App.Refresh(); err != nil {
-		g.Log.Printf("models.yaml: %v", err)
+		g.Log.Printf("refresh: %v", err)
 	}
 	for _, m := range g.App.RegisteredModels() {
+		if !p.allows(m.Name) {
+			continue
+		}
 		e := entry(m.Name, 0)
 		e.Substrate["registered"] = true
 		e.Substrate["format"] = m.Format
@@ -374,19 +316,23 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// maxAttempts bounds failover: the first replica plus one retry on another.
+const maxAttempts = 2
+
 func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	api, _ := apiForPath(r.URL.Path)
+	p := principalOf(r)
 	rec := &store.Request{ID: r.Header.Get("X-Request-Id"), TS: start.UnixMilli(), API: api, Path: r.URL.Path,
-		UserAgent: r.UserAgent(), Remote: clientIP(r), Client: r.Header.Get("X-Substrate-Client")}
+		UserAgent: r.UserAgent(), Remote: clientIP(r), Client: p.client(r)}
 	if rec.ID == "" || len(rec.ID) > 128 {
 		rec.ID = newID()
 	}
 	w.Header().Set("X-Substrate-Request-Id", rec.ID)
 	logging := g.App.Cfg.Logging
-	fail := func(status int, typ, msg string) {
-		apiError(w, status, typ, msg)
-		rec.Status, rec.Error = status, msg
+	fail := func(status int, err error) {
+		apiError(w, status, errType(status, err), err.Error())
+		rec.Status, rec.Error = status, err.Error()
 		d := time.Since(start).Milliseconds()
 		rec.DurationMS = &d
 		g.logRequest(rec)
@@ -394,12 +340,12 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil {
-		fail(http.StatusBadRequest, "invalid_request_error", "reading body: "+err.Error())
+		fail(http.StatusBadRequest, fmt.Errorf("reading body: %w", err))
 		return
 	}
 	rec.ReqBytes = int64(len(body))
 	if len(body) > maxBody {
-		fail(http.StatusRequestEntityTooLarge, "invalid_request_error", "request body over 256 MiB")
+		fail(http.StatusRequestEntityTooLarge, errors.New("request body over 256 MiB"))
 		return
 	}
 	var req struct {
@@ -408,7 +354,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		User   string `json:"user"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
-		fail(http.StatusBadRequest, "invalid_request_error", "body is not JSON: "+err.Error())
+		fail(http.StatusBadRequest, fmt.Errorf("body is not JSON: %w", err))
 		return
 	}
 	rec.Model, rec.Stream = req.Model, req.Stream
@@ -418,29 +364,99 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if logging.Bodies {
 		rec.RequestBody, rec.BodyTruncated = capBytes(body, logging.BodyMaxBytes)
 	}
-
-	in, started, status, err := g.pick(r.Context(), req.Model, api)
-	queue := time.Since(start).Milliseconds()
-	rec.QueueMS, rec.Autostarted = &queue, started
-	if err != nil {
-		fail(status, errType(status), err.Error())
+	if req.Model != "" && !p.allows(req.Model) {
+		fail(http.StatusForbidden, errs.New(errs.Forbidden, "key %s may not use model %q", p.name, req.Model))
 		return
 	}
-	rec.Instance, rec.Engine = in.ID, in.Engine
-	if rec.Model == "" {
-		rec.Model = in.Name
+	if err := g.auth.admit(p); err != nil {
+		w.Header().Set("Retry-After", "60")
+		fail(http.StatusTooManyRequests, err)
+		return
 	}
-	if g.StreamUsage && req.Stream && (api == "chat" || api == "completions") {
+
+	cands, started, err := g.pick(r.Context(), req.Model, api)
+	rec.Autostarted = started
+	if err != nil {
+		fail(statusFor(err), err)
+		return
+	}
+	if rec.Model == "" {
+		rec.Model = cands[0].Name
+	}
+	release, err := g.lim.acquire(r.Context(), rec.Model, g.maxConcurrency(rec.Model), g.Cfg.MaxQueue, time.Duration(g.Cfg.QueueTimeout))
+	queue := time.Since(start).Milliseconds()
+	rec.QueueMS = &queue
+	if err != nil {
+		if errs.CodeOf(err) == errs.Capacity {
+			w.Header().Set("Retry-After", "5")
+		}
+		fail(statusFor(err), err)
+		return
+	}
+	defer release()
+	if g.Cfg.StreamUsage && req.Stream && (api == "chat" || api == "completions") {
 		body, _ = injectStreamUsage(body)
 	}
 
+	mw := &meteredWriter{ResponseWriter: w, start: start, maxBody: logging.BodyMaxBytes, keepBody: logging.Bodies}
+	var lastErr error
+	var in *runtime.Instance
+	// Logging runs even when the client aborts mid-stream (ReverseProxy panics with ErrAbortHandler).
+	defer func() {
+		aborted := recover()
+		g.finish(rec, mw, in, lastErr, aborted != nil, start)
+		if aborted != nil {
+			panic(aborted)
+		}
+	}()
+	for attempt := 0; attempt < maxAttempts && attempt < len(cands); attempt++ {
+		in = cands[attempt]
+		lastErr = g.forward(mw, r, in, api, body)
+		if lastErr == nil || mw.status != 0 || r.Context().Err() != nil {
+			break
+		}
+		// Nothing reached the client: mark the replica suspect and try the next one.
+		g.Log.Printf("%s: %v; failing over", in.ID, lastErr)
+		g.setStatus(in.ID, runtime.StatusStarting)
+		g.metrics.failover(in)
+	}
+	if lastErr != nil && mw.status == 0 && r.Context().Err() == nil {
+		apiError(mw, http.StatusBadGateway, "api_error", fmt.Sprintf("%s (%s): %v", in.ID, in.Engine, lastErr))
+	}
+}
+
+// forward proxies one attempt to in; it writes nothing to the client when the
+// engine could not be reached, so the caller may fail over.
+func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instance, api string, body []byte) error {
 	g.acquire(in.ID)
 	defer g.release(in.ID)
-
 	target, _ := url.Parse(in.BaseURL)
-	mw := &meteredWriter{ResponseWriter: w, start: start, maxBody: logging.BodyMaxBytes, keepBody: logging.Bodies}
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	// The idle timer starts with the first byte: prefill is bounded by the header timeout instead.
+	idleTimeout := time.Duration(g.Cfg.UpstreamIdleTimeout)
+	var idle *time.Timer
+	var idledOut atomic.Bool
+	mw.onWrite = func() {
+		if idleTimeout <= 0 {
+			return
+		}
+		if idle == nil {
+			idle = time.AfterFunc(idleTimeout, func() { idledOut.Store(true); cancel() })
+		} else {
+			idle.Reset(idleTimeout)
+		}
+	}
+	defer func() {
+		if idle != nil {
+			idle.Stop()
+		}
+	}()
+
 	var proxyErr error
 	rp := &httputil.ReverseProxy{
+		Transport: g.transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
@@ -449,6 +465,8 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Header.Del("x-api-key")
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del("X-Substrate-Client")
+			// The body parsed as JSON; strict engines (vLLM) reject other declared types.
+			pr.Out.Header.Set("Content-Type", "application/json")
 			if in.APIKey != "" {
 				pr.Out.Header.Set("Authorization", "Bearer "+in.APIKey)
 				if api == "messages" {
@@ -458,31 +476,41 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		},
 		FlushInterval: -1, // stream SSE tokens as they arrive
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			proxyErr = err
-			g.setStatus(in.ID, runtime.StatusStarting) // re-probe before the next request
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-			apiError(w, http.StatusBadGateway, "api_error", fmt.Sprintf("%s (%s): %v", in.ID, in.Engine, err))
+			proxyErr = err // the caller decides: fail over, or answer 502
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			mw.Header().Set("X-Substrate-Instance", in.ID)
+			mw.Header().Set("X-Substrate-Engine", in.Engine)
+			return nil
 		},
 	}
-	w.Header().Set("X-Substrate-Instance", in.ID)
-	w.Header().Set("X-Substrate-Engine", in.Engine)
-	rp.ServeHTTP(mw, r)
+	rp.ServeHTTP(mw, r.WithContext(ctx))
+	if idledOut.Load() {
+		return fmt.Errorf("engine sent nothing for %s (upstream_idle_timeout)", idleTimeout)
+	}
+	return proxyErr
+}
 
+// finish records one proxied request.
+func (g *Gateway) finish(rec *store.Request, mw *meteredWriter, in *runtime.Instance, proxyErr error, aborted bool, start time.Time) {
+	if in != nil {
+		rec.Instance, rec.Engine = in.ID, in.Engine
+	}
 	u := mw.finish()
 	rec.Status = mw.status
+	switch {
+	case aborted || (proxyErr != nil && errors.Is(proxyErr, context.Canceled)):
+		rec.Error, rec.Status = "client disconnected", 499
+	case proxyErr != nil:
+		rec.Error = proxyErr.Error()
+		if rec.Status == 0 || rec.Status < 400 {
+			rec.Status = http.StatusBadGateway
+		}
+	case mw.status >= 400:
+		rec.Error = upstreamError(mw.body.Bytes())
+	}
 	if rec.Status == 0 {
 		rec.Status = http.StatusBadGateway
-	}
-	if proxyErr != nil {
-		rec.Error = proxyErr.Error()
-		if errors.Is(proxyErr, context.Canceled) {
-			rec.Error = "client disconnected"
-			rec.Status = 499
-		}
-	} else if mw.status >= 400 {
-		rec.Error = upstreamError(mw.body.Bytes())
 	}
 	rec.PromptTokens, rec.CompletionTokens, rec.CachedTokens, rec.ReasoningTokens = u.Prompt, u.Completion, u.Cached, u.Reasoning
 	rec.UsageSource, rec.FinishReason = u.Source, u.Finish
@@ -492,15 +520,31 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	d := time.Since(start).Milliseconds()
 	rec.DurationMS, rec.RespBytes = &d, mw.n
-	if logging.Bodies {
+	if g.App.Cfg.Logging.Bodies {
 		rec.ResponseBody = mw.body.Bytes()
 		rec.BodyTruncated = rec.BodyTruncated || mw.truncated
 	}
 	g.logRequest(rec)
 }
 
-func errType(status int) string {
+func statusFor(err error) int {
+	if errors.Is(err, errQueueFull) || errors.Is(err, errQuota) {
+		return http.StatusTooManyRequests
+	}
+	if errors.Is(err, context.Canceled) {
+		return 499
+	}
+	return codeStatus[errs.CodeOf(err)]
+}
+
+func errType(status int, err error) string {
 	switch {
+	case status == http.StatusUnauthorized:
+		return "authentication_error"
+	case status == http.StatusForbidden:
+		return "permission_error"
+	case status == http.StatusTooManyRequests:
+		return "rate_limit_error"
 	case status == http.StatusNotFound:
 		return "not_found_error"
 	case status >= 500:
@@ -548,6 +592,7 @@ type meteredWriter struct {
 	m         *meter.Meter
 	body      bytes.Buffer // captured body (bodies on), or the head of an error body
 	truncated bool
+	onWrite   func()
 }
 
 func (w *meteredWriter) WriteHeader(code int) {
@@ -562,6 +607,9 @@ func (w *meteredWriter) WriteHeader(code int) {
 func (w *meteredWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
+	}
+	if w.onWrite != nil {
+		w.onWrite()
 	}
 	n, err := w.ResponseWriter.Write(p)
 	w.n += int64(n)
@@ -608,340 +656,6 @@ func (w *meteredWriter) ttft() *time.Duration {
 	return w.m.TTFT()
 }
 
-// pick returns a ready instance serving model with api, starting one when allowed.
-// started reports an autostart; status is the HTTP status for err.
-func (g *Gateway) pick(ctx context.Context, model, api string) (*runtime.Instance, bool, int, error) {
-	if in, err := g.ready(ctx, model, api); in != nil || err != nil {
-		return in, false, http.StatusBadRequest, err
-	}
-	if model == "" {
-		return nil, false, http.StatusBadRequest, fmt.Errorf("request has no model, and not exactly one instance is ready")
-	}
-	if !g.Autostart {
-		return nil, false, http.StatusNotFound, fmt.Errorf("no ready instance serves %q (autostart is off)", model)
-	}
-	if err := g.App.Refresh(); err != nil {
-		return nil, false, http.StatusInternalServerError, err
-	}
-	if _, ok := g.App.RegisteredModel(model); !ok {
-		return nil, false, http.StatusNotFound, fmt.Errorf("model %q is neither running nor registered (see `substrate model add`)", model)
-	}
-
-	g.startMu.Lock()
-	defer g.startMu.Unlock()
-	// Another request may have started it while this one waited for the lock.
-	if in, err := g.ready(ctx, model, api); in != nil || err != nil {
-		return in, false, http.StatusBadRequest, err
-	}
-	// A start outlives the client that triggered it: other requests wait on it.
-	in, err := g.start(context.WithoutCancel(ctx), model, api)
-	if err != nil {
-		status := http.StatusServiceUnavailable
-		if c := errs.CodeOf(err); c == errs.Unsupported || c == errs.NotFound {
-			status = http.StatusBadRequest
-		}
-		return nil, false, status, err
-	}
-	return in, true, http.StatusOK, nil
-}
-
-// ready finds a ready instance for model and api; an error means instances
-// exist but none serves api.
-func (g *Gateway) ready(ctx context.Context, model, api string) (*runtime.Instance, error) {
-	ins, _ := runtime.List()
-	var ok, wrongAPI []*runtime.Instance
-	for _, in := range ins {
-		if model != "" && in.Name != model {
-			continue
-		}
-		if g.instanceStatus(ctx, in) != runtime.StatusReady {
-			continue
-		}
-		if !in.HasAPI(api) {
-			wrongAPI = append(wrongAPI, in)
-			continue
-		}
-		ok = append(ok, in)
-	}
-	if model == "" {
-		if len(ok) == 1 {
-			return ok[0], nil
-		}
-		return nil, nil
-	}
-	if len(ok) == 0 {
-		if len(wrongAPI) > 0 {
-			return nil, errs.New(errs.Unsupported, "%s is served by %s, which does not implement %s", model, wrongAPI[0].Engine, spec.APIs[api])
-		}
-		return nil, nil
-	}
-	g.activeMu.Lock()
-	i := g.rr[model] % len(ok)
-	g.rr[model]++
-	g.activeMu.Unlock()
-	return ok[i], nil
-}
-
-// start launches a registered model (caller holds g.startMu).
-func (g *Gateway) start(ctx context.Context, model, api string) (*runtime.Instance, error) {
-	t, err := g.App.ResolveModel(model)
-	if err != nil {
-		return nil, err
-	}
-	// An instance of this model may be loading already (started by the CLI or an earlier request).
-	ins, _ := runtime.List()
-	for _, in := range ins {
-		if in.Name == model && in.Alive() {
-			g.Log.Printf("waiting for %s to become ready", in.ID)
-			if err := in.WaitReady(ctx, 0); err != nil {
-				return nil, err
-			}
-			if !in.HasAPI(api) {
-				return nil, errs.New(errs.Unsupported, "%s is served by %s, which does not implement %s", model, in.Engine, spec.APIs[api])
-			}
-			return in, nil
-		}
-	}
-	plan, _, err := g.App.Plan(t, app.LaunchOpts{Owner: "gateway"})
-	if err != nil {
-		return nil, err
-	}
-	if !contains(plan.APIs, api) {
-		return nil, errs.New(errs.Unsupported, "%s would run on %s, which does not implement %s", model, plan.Engine, spec.APIs[api])
-	}
-	if g.Swap {
-		g.evict(model)
-	}
-	in, plan, err := g.App.Launch(t, app.LaunchOpts{Owner: "gateway"})
-	if err != nil {
-		return nil, err
-	}
-	g.Log.Printf("starting %s on %s: %s", model, plan.Engine, runtime.ShellJoin(runtime.Redact(plan.Argv, in.APIKey)))
-	if err := in.AwaitStart(ctx, 0); err != nil {
-		return nil, err
-	}
-	g.setStatus(in.ID, runtime.StatusReady)
-	g.Log.Printf("%s ready at %s in %s", in.ID, in.BaseURL, time.Since(in.StartedAt).Round(time.Second))
-	return in, nil
-}
-
-// evict stops gateway-owned instances of other models once their requests finish.
-func (g *Gateway) evict(keep string) {
-	ins, _ := runtime.List()
-	for _, in := range ins {
-		if in.Owner != "gateway" || in.Name == keep {
-			continue
-		}
-		g.waitIdle(in.ID, 10*time.Minute)
-		g.Log.Printf("swap: stopping %s", in.ID)
-		if err := in.Stop(); err != nil {
-			g.Log.Printf("swap: stopping %s: %v", in.ID, err)
-		}
-		g.setStatus(in.ID, runtime.StatusExited)
-	}
-}
-
-func (g *Gateway) acquire(id string) {
-	g.activeMu.Lock()
-	g.active[id]++
-	g.activeMu.Unlock()
-}
-
-func (g *Gateway) release(id string) {
-	g.activeMu.Lock()
-	g.active[id]--
-	if g.active[id] == 0 {
-		delete(g.active, id)
-		g.idle.Broadcast()
-	}
-	g.activeMu.Unlock()
-}
-
-func (g *Gateway) waitIdle(id string, max time.Duration) {
-	timer := time.AfterFunc(max, func() {
-		g.activeMu.Lock()
-		g.idle.Broadcast()
-		g.activeMu.Unlock()
-	})
-	defer timer.Stop()
-	deadline := time.Now().Add(max)
-	g.activeMu.Lock()
-	for g.active[id] > 0 && time.Now().Before(deadline) {
-		g.idle.Wait()
-	}
-	g.activeMu.Unlock()
-}
-
-// ---- management API ----
-
-func (g *Gateway) mgmtInstances(w http.ResponseWriter, r *http.Request) {
-	ins, _ := runtime.List()
-	out := make([]map[string]any, 0, len(ins))
-	for _, in := range ins {
-		g.activeMu.Lock()
-		active := g.active[in.ID]
-		g.activeMu.Unlock()
-		out = append(out, map[string]any{"instance": in.Redacted(), "status": g.instanceStatus(r.Context(), in),
-			"active_requests": active, "api_url": in.BaseURL + "/v1"})
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-// aliveFor reports whether any live instance serves model.
-func (g *Gateway) aliveFor(model string) bool {
-	ins, _ := runtime.List()
-	for _, in := range ins {
-		if in.Name == model && in.Alive() {
-			return true
-		}
-	}
-	return false
-}
-
-func (g *Gateway) mgmtEnsure(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Model   string `json:"model"`
-		Engine  string `json:"engine"`
-		Timeout string `json:"timeout"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil || req.Model == "" {
-		apiError(w, http.StatusBadRequest, "invalid_request_error", `body must be {"model": "...", "engine"?: "...", "timeout"?: "10m"}`)
-		return
-	}
-	var timeout time.Duration
-	if req.Timeout != "" {
-		var err error
-		if timeout, err = time.ParseDuration(req.Timeout); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-			return
-		}
-	}
-	g.startMu.Lock()
-	if g.Swap && !g.aliveFor(req.Model) {
-		// Same policy as autostart: free the GPU of the gateway's other models first.
-		g.evict(req.Model)
-	}
-	res, err := g.App.Ensure(context.WithoutCancel(r.Context()), req.Model, app.LaunchOpts{Engine: req.Engine, Owner: "gateway"}, timeout)
-	g.startMu.Unlock()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	g.setStatus(res.Instance.ID, runtime.StatusReady)
-	writeJSON(w, http.StatusOK, map[string]any{"instance": res.Instance.Redacted(), "started": res.Started,
-		"api_url": res.Instance.BaseURL + "/v1", "status": runtime.StatusReady})
-}
-
-func (g *Gateway) mgmtStop(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil || req.ID == "" {
-		apiError(w, http.StatusBadRequest, "invalid_request_error", `body must be {"id": "<instance id or model name>"}`)
-		return
-	}
-	in, err := runtime.Find(req.ID)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	g.waitIdle(in.ID, 2*time.Minute)
-	if err := in.Stop(); err != nil {
-		writeErr(w, err)
-		return
-	}
-	g.setStatus(in.ID, runtime.StatusExited)
-	writeJSON(w, http.StatusOK, map[string]any{"stopped": in.ID})
-}
-
-// filterFrom reads since/until/model/engine/instance/client/limit query parameters.
-func filterFrom(r *http.Request) (store.Filter, error) {
-	q := r.URL.Query()
-	f := store.Filter{Model: q.Get("model"), Engine: q.Get("engine"), Instance: q.Get("instance"), Client: q.Get("client")}
-	var err error
-	if s := q.Get("since"); s != "" {
-		if f.Since, err = ParseSince(s); err != nil {
-			return f, err
-		}
-	}
-	if s := q.Get("until"); s != "" {
-		if f.Until, err = ParseSince(s); err != nil {
-			return f, err
-		}
-	}
-	if s := q.Get("limit"); s != "" {
-		if f.Limit, err = strconv.Atoi(s); err != nil {
-			return f, fmt.Errorf("limit: %w", err)
-		}
-	}
-	return f, nil
-}
-
-// ParseSince accepts a duration back from now (90m, 24h, 7d) or a date/time (2026-10-01, RFC 3339).
-func ParseSince(s string) (time.Time, error) {
-	if strings.HasSuffix(s, "d") {
-		if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil {
-			return time.Now().AddDate(0, 0, -n), nil
-		}
-	}
-	if d, err := time.ParseDuration(s); err == nil {
-		return time.Now().Add(-d), nil
-	}
-	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return t, nil
-		}
-	}
-	return time.Time{}, errs.New(errs.Usage, "time %q: want a duration (24h, 7d) or a date (2026-10-01)", s)
-}
-
-func (g *Gateway) withDB(w http.ResponseWriter, fn func(*store.DB, store.Filter) (any, error), r *http.Request) {
-	f, err := filterFrom(r)
-	if err != nil {
-		apiError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
-	db, err := g.App.DB()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	out, err := fn(db, f)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (g *Gateway) mgmtUsage(w http.ResponseWriter, r *http.Request) {
-	g.withDB(w, func(db *store.DB, f store.Filter) (any, error) {
-		rows, err := db.Usage(r.URL.Query().Get("by"), f)
-		if err != nil {
-			return nil, errs.Wrap(errs.Usage, err)
-		}
-		return rows, nil
-	}, r)
-}
-
-func (g *Gateway) mgmtRequests(w http.ResponseWriter, r *http.Request) {
-	g.withDB(w, func(db *store.DB, f store.Filter) (any, error) {
-		if f.Limit == 0 {
-			f.Limit = 100
-		}
-		return db.Requests(f)
-	}, r)
-}
-
-func (g *Gateway) mgmtEvents(w http.ResponseWriter, r *http.Request) {
-	g.withDB(w, func(db *store.DB, f store.Filter) (any, error) {
-		if f.Limit == 0 {
-			f.Limit = 100
-		}
-		return db.Events(f)
-	}, r)
-}
-
 func contains(xs []string, s string) bool {
 	for _, x := range xs {
 		if x == s {
@@ -959,7 +673,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 var codeStatus = map[errs.Code]int{
 	errs.Usage: 400, errs.NotFound: 404, errs.Conflict: 409, errs.Unsupported: 400,
-	errs.Timeout: 504, errs.EngineFailed: 502, errs.Internal: 500,
+	errs.Timeout: 504, errs.EngineFailed: 502, errs.Internal: 500, errs.Capacity: 503, errs.Forbidden: 403,
 }
 
 func writeErr(w http.ResponseWriter, err error) {

@@ -35,6 +35,11 @@ func baseVars() map[string]string {
 
 // Resolve finds m's binary: config override, then $binary.env, then candidates.
 func Resolve(m *spec.Manifest, ov config.EngineOverride) *Engine {
+	if ov.Memory != nil {
+		mm := *m // the override is local to this install: never mutate the shared manifest
+		mm.Memory = *ov.Memory
+		m = &mm
+	}
 	e := &Engine{Manifest: m, Override: ov}
 	try := func(c string) bool {
 		e.Tried = append(e.Tried, paths.Expand(c))
@@ -182,6 +187,11 @@ type Plan struct {
 	BaseURL   string            `json:"base_url"`
 	APIs      []string          `json:"apis"`
 	Warnings  []string          `json:"warnings,omitempty"`
+	// GPUs and PlannedMiB are filled by placement before Start.
+	GPUs       []int `json:"gpus,omitempty"`
+	PlannedMiB int64 `json:"planned_mib,omitempty"`
+	// Placement explains the memory decision (need, source, evictions).
+	Placement string `json:"placement,omitempty"`
 
 	stopSignal  string
 	stopTimeout time.Duration

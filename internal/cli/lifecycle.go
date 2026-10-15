@@ -24,7 +24,7 @@ import (
 type launchFlags struct {
 	engine, name, id, host *string
 	port                   *int
-	lenient                *bool
+	lenient, force         *bool
 	timeout                *time.Duration
 	flags                  map[string]string
 }
@@ -38,6 +38,7 @@ func addLaunchFlags(fs *flag.FlagSet) *launchFlags {
 		port:    fs.Int("port", 0, "listen port (default: a free port)"),
 		lenient: fs.Bool("lenient", false, "drop unified flags the engine cannot express instead of failing"),
 		timeout: fs.Duration("timeout", 0, "readiness timeout (default: the engine manifest's)"),
+		force:   fs.Bool("force", false, "skip the GPU memory check and placement"),
 		flags:   map[string]string{},
 	}
 	addUnified(fs, l.flags)
@@ -46,7 +47,7 @@ func addLaunchFlags(fs *flag.FlagSet) *launchFlags {
 
 func (l *launchFlags) opts(e *env, extra []string) app.LaunchOpts {
 	return app.LaunchOpts{Engine: *l.engine, Name: *l.name, ID: *l.id, Host: *l.host, Port: *l.port,
-		Flags: l.flags, Args: extra, Lenient: *l.lenient, Owner: e.owner}
+		Flags: l.flags, Args: extra, Lenient: *l.lenient, Owner: e.owner, Force: *l.force}
 }
 
 // interruptible returns a context cancelled by Ctrl-C (CLI only).
@@ -78,7 +79,7 @@ func cmdRun() *command {
 				}
 				opts := l.opts(e, extra)
 				if *dry {
-					plan, iid, err := a.Plan(t, opts)
+					plan, iid, err := a.PlanPlaced(t, opts)
 					if err != nil {
 						return err
 					}
@@ -98,7 +99,7 @@ func cmdRun() *command {
 					ctx, stop := e.interruptible()
 					defer stop()
 					e.progress("waiting for %s ...", in.HealthURL)
-					if err := in.AwaitStart(ctx, *l.timeout); err != nil {
+					if err := a.AwaitReady(ctx, in, *l.timeout); err != nil {
 						if ctx.Err() != nil {
 							return fmt.Errorf("interrupted; %s keeps loading (substrate stop %s)", in.ID, in.ID)
 						}
@@ -155,6 +156,9 @@ func printPlan(w io.Writer, id string, p *runtime.Plan) {
 		}
 	}
 	fmt.Fprintf(w, "command:  %s\n", runtime.ShellJoin(p.Argv))
+	if p.Placement != "" {
+		fmt.Fprintf(w, "placement: %s\n", p.Placement)
+	}
 	for _, x := range p.Warnings {
 		fmt.Fprintf(w, "warning:  %s\n", x)
 	}

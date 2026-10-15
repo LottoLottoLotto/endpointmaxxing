@@ -33,7 +33,7 @@ health:
 flags:
   ctx: [--context-length, "{value}"]
   gpus:
-    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+    env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}
   tp: [--tp-size, "{value}"]
   parallel: [--max-running-requests, "{value}"]
   mem_fraction: [--mem-fraction-static, "{value}"]
@@ -54,3 +54,6 @@ capabilities:
 
 routing:
   priority: {safetensors: 70, gguf: 5}
+
+# SGLang preallocates --mem-fraction-static of each GPU (about 0.88 by default on 24 GB cards).
+memory: {mode: fraction, default_fraction: 0.88}

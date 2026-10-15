@@ -91,6 +91,17 @@ func TestBuildNeedsLocalFileForPathEngines(t *testing.T) {
 	}
 }
 
+func TestMemoryOverrideIsPerInstall(t *testing.T) {
+	e := engine(t, "strata", config.EngineOverride{Memory: &spec.Memory{Mode: "none"}})
+	if e.MemoryMode() != "none" {
+		t.Fatalf("override not applied: %s", e.MemoryMode())
+	}
+	// The builtin manifest itself is untouched (other installs keep exclusive).
+	if e2 := engine(t, "strata", config.EngineOverride{}); e2.MemoryMode() != "exclusive" {
+		t.Fatalf("override leaked into the shared manifest: %s", e2.MemoryMode())
+	}
+}
+
 func TestStrataVarsOverride(t *testing.T) {
 	e := engine(t, "strata", config.EngineOverride{Vars: map[string]string{"server": "tt/serve/server_tt.py"}})
 	r := req(nil)

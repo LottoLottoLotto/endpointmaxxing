@@ -90,6 +90,8 @@ var migrations = []string{
 		processes INTEGER
 	);
 	CREATE INDEX instance_samples_ts ON instance_samples(ts);`,
+	// 2: token quotas sum a client's day.
+	`CREATE INDEX requests_client ON requests(client, ts);`,
 }
 
 // DB is an open usage database.
@@ -456,6 +458,22 @@ func (db *DB) Usage(group string, f Filter) ([]UsageRow, error) {
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// TokensSince sums prompt and completion tokens recorded for client since t.
+func (db *DB) TokensSince(client string, since time.Time) (int64, error) {
+	var n int64
+	err := db.QueryRow(`SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0)
+		FROM requests WHERE client = ? AND ts >= ?`, client, since.UnixMilli()).Scan(&n)
+	return n, err
+}
+
+// PeakGPU returns the largest GPU footprint (MiB, all GPUs) sampled for model on engine since t; 0 when none.
+func (db *DB) PeakGPU(model, engine string, since time.Time) (int64, error) {
+	var peak sql.NullInt64
+	err := db.QueryRow(`SELECT MAX(gpu_mem_mib) FROM instance_samples WHERE model = ? AND engine = ? AND ts >= ?`,
+		model, engine, since.UnixMilli()).Scan(&peak)
+	return peak.Int64, err
 }
 
 // InstanceSamples lists instance samples, newest first.

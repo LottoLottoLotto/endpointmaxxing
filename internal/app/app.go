@@ -17,6 +17,7 @@ import (
 
 	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
+	"github.com/lotto/substrate/internal/lock"
 	"github.com/lotto/substrate/internal/model"
 	"github.com/lotto/substrate/internal/route"
 	"github.com/lotto/substrate/internal/runtime"
@@ -245,6 +246,15 @@ type LaunchOpts struct {
 	Args    []string          // extra engine args
 	Lenient bool
 	Owner   string
+	// Force skips the GPU memory check and placement.
+	Force bool
+	// Evict stops instances placement chose to make room; nil only checks, and a launch
+	// that needs evictions fails with code "capacity" naming them.
+	Evict Evictor
+	// Activity reports whether an instance is idle and when it was last used (gateway); nil treats all as idle.
+	Activity func(id string) (idle bool, lastUsed time.Time)
+	// dryRun makes placement describe evictions instead of performing them.
+	dryRun bool
 }
 
 // Plan resolves the engine and builds the launch plan for t.
@@ -313,23 +323,40 @@ func (a *App) Plan(t *Target, o LaunchOpts) (*runtime.Plan, string, error) {
 	return plan, id, nil
 }
 
-// Launch plans and starts t. With an automatic port, a port taken between
-// choosing and binding is retried on a fresh port.
+// Launch places (unless forced), plans and starts t. Placement and start happen
+// under a machine-wide lock, so concurrent launches see each other's reservations.
+// With an automatic port, a port taken between choosing and binding is retried.
 func (a *App) Launch(t *Target, o LaunchOpts) (*runtime.Instance, *runtime.Plan, error) {
 	if o.Owner == "" {
 		o.Owner = "cli"
 	}
-	for attempt := 0; ; attempt++ {
-		plan, id, err := a.Plan(t, o)
+	var (
+		in   *runtime.Instance
+		plan *runtime.Plan
+	)
+	err := lock.With(placementLock(), func() error {
+		pl, err := a.place(t, &o)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
-		in, err := runtime.Start(plan, id, o.Owner)
-		if err != nil && o.Port == 0 && errors.Is(err, runtime.ErrPortInUse) && attempt < 3 {
-			continue
+		for attempt := 0; ; attempt++ {
+			var id string
+			plan, id, err = a.Plan(t, o)
+			if err != nil {
+				return err
+			}
+			pl.apply(plan)
+			in, err = runtime.Start(plan, id, o.Owner)
+			if err != nil && o.Port == 0 && errors.Is(err, runtime.ErrPortInUse) && attempt < 3 {
+				continue
+			}
+			return err
 		}
-		return in, plan, err
+	})
+	if err != nil {
+		return nil, nil, err
 	}
+	return in, plan, nil
 }
 
 // EnsureResult says what Ensure did.
@@ -368,7 +395,7 @@ func (a *App) Ensure(ctx context.Context, ref string, o LaunchOpts, timeout time
 	if err != nil {
 		return nil, err
 	}
-	if err := in.AwaitStart(ctx, timeout); err != nil {
+	if err := a.AwaitReady(ctx, in, timeout); err != nil {
 		return nil, err
 	}
 	return &EnsureResult{Instance: in, Started: true}, nil

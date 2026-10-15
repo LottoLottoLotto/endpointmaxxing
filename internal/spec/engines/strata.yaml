@@ -46,3 +46,6 @@ capabilities:
 
 routing:
   priority: {strata-config: 100}
+
+# Strata fills free VRAM with its expert cache: it needs whole GPUs.
+memory: {mode: exclusive}

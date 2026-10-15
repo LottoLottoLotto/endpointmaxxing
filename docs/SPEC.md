@@ -67,7 +67,7 @@ health:
 
 flags:                           # unified flag -> engine arguments/env; omitted = unsupported
   ctx: [--ctx-size, "{value}"]                 # shorthand for {args: [...]}
-  gpus: {env: {CUDA_VISIBLE_DEVICES: "{value}"}}
+  gpus: {env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}}  # placement fills {value}
   kv_cache_type:
     args: [--kv, "{value}"]
     values: {fp8: q8}                          # translate unified values; others pass through
@@ -82,7 +82,29 @@ capabilities:
 
 routing:
   priority: {gguf: 60}           # per format; the highest compatible installed engine wins
+
+memory:                          # GPU memory need, for placement (default: weights, factor 1.1, overhead 1024)
+  mode: weights                  # weights | fraction | exclusive | none
+  factor: 1.1                    # weights: model file size × factor, split over the GPUs
+  overhead_mib: 1536             # weights and fraction: added per GPU (KV cache, CUDA context, buffers)
+  # default_fraction: 0.9        # fraction: share of each GPU claimed when --mem-fraction is unset
 ```
+
+### Memory modes
+
+| Mode | Need per GPU | Use for |
+| --- | --- | --- |
+| `weights` | file size × `factor` ÷ GPUs + `overhead_mib` | engines that allocate what they load (llama.cpp) |
+| `fraction` | `--mem-fraction` (or `default_fraction`) × GPU size + `overhead_mib` | engines that preallocate a share (vLLM, SGLang) |
+| `exclusive` | the whole GPU; other substrate instances on it are evicted | engines that fill free memory (Strata on CUDA) |
+| `none` | nothing; placement is skipped | CPU-only builds, non-NVIDIA accelerators |
+
+After an instance becomes ready, substrate measures its real GPU footprint.
+For `weights` mode, the largest measurement from the last 30 days replaces
+the estimate. For `fraction` mode, the larger of the measurement and the
+formula is used. `model add --vram-mib N` overrides everything. A single
+install can override the block in `config.yaml`, under
+`engines.<id>.memory`.
 
 ### Placeholders
 

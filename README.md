@@ -23,8 +23,18 @@ behavior. substrate puts a common layer over them:
   `stop` shuts down the whole process group, and the worker processes of a
   crashed engine are cleaned up so they don't keep holding GPU memory.
 - **One endpoint.** `substrate serve` provides a single OpenAI- and
-  Anthropic-compatible gateway. It routes each request by its `model` field,
-  starts registered models on demand, and swaps models on a shared GPU.
+  Anthropic-compatible gateway. It routes each request by its `model` field
+  across every engine and accelerator, and starts registered models on
+  demand.
+- **GPU placement.** Before each start, substrate checks free GPU memory,
+  picks a GPU, and evicts the least recently used models if needed, so
+  several models share the hardware without crashing for lack of memory
+  ([Placement](#placement)).
+- **Production gateway.** Per-model concurrency limits with queueing,
+  failover between replicas, upstream timeouts, health checks, automatic
+  restart after crashes or hangs, per-client API keys with quotas, and
+  Prometheus `/metrics`. `substrate service` installs it as a systemd
+  service.
 - **Usage logging.** The usage database records every request, its tokens
   and latency, engine start and stop events, and GPU and memory samples
   ([Usage data](#usage-data)).
@@ -67,40 +77,133 @@ substrate usage --by model --since 7d
 `substrate serve` handles `/v1/chat/completions`, `/v1/completions`,
 `/v1/responses`, `/v1/messages`, `/v1/embeddings` and `/v1/rerank`:
 
-- Requests go to a ready instance whose name matches the request's `model`.
-  When several instances serve the same model, requests rotate between them.
+- Requests go to a ready instance whose name matches the request's `model`,
+  whatever engine or accelerator serves it. When several instances serve the
+  same model, requests rotate between them.
+- If an instance can't be reached, the request moves to another replica,
+  provided nothing has been sent to the client yet.
 - A request for a registered model with no running instance starts that
-  model. The start keeps going even if the client that triggered it
-  disconnects.
-- With `swap` on (the default), starting a model first stops the other
-  models the gateway itself started, once their in-flight requests finish.
-  Models started from the CLI or by MCP are never stopped this way.
+  model, through [placement](#placement). The start keeps going even if the
+  client that triggered it disconnects. Starts of different models run in
+  parallel; starts of the same model are serialized.
 - A request without a `model` goes to the only ready instance, if exactly one
   is ready.
-- A request for an API the engine doesn't implement is rejected with a clear
-  error.
-- `model add` and `engine set` take effect without restarting the gateway.
+- A request for an API the engine doesn't implement is rejected before
+  anything is loaded.
+- `model add`, `engine set` and `key add`/`key rm` take effect without
+  restarting the gateway.
 
-The gateway also offers a management API under `/substrate/v1/` for agents
-that only speak HTTP:
+### Limits, timeouts, health
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `max_concurrency` | 0 (unlimited) | in-flight requests per model; a model can override it (`model add --max-concurrency`) |
+| `max_queue` | 64 | requests that may wait for a slot; beyond that the gateway answers 429 with `Retry-After` |
+| `queue_timeout` | 5m | longest wait for a slot (then 504) |
+| `upstream_header_timeout` | 10m | longest wait for an engine's first response, prefill included |
+| `upstream_idle_timeout` | 5m | aborts a stream when the engine sends nothing for this long |
+| `health_interval` | 15s | ready instances are probed; after 3 consecutive failures an instance gets no more traffic |
+| `restart_crashed` | true | instances the gateway started are restarted after a crash or 3 failed health checks, at most 3 times in 10 minutes |
+| `idle_unload` | 0 (never) | stops evictable instances idle this long; a model can override it (`model add --idle-unload 15m`) |
+
+### Placement
+
+Every launch, whether from the gateway, `run`, `ensure`, `chat` or MCP,
+goes through placement unless you pass `--force`:
+
+1. **Estimate the need.** In order of precedence:
+   - a declared size (`model add --vram-mib`);
+   - the manifest's `fraction` mode: vLLM and SGLang claim
+     `--mem-fraction` of each GPU;
+   - the largest footprint substrate measured for this model and engine in
+     the last 30 days (recorded each time an instance becomes ready);
+   - the `weights` rule: file size × factor + overhead.
+
+   `exclusive` engines take whole GPUs, and `none` engines use no NVIDIA
+   memory at all (for example Strata built for a Tenstorrent card).
+2. **Choose GPUs.** The free memory per GPU (`nvidia-smi`) minus what
+   instances still loading have reserved. `--tp N` needs N GPUs; `--gpus`
+   pins them. The chosen GPUs are passed as `CUDA_VISIBLE_DEVICES`, with
+   `CUDA_DEVICE_ORDER=PCI_BUS_ID` so the numbers match `nvidia-smi`.
+3. **Evict if needed.** If nothing fits, the gateway stops evictable
+   instances: idle ones first, then the least recently used, and only as
+   many as necessary. It waits for their in-flight requests to finish first.
+   Owners in `evict_owners` (default `gateway`) are evictable; models you
+   started yourself are not. The CLI and MCP never evict: they fail with
+   code `capacity` and name what would have to stop.
+
+Placement modes (`gateway.placement` or `serve --placement`):
+
+- `memory` (the default) is the behavior above.
+- `exclusive` runs one model per GPU.
+- `off` skips all checks.
+
+`substrate run <model> --dry-run` shows the decision, for example
+`placement: GPU 0, 9830 MiB each (0.40 of each GPU)`.
+
+### Management API
+
+For agents that only speak HTTP, the gateway also offers a management API
+under `/substrate/v1/`:
 
 | Method | Path | Body or query | Result |
 | --- | --- | --- | --- |
-| GET | `/substrate/v1/instances` | | instances with status and in-flight requests |
-| POST | `/substrate/v1/ensure` | `{"model", "engine"?, "timeout"?}` | a ready instance (reused or started) |
+| GET | `/substrate/v1/instances` | | instances with status, in-flight requests, idle state, last use |
+| POST | `/substrate/v1/ensure` | `{"model", "engine"?, "timeout"?}` | a ready instance (placed, evicting if needed) |
 | POST | `/substrate/v1/stop` | `{"id"}` (instance id or model name) | waits for in-flight requests, then stops |
 | GET | `/substrate/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client` | aggregates |
 | GET | `/substrate/v1/requests` | same filters, plus `limit` | request records |
 | GET | `/substrate/v1/events` | same filters, plus `limit` | lifecycle events |
 
-On security and shutdown:
+### Keys and access
 
-- Binding to an address other than loopback requires `--api-key` or
-  `$SUBSTRATE_API_KEY`; `--insecure` overrides this.
-- The client's key is never forwarded. The engine receives its own key, set
-  with `--api-key` at launch.
-- On SIGINT or SIGTERM, the gateway waits up to 30 seconds for in-flight
-  streams before it exits. Engines keep running after the gateway stops.
+```sh
+substrate key add alice --models 'qwen*' --rpm 60 --tokens-per-day 2000000   # prints the key once
+substrate key add ops --role admin
+substrate key list
+substrate key rm alice
+```
+
+- **Open mode:** with no keys and no master key, the gateway is open, and
+  only on loopback.
+- **Once any key exists,** every request needs one, sent as
+  `Authorization: Bearer` or `x-api-key`.
+- **`user` keys:** inference and `/v1/models`, limited to their model globs,
+  plus `/substrate/v1/usage` and `/requests` filtered to their own records.
+- **`admin` keys:** everything, including the management API, `/events` and
+  `/metrics`. The master key from `--api-key` or `$SUBSTRATE_API_KEY` is an
+  admin key.
+- **Quotas:** going over `rpm` or `tokens-per-day` returns 429. Usage is
+  attributed to the key's name, which the client can't forge.
+- **Storage:** keys are stored only as SHA-256 hashes in
+  `~/.config/substrate/keys.yaml` (mode 0600).
+- **Exposure:** binding to an address other than loopback requires at least
+  one key, or `--insecure`.
+- **Engine keys:** the client's key is never forwarded. The engine receives
+  its own key, set with `--api-key` at launch.
+
+### Metrics and service
+
+`GET /metrics` (admin, or anyone with `metrics_public: true`) serves
+Prometheus text:
+
+- requests and tokens per model, engine and API;
+- histograms of TTFT and request duration;
+- instance status, in-flight requests and queue depth;
+- GPU memory and utilization, and per-instance GPU memory and RSS;
+- failovers, restarts, and dropped usage records.
+
+```sh
+substrate service install --enable -- --port 7777   # systemd user unit; PATH captured from this shell
+substrate service status
+substrate service uninstall
+loginctl enable-linger $USER                         # keep it running after logout
+```
+
+The unit uses `KillMode=process`, so restarting or upgrading the gateway
+leaves running engines alone, and the new gateway picks them up again. On
+SIGINT or SIGTERM, the gateway waits up to 30 seconds for in-flight streams
+before exiting.
 
 ## Usage data
 
@@ -170,6 +273,8 @@ GPU and memory samples are taken only while the gateway runs.
   | 5 | engine_failed |
   | 6 | conflict |
   | 7 | unsupported |
+  | 8 | capacity |
+  | 9 | forbidden |
 
   With `--json`, a failure prints `{"error": "...", "code": "not_found"}`.
 - **Discovery:** `substrate commands --json` lists every command with its
@@ -213,7 +318,8 @@ GPU and memory samples are taken only while the gateway runs.
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/substrate/config.yaml` | `gateway`, `logging`, `prefer` (engine order per format), per-engine overrides |
+| `~/.config/substrate/config.yaml` | `gateway`, `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`) |
+| `~/.config/substrate/keys.yaml` | gateway API keys (hashes only, mode 0600) |
 | `~/.config/substrate/models.yaml` | model registry: source, format, pinned engine, default flags, engine args |
 | `~/.config/substrate/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |
 | `~/.local/state/substrate/instances/` | one JSON record per instance |
@@ -230,7 +336,17 @@ gateway:
   host: 127.0.0.1
   port: 7777
   autostart: true
-  swap: true
+  placement: memory          # memory | exclusive | off
+  evict_owners: [gateway]    # whose instances placement and idle unload may stop
+  idle_unload: 0s
+  restart_crashed: true
+  health_interval: 15s
+  max_concurrency: 0
+  max_queue: 64
+  queue_timeout: 5m
+  upstream_header_timeout: 10m
+  upstream_idle_timeout: 5m
+  metrics_public: false
   stream_usage: true
 logging:
   enabled: true
@@ -240,6 +356,9 @@ logging:
   retention_days: 0      # >0 prunes daily while the gateway runs
 prefer:
   gguf: [buun-llama-cpp, llama.cpp]
+engines:
+  strata:                    # a Strata build that runs on a Tenstorrent P150, not the NVIDIA GPU
+    memory: {mode: none}
 ```
 
 ## Builtin engines
