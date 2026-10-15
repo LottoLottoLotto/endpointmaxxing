@@ -1,0 +1,48 @@
+spec: substrate.engine/v1
+id: strata
+name: Strata
+description: >-
+  MoE expert-offloading engine for Qwen3.8-Flash-Next on consumer GPUs. A model is a
+  strata-<model>.json config written by Strata's setup.sh; context, KV and expert placement live there.
+homepage: https://github.com/Niko1221/Strata
+
+binary:
+  env: STRATA_PYTHON
+  # The entry point is the Strata checkout's virtualenv python; {root} is the checkout.
+  candidates:
+    - ~/Strata/.venv/bin/python
+    - "{data}/engines/strata/.venv/bin/python"
+
+vars:
+  root: "{bin_dir}/../.."
+  # Strata ports (e.g. the Tenstorrent tree) ship their own server; override per install.
+  server: serve/server.py
+
+install:
+  notes: Strata's setup.sh asks for the model size and context, downloads ~70 GB and writes the config to pass to `substrate model add`.
+  steps:
+    - git clone --depth 1 https://github.com/Niko1221/Strata "{data}/engines/strata" || git -C "{data}/engines/strata" pull --ff-only
+    - cd "{data}/engines/strata" && ./setup.sh --setup
+
+launch:
+  command: ["{bin}", "{root}/{server}", --engine, strata, --config, "{model_path}", --host, "{host}", --port, "{port}"]
+  cwd: "{root}"
+  stop_signal: SIGTERM
+  stop_timeout: 60s
+
+health:
+  path: /health
+  timeout: 20m
+
+flags:
+  gpus: [--gpu, "{value}"]
+  api_key: [--api-key, "{value}"]
+
+capabilities:
+  formats: [strata-config]
+  quantizations: ["*"]
+  apis: [chat, responses, messages]
+  features: [moe-offload, vision, speculative, kv-quant, multi-gpu]
+
+routing:
+  priority: {strata-config: 100}

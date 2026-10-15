@@ -1,0 +1,51 @@
+spec: substrate.engine/v1
+id: llama.cpp
+name: llama.cpp (llama-server)
+description: ggml-org's C/C++ engine; GGUF on CPU, CUDA, ROCm, Metal, Vulkan.
+homepage: https://github.com/ggml-org/llama.cpp
+
+binary:
+  env: LLAMA_SERVER
+  candidates:
+    - llama-server
+    - ~/llama.cpp/build/bin/llama-server
+    - "{data}/engines/llama.cpp/build/bin/llama-server"
+  version: [--version]
+
+install:
+  notes: Builds with CUDA when nvcc is on PATH, otherwise CPU only.
+  steps:
+    - git clone --depth 1 https://github.com/ggml-org/llama.cpp "{data}/engines/llama.cpp" || git -C "{data}/engines/llama.cpp" pull --ff-only
+    - cmake -S "{data}/engines/llama.cpp" -B "{data}/engines/llama.cpp/build" -DCMAKE_BUILD_TYPE=Release $(command -v nvcc >/dev/null && echo -DGGML_CUDA=ON)
+    - cmake --build "{data}/engines/llama.cpp/build" -j --target llama-server
+
+launch:
+  command: ["{bin}", -m, "{model_path}", --host, "{host}", --port, "{port}", --alias, "{name}"]
+  stop_signal: SIGTERM
+  stop_timeout: 30s
+
+health:
+  path: /health
+  timeout: 10m
+
+flags:
+  ctx: [-c, "{value}"]
+  gpus:
+    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+  gpu_layers: [-ngl, "{value}"]
+  parallel: [-np, "{value}"]
+  kv_cache_type:
+    args: [-ctk, "{value}", -ctv, "{value}"]
+    values: {fp8: q8_0, bf16: bf16, f16: f16}
+  api_key: [--api-key, "{value}"]
+  flash_attn: [-fa, "on"]
+  embeddings: [--embeddings]
+
+capabilities:
+  formats: [gguf]
+  quantizations: ["*"]
+  apis: [chat, completions, embeddings, responses, messages, rerank]
+  features: [cpu-offload, multi-gpu, vision, speculative, kv-quant]
+
+routing:
+  priority: {gguf: 60}

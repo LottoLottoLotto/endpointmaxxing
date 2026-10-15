@@ -1,0 +1,56 @@
+spec: substrate.engine/v1
+id: sglang
+name: SGLang
+description: RadixAttention serving runtime for Hugging Face checkpoints.
+homepage: https://github.com/sgl-project/sglang
+
+binary:
+  env: SGLANG_PYTHON
+  candidates:
+    - "{data}/venvs/sglang/bin/python"
+    - python3
+  # The entry point is a python with sglang importable.
+  probe: [-c, "import importlib.util, sys; sys.exit(importlib.util.find_spec('sglang') is None)"]
+  version: [-c, "import sglang; print(sglang.__version__)"]
+
+install:
+  notes: Installs SGLang into its own virtualenv under the substrate data dir.
+  steps:
+    - python3 -m venv "{data}/venvs/sglang"
+    - '"{data}/venvs/sglang/bin/pip" install -U "sglang[all]"'
+
+launch:
+  command: ["{bin}", -m, sglang.launch_server, --model-path, "{model}", --host, "{host}", --port, "{port}", --served-model-name, "{name}"]
+  # Activate the virtualenv: kernel JIT needs the venv's ninja.
+  env: {PATH: "{bin_dir}:{env.PATH}"}
+  stop_signal: SIGINT
+  stop_timeout: 60s
+
+health:
+  path: /health
+  timeout: 20m
+
+flags:
+  ctx: [--context-length, "{value}"]
+  gpus:
+    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+  tp: [--tp-size, "{value}"]
+  parallel: [--max-running-requests, "{value}"]
+  mem_fraction: [--mem-fraction-static, "{value}"]
+  kv_cache_type:
+    args: [--kv-cache-dtype, "{value}"]
+    values: {f16: auto, bf16: bf16, fp8: fp8_e4m3, q8_0: fp8_e4m3}
+  quantization: [--quantization, "{value}"]
+  dtype: [--dtype, "{value}"]
+  api_key: [--api-key, "{value}"]
+  trust_remote_code: [--trust-remote-code]
+  embeddings: [--is-embedding]
+
+capabilities:
+  formats: [safetensors, gguf]
+  quantizations: [fp8, gptq, gptq_marlin, awq, awq_marlin, compressed-tensors, auto-round, bitsandbytes, modelopt, modelopt_fp4, mxfp4, gguf, w8a8_int8, w8a8_fp8]
+  apis: [chat, completions, embeddings, responses, messages, rerank]
+  features: [tensor-parallel, data-parallel, multi-gpu, vision, speculative, kv-quant, prefix-cache, lora]
+
+routing:
+  priority: {safetensors: 70, gguf: 5}

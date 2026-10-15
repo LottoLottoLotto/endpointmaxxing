@@ -1,0 +1,375 @@
+// Package app wires manifests, config, the model registry, routing, the
+// runtime and the usage database together; the CLI, the gateway and the MCP
+// server all drive it.
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lotto/substrate/internal/config"
+	"github.com/lotto/substrate/internal/errs"
+	"github.com/lotto/substrate/internal/model"
+	"github.com/lotto/substrate/internal/route"
+	"github.com/lotto/substrate/internal/runtime"
+	"github.com/lotto/substrate/internal/spec"
+	"github.com/lotto/substrate/internal/store"
+)
+
+// App is one loaded view of the user's substrate setup.
+type App struct {
+	Cfg     *config.Config
+	Engines *spec.Registry
+
+	mu       sync.Mutex
+	models   *config.Models
+	resolved map[string]*runtime.Engine
+	// overrides and prefer mirror config.yaml; Refresh replaces them while the gateway runs.
+	overrides map[string]config.EngineOverride
+	prefer    map[string][]string
+	db        *store.DB
+	dbErr     error
+	// Warn reports non-fatal problems (unwritable usage db, ...).
+	Warn func(format string, a ...any)
+}
+
+// Open loads config, manifests and the model registry, and (when logging is
+// enabled) routes lifecycle events into the usage database.
+func Open() (*App, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	reg, err := spec.Load(config.EnginesDir())
+	if err != nil {
+		return nil, err
+	}
+	models, err := config.LoadModels()
+	if err != nil {
+		return nil, err
+	}
+	a := &App{Cfg: cfg, Engines: reg, models: models, resolved: map[string]*runtime.Engine{},
+		overrides: cfg.Engines, prefer: cfg.Prefer,
+		Warn: func(string, ...any) {}}
+	if cfg.Logging.Enabled {
+		runtime.Recorder = func(e store.Event) {
+			db, err := a.DB()
+			if err == nil {
+				err = db.InsertEvent(&e)
+			}
+			if err != nil {
+				a.Warn("recording %s event: %v", e.Kind, err)
+			}
+		}
+	} else {
+		runtime.Recorder = nil
+	}
+	return a, nil
+}
+
+// DB opens the usage database on first use.
+func (a *App) DB() (*store.DB, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.db == nil && a.dbErr == nil {
+		a.db, a.dbErr = store.Open()
+	}
+	return a.db, a.dbErr
+}
+
+// Close releases the usage database.
+func (a *App) Close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.db != nil {
+		a.db.Close()
+		a.db = nil
+	}
+}
+
+// Engine returns the resolved engine id (binary lookup is cached).
+func (a *App) Engine(id string) (*runtime.Engine, error) {
+	a.mu.Lock()
+	if e, ok := a.resolved[id]; ok {
+		a.mu.Unlock()
+		return e, nil
+	}
+	a.mu.Unlock()
+	m, ok := a.Engines.Get(id)
+	if !ok {
+		return nil, errs.New(errs.NotFound, "unknown engine %q (known: %s)", id, strings.Join(a.Engines.IDs(), ", "))
+	}
+	a.mu.Lock()
+	ov := a.overrides[id]
+	a.mu.Unlock()
+	e := runtime.Resolve(m, ov) // may probe for seconds: outside the lock
+	a.mu.Lock()
+	a.resolved[id] = e
+	a.mu.Unlock()
+	return e, nil
+}
+
+// Reresolve drops engine id's cached binary lookup and resolves it again.
+func (a *App) Reresolve(id string) (*runtime.Engine, error) {
+	a.mu.Lock()
+	delete(a.resolved, id)
+	a.mu.Unlock()
+	return a.Engine(id)
+}
+
+// Installed reports whether engine id's binary resolves.
+func (a *App) Installed(id string) bool {
+	e, err := a.Engine(id)
+	return err == nil && e.Installed()
+}
+
+// Refresh re-reads models.yaml and config.yaml's engine overrides and routing
+// preferences, so a long-running gateway sees `model add` and `engine set`
+// without a restart. Gateway and logging settings apply at the next start.
+func (a *App) Refresh() error {
+	m, err := config.LoadModels()
+	if err != nil {
+		return err
+	}
+	c, err := config.Load()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.models = m
+	if !reflect.DeepEqual(c.Engines, a.overrides) {
+		a.resolved = map[string]*runtime.Engine{}
+	}
+	a.overrides, a.prefer = c.Engines, c.Prefer
+	return nil
+}
+
+// RegisteredModel returns the registry entry called name.
+func (a *App) RegisteredModel(name string) (config.Model, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	m, ok := a.models.Get(name)
+	if !ok {
+		return config.Model{}, false
+	}
+	return *m, true
+}
+
+// RegisteredModels returns a copy of the registry.
+func (a *App) RegisteredModels() []config.Model {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]config.Model(nil), a.models.Models...)
+}
+
+// Target is a model ready to route and launch.
+type Target struct {
+	Model config.Model
+	Info  *model.Info
+	// Registered is false for an ad hoc path or repo id.
+	Registered bool
+}
+
+// ResolveModel accepts a registered name, a path or a repo id.
+func (a *App) ResolveModel(ref string) (*Target, error) {
+	if m, ok := a.RegisteredModel(ref); ok {
+		info, err := model.Inspect(m.Source)
+		if err != nil {
+			return nil, errs.Wrap(errs.NotFound, fmt.Errorf("model %s: %w", m.Name, err))
+		}
+		return &Target{Model: m, Info: info, Registered: true}, nil
+	}
+	info, err := model.Inspect(ref)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errs.New(errs.NotFound, "%q is not a registered model, a model path or a repo id", ref)
+		}
+		return nil, errs.Wrap(errs.Usage, fmt.Errorf("%q is not a registered model, and %w", ref, err))
+	}
+	return &Target{Model: FromInfo(DefaultName(ref), info), Info: info}, nil
+}
+
+// FromInfo builds a registry entry from inspection results.
+func FromInfo(name string, info *model.Info) config.Model {
+	return config.Model{Name: name, Source: info.Source, Format: info.Format, Arch: info.Arch, Quant: info.Quant}
+}
+
+var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._:-]+`)
+
+// DefaultName derives a model name from a path or repo id.
+func DefaultName(ref string) string {
+	base := filepath.Base(strings.TrimRight(ref, "/"))
+	for _, ext := range []string{".gguf", ".json"} {
+		base = strings.TrimSuffix(base, ext)
+	}
+	base = strings.TrimPrefix(base, "strata-")
+	base = strings.Trim(unsafeName.ReplaceAllString(base, "-"), "-.")
+	if base == "" {
+		base = "model"
+	}
+	if len(base) > 100 {
+		base = base[:100]
+	}
+	return strings.ToLower(base)
+}
+
+// Route ranks engines for t.
+func (a *App) Route(t *Target) []route.Candidate {
+	return route.Rank(route.Model{Format: t.Info.Format, Quant: t.Info.Quant, Engine: t.Model.Engine},
+		a.Engines.All(), a.Installed, a.preferences())
+}
+
+func (a *App) preferences() map[string][]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.prefer
+}
+
+// LaunchOpts are the caller's choices for one launch.
+type LaunchOpts struct {
+	Engine  string            // "" routes automatically
+	Name    string            // served name; "" uses the model name
+	ID      string            // instance id; "" uses <name>.<engine>
+	Host    string            //
+	Port    int               // 0 picks a free port
+	Flags   map[string]string // unified flags by manifest key (override model defaults)
+	Args    []string          // extra engine args
+	Lenient bool
+	Owner   string
+}
+
+// Plan resolves the engine and builds the launch plan for t.
+func (a *App) Plan(t *Target, o LaunchOpts) (*runtime.Plan, string, error) {
+	engineID := o.Engine
+	if engineID == "" {
+		var err error
+		if engineID, err = route.Pick(a.Route(t)); err != nil {
+			return nil, "", fmt.Errorf("%s: %w", t.Model.Name, err)
+		}
+	} else {
+		if _, err := a.Engine(engineID); err != nil {
+			return nil, "", err
+		}
+		for _, c := range a.Route(t) {
+			if c.Engine == engineID && !c.Compatible {
+				return nil, "", errs.New(errs.Unsupported, "%s cannot serve %s: %s", engineID, t.Model.Name, strings.Join(c.Reasons, "; "))
+			}
+		}
+	}
+	e, err := a.Engine(engineID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	name := o.Name
+	if name == "" {
+		name = t.Model.Name
+	}
+	if !config.NameRe.MatchString(name) {
+		return nil, "", errs.New(errs.Usage, "name %q must match %s", name, config.NameRe)
+	}
+	host := o.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := o.Port
+	if port == 0 {
+		if port, err = runtime.FreePort(host); err != nil {
+			return nil, "", err
+		}
+	}
+	flags := map[string]string{}
+	for k, v := range t.Model.Flags {
+		flags[k] = v
+	}
+	for k, v := range o.Flags {
+		flags[k] = v
+	}
+	args := append(append([]string{}, t.Model.Args[engineID]...), o.Args...)
+
+	plan, err := e.Build(runtime.Request{
+		Name: name, Host: host, Port: port, Flags: flags, Args: args, Lenient: o.Lenient,
+		Model: runtime.ModelRef{Source: t.Info.Source, Path: t.Info.Path, Ref: t.Info.Ref, Format: t.Info.Format},
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	id := o.ID
+	if id == "" {
+		id = runtime.InstanceID(name, engineID)
+	}
+	if !config.NameRe.MatchString(id) {
+		return nil, "", errs.New(errs.Usage, "instance id %q must match %s", id, config.NameRe)
+	}
+	return plan, id, nil
+}
+
+// Launch plans and starts t. With an automatic port, a port taken between
+// choosing and binding is retried on a fresh port.
+func (a *App) Launch(t *Target, o LaunchOpts) (*runtime.Instance, *runtime.Plan, error) {
+	if o.Owner == "" {
+		o.Owner = "cli"
+	}
+	for attempt := 0; ; attempt++ {
+		plan, id, err := a.Plan(t, o)
+		if err != nil {
+			return nil, nil, err
+		}
+		in, err := runtime.Start(plan, id, o.Owner)
+		if err != nil && o.Port == 0 && errors.Is(err, runtime.ErrPortInUse) && attempt < 3 {
+			continue
+		}
+		return in, plan, err
+	}
+}
+
+// EnsureResult says what Ensure did.
+type EnsureResult struct {
+	Instance *runtime.Instance
+	// Started is true when this call launched the instance.
+	Started bool
+}
+
+// Ensure returns a ready instance serving ref, launching one if none exists.
+// An existing instance matches by served name (and engine when o.Engine is set);
+// one still loading is waited for. It is idempotent: agents call it before every use.
+func (a *App) Ensure(ctx context.Context, ref string, o LaunchOpts, timeout time.Duration) (*EnsureResult, error) {
+	t, err := a.ResolveModel(ref)
+	if err != nil {
+		return nil, err
+	}
+	name := o.Name
+	if name == "" {
+		name = t.Model.Name
+	}
+	ins, err := runtime.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, in := range ins {
+		if in.Name != name || (o.Engine != "" && in.Engine != o.Engine) || !in.Alive() {
+			continue
+		}
+		if err := in.WaitReady(ctx, timeout); err != nil {
+			return nil, err
+		}
+		return &EnsureResult{Instance: in}, nil
+	}
+	in, _, err := a.Launch(t, o)
+	if err != nil {
+		return nil, err
+	}
+	if err := in.AwaitStart(ctx, timeout); err != nil {
+		return nil, err
+	}
+	return &EnsureResult{Instance: in, Started: true}, nil
+}

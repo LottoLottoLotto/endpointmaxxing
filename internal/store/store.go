@@ -1,0 +1,499 @@
+// Package store records engine and token use in state/usage.db (SQLite, WAL):
+// every gateway request, lifecycle events, and periodic GPU/process samples.
+// The CLI and the gateway write concurrently; SQLite's locking arbitrates.
+package store
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/lotto/substrate/internal/paths"
+	_ "modernc.org/sqlite"
+)
+
+// Path is the usage database.
+func Path() string { return filepath.Join(paths.State(), "usage.db") }
+
+// migrations[i] moves the schema from user_version i to i+1.
+var migrations = []string{
+	`CREATE TABLE requests (
+		id TEXT PRIMARY KEY,
+		ts INTEGER NOT NULL,            -- unix ms, request received
+		model TEXT NOT NULL DEFAULT '',
+		instance TEXT NOT NULL DEFAULT '',
+		engine TEXT NOT NULL DEFAULT '',
+		api TEXT NOT NULL DEFAULT '',
+		path TEXT NOT NULL DEFAULT '',
+		stream INTEGER NOT NULL DEFAULT 0,
+		status INTEGER NOT NULL DEFAULT 0,
+		error TEXT NOT NULL DEFAULT '',
+		client TEXT NOT NULL DEFAULT '',
+		user_agent TEXT NOT NULL DEFAULT '',
+		remote TEXT NOT NULL DEFAULT '',
+		prompt_tokens INTEGER,
+		completion_tokens INTEGER,
+		cached_tokens INTEGER,
+		reasoning_tokens INTEGER,
+		usage_source TEXT NOT NULL DEFAULT '',
+		finish_reason TEXT NOT NULL DEFAULT '',
+		autostarted INTEGER NOT NULL DEFAULT 0,
+		queue_ms INTEGER,               -- waiting for a ready instance (incl. autostart)
+		ttft_ms INTEGER,                -- first generated content (streams)
+		duration_ms INTEGER,            -- request received to last byte
+		req_bytes INTEGER,
+		resp_bytes INTEGER
+	);
+	CREATE INDEX requests_ts ON requests(ts);
+	CREATE INDEX requests_model ON requests(model, ts);
+	CREATE INDEX requests_engine ON requests(engine, ts);
+	CREATE TABLE bodies (
+		request_id TEXT PRIMARY KEY,
+		request BLOB,
+		response BLOB,
+		truncated INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE events (
+		id INTEGER PRIMARY KEY,
+		ts INTEGER NOT NULL,
+		kind TEXT NOT NULL,             -- start, ready, start_failed, stop, exited
+		instance TEXT NOT NULL DEFAULT '',
+		engine TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '',
+		owner TEXT NOT NULL DEFAULT '',
+		pid INTEGER,
+		port INTEGER,
+		duration_ms INTEGER,            -- load time (ready) or uptime (stop, exited)
+		detail TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX events_ts ON events(ts);
+	CREATE TABLE gpu_samples (
+		ts INTEGER NOT NULL,
+		gpu INTEGER NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		mem_used_mib INTEGER,
+		mem_total_mib INTEGER,
+		util_pct INTEGER,
+		power_w REAL
+	);
+	CREATE INDEX gpu_samples_ts ON gpu_samples(ts);
+	CREATE TABLE instance_samples (
+		ts INTEGER NOT NULL,
+		instance TEXT NOT NULL,
+		engine TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '',
+		gpu_mem_mib INTEGER,
+		rss_mib INTEGER,
+		processes INTEGER
+	);
+	CREATE INDEX instance_samples_ts ON instance_samples(ts);`,
+}
+
+// DB is an open usage database.
+type DB struct{ *sql.DB }
+
+// Open opens (creating and migrating) the usage database.
+func Open() (*DB, error) {
+	if err := os.MkdirAll(paths.State(), 0o755); err != nil {
+		return nil, err
+	}
+	dsn := "file:" + Path() + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%s: %w", Path(), err)
+	}
+	return &DB{db}, nil
+}
+
+func migrate(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var v int
+	if err := tx.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		return err
+	}
+	if v > len(migrations) {
+		return fmt.Errorf("schema version %d is newer than this substrate (%d)", v, len(migrations))
+	}
+	for ; v < len(migrations); v++ {
+		if _, err := tx.Exec(migrations[v]); err != nil {
+			return fmt.Errorf("migration %d: %w", v+1, err)
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", v)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Request is one proxied request.
+type Request struct {
+	ID               string `json:"id"`
+	TS               int64  `json:"ts"`
+	Model            string `json:"model"`
+	Instance         string `json:"instance"`
+	Engine           string `json:"engine"`
+	API              string `json:"api"`
+	Path             string `json:"path"`
+	Stream           bool   `json:"stream"`
+	Status           int    `json:"status"`
+	Error            string `json:"error,omitempty"`
+	Client           string `json:"client,omitempty"`
+	UserAgent        string `json:"user_agent,omitempty"`
+	Remote           string `json:"remote,omitempty"`
+	PromptTokens     *int64 `json:"prompt_tokens"`
+	CompletionTokens *int64 `json:"completion_tokens"`
+	CachedTokens     *int64 `json:"cached_tokens"`
+	ReasoningTokens  *int64 `json:"reasoning_tokens"`
+	UsageSource      string `json:"usage_source,omitempty"`
+	FinishReason     string `json:"finish_reason,omitempty"`
+	Autostarted      bool   `json:"autostarted"`
+	QueueMS          *int64 `json:"queue_ms"`
+	TTFTMS           *int64 `json:"ttft_ms"`
+	DurationMS       *int64 `json:"duration_ms"`
+	ReqBytes         int64  `json:"req_bytes"`
+	RespBytes        int64  `json:"resp_bytes"`
+
+	// Bodies, when captured, are stored in the bodies table.
+	RequestBody   []byte `json:"-"`
+	ResponseBody  []byte `json:"-"`
+	BodyTruncated bool   `json:"-"`
+}
+
+const requestCols = `id, ts, model, instance, engine, api, path, stream, status, error, client, user_agent, remote,
+	prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, usage_source, finish_reason, autostarted,
+	queue_ms, ttft_ms, duration_ms, req_bytes, resp_bytes`
+
+// InsertRequest records r (and its bodies when present).
+func (db *DB) InsertRequest(r *Request) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`INSERT INTO requests (`+requestCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.TS, r.Model, r.Instance, r.Engine, r.API, r.Path, r.Stream, r.Status, r.Error, r.Client, r.UserAgent, r.Remote,
+		r.PromptTokens, r.CompletionTokens, r.CachedTokens, r.ReasoningTokens, r.UsageSource, r.FinishReason, r.Autostarted,
+		r.QueueMS, r.TTFTMS, r.DurationMS, r.ReqBytes, r.RespBytes)
+	if err != nil {
+		return err
+	}
+	if r.RequestBody != nil || r.ResponseBody != nil {
+		if _, err := tx.Exec(`INSERT INTO bodies (request_id, request, response, truncated) VALUES (?,?,?,?)`,
+			r.ID, r.RequestBody, r.ResponseBody, r.BodyTruncated); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Event is one lifecycle event.
+type Event struct {
+	ID         int64  `json:"id"`
+	TS         int64  `json:"ts"`
+	Kind       string `json:"kind"`
+	Instance   string `json:"instance"`
+	Engine     string `json:"engine"`
+	Model      string `json:"model"`
+	Owner      string `json:"owner,omitempty"`
+	PID        *int64 `json:"pid"`
+	Port       *int64 `json:"port"`
+	DurationMS *int64 `json:"duration_ms"`
+	Detail     string `json:"detail,omitempty"`
+}
+
+// InsertEvent records e (TS defaults to now).
+func (db *DB) InsertEvent(e *Event) error {
+	if e.TS == 0 {
+		e.TS = time.Now().UnixMilli()
+	}
+	_, err := db.Exec(`INSERT INTO events (ts, kind, instance, engine, model, owner, pid, port, duration_ms, detail)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`, e.TS, e.Kind, e.Instance, e.Engine, e.Model, e.Owner, e.PID, e.Port, e.DurationMS, e.Detail)
+	return err
+}
+
+// GPUSample is one GPU reading.
+type GPUSample struct {
+	TS          int64   `json:"ts"`
+	GPU         int     `json:"gpu"`
+	Name        string  `json:"name"`
+	MemUsedMiB  int64   `json:"mem_used_mib"`
+	MemTotalMiB int64   `json:"mem_total_mib"`
+	UtilPct     int64   `json:"util_pct"`
+	PowerW      float64 `json:"power_w"`
+}
+
+// InstanceSample is one instance resource reading.
+type InstanceSample struct {
+	TS        int64  `json:"ts"`
+	Instance  string `json:"instance"`
+	Engine    string `json:"engine"`
+	Model     string `json:"model"`
+	GPUMemMiB int64  `json:"gpu_mem_mib"`
+	RSSMiB    int64  `json:"rss_mib"`
+	Processes int64  `json:"processes"`
+}
+
+// InsertSamples records one sampling round.
+func (db *DB) InsertSamples(gs []GPUSample, is []InstanceSample) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, g := range gs {
+		if _, err := tx.Exec(`INSERT INTO gpu_samples (ts, gpu, name, mem_used_mib, mem_total_mib, util_pct, power_w) VALUES (?,?,?,?,?,?,?)`,
+			g.TS, g.GPU, g.Name, g.MemUsedMiB, g.MemTotalMiB, g.UtilPct, g.PowerW); err != nil {
+			return err
+		}
+	}
+	for _, s := range is {
+		if _, err := tx.Exec(`INSERT INTO instance_samples (ts, instance, engine, model, gpu_mem_mib, rss_mib, processes) VALUES (?,?,?,?,?,?,?)`,
+			s.TS, s.Instance, s.Engine, s.Model, s.GPUMemMiB, s.RSSMiB, s.Processes); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Prune deletes records older than before and returns how many rows went per table.
+func (db *DB) Prune(before time.Time) (map[string]int64, error) {
+	ms := before.UnixMilli()
+	out := map[string]int64{}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	stmts := []struct{ table, sql string }{
+		{"bodies", `DELETE FROM bodies WHERE request_id IN (SELECT id FROM requests WHERE ts < ?)`},
+		{"requests", `DELETE FROM requests WHERE ts < ?`},
+		{"events", `DELETE FROM events WHERE ts < ?`},
+		{"gpu_samples", `DELETE FROM gpu_samples WHERE ts < ?`},
+		{"instance_samples", `DELETE FROM instance_samples WHERE ts < ?`},
+	}
+	for _, s := range stmts {
+		res, err := tx.Exec(s.sql, ms)
+		if err != nil {
+			return nil, err
+		}
+		out[s.table], _ = res.RowsAffected()
+	}
+	return out, tx.Commit()
+}
+
+// Filter narrows queries.
+type Filter struct {
+	Since    time.Time
+	Until    time.Time
+	Model    string
+	Engine   string
+	Instance string
+	Client   string
+	ID       string // requests only
+	Limit    int
+}
+
+func (f Filter) where(tsCol string, extra ...string) (string, []any) {
+	var conds []string
+	var args []any
+	if !f.Since.IsZero() {
+		conds, args = append(conds, tsCol+" >= ?"), append(args, f.Since.UnixMilli())
+	}
+	if !f.Until.IsZero() {
+		conds, args = append(conds, tsCol+" < ?"), append(args, f.Until.UnixMilli())
+	}
+	add := func(col, v string) {
+		if v != "" {
+			conds, args = append(conds, col+" = ?"), append(args, v)
+		}
+	}
+	for _, c := range extra {
+		switch c {
+		case "model":
+			add("model", f.Model)
+		case "engine":
+			add("engine", f.Engine)
+		case "instance":
+			add("instance", f.Instance)
+		case "client":
+			add("client", f.Client)
+		case "id":
+			add("id", f.ID)
+		}
+	}
+	if len(conds) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(conds, " AND "), args
+}
+
+func limit(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" LIMIT %d", n)
+}
+
+// Requests lists requests, newest first.
+func (db *DB) Requests(f Filter) ([]Request, error) {
+	w, args := f.where("ts", "model", "engine", "instance", "client", "id")
+	rows, err := db.Query(`SELECT `+requestCols+` FROM requests`+w+` ORDER BY ts DESC`+limit(f.Limit), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Request
+	for rows.Next() {
+		var r Request
+		if err := rows.Scan(&r.ID, &r.TS, &r.Model, &r.Instance, &r.Engine, &r.API, &r.Path, &r.Stream, &r.Status, &r.Error,
+			&r.Client, &r.UserAgent, &r.Remote, &r.PromptTokens, &r.CompletionTokens, &r.CachedTokens, &r.ReasoningTokens,
+			&r.UsageSource, &r.FinishReason, &r.Autostarted, &r.QueueMS, &r.TTFTMS, &r.DurationMS, &r.ReqBytes, &r.RespBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Bodies returns the captured bodies of request id.
+func (db *DB) Bodies(id string) (req, resp []byte, truncated, ok bool, err error) {
+	err = db.QueryRow(`SELECT request, response, truncated FROM bodies WHERE request_id = ?`, id).Scan(&req, &resp, &truncated)
+	if err == sql.ErrNoRows {
+		return nil, nil, false, false, nil
+	}
+	return req, resp, truncated, err == nil, err
+}
+
+// Events lists lifecycle events, newest first.
+func (db *DB) Events(f Filter) ([]Event, error) {
+	w, args := f.where("ts", "model", "engine", "instance")
+	rows, err := db.Query(`SELECT id, ts, kind, instance, engine, model, owner, pid, port, duration_ms, detail FROM events`+w+
+		` ORDER BY ts DESC, id DESC`+limit(f.Limit), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.TS, &e.Kind, &e.Instance, &e.Engine, &e.Model, &e.Owner, &e.PID, &e.Port, &e.DurationMS, &e.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// Group is an aggregation dimension for Usage.
+var Groups = map[string]string{
+	"model":    "model",
+	"engine":   "engine",
+	"instance": "instance",
+	"client":   "client",
+	"api":      "api",
+	"day":      "strftime('%Y-%m-%d', ts/1000, 'unixepoch', 'localtime')",
+	"hour":     "strftime('%Y-%m-%d %H:00', ts/1000, 'unixepoch', 'localtime')",
+}
+
+// UsageRow is one aggregated group.
+type UsageRow struct {
+	Key              string   `json:"key"`
+	Requests         int64    `json:"requests"`
+	Errors           int64    `json:"errors"`
+	PromptTokens     int64    `json:"prompt_tokens"`
+	CompletionTokens int64    `json:"completion_tokens"`
+	CachedTokens     int64    `json:"cached_tokens"`
+	ReasoningTokens  int64    `json:"reasoning_tokens"`
+	UnmeteredReqs    int64    `json:"unmetered_requests"` // no token counts from the engine
+	AvgTTFTMS        *float64 `json:"avg_ttft_ms"`
+	AvgDurationMS    *float64 `json:"avg_duration_ms"`
+	// DecodeTokPerSec is completion tokens over generation time (duration minus TTFT) for metered streams.
+	DecodeTokPerSec *float64 `json:"decode_tok_per_sec"`
+}
+
+// Usage aggregates requests by group (a Groups key; "" totals everything).
+func (db *DB) Usage(group string, f Filter) ([]UsageRow, error) {
+	key := "'total'"
+	if group != "" {
+		var ok bool
+		if key, ok = Groups[group]; !ok {
+			return nil, fmt.Errorf("unknown group %q", group)
+		}
+	}
+	w, args := f.where("ts", "model", "engine", "instance", "client")
+	q := `SELECT ` + key + ` AS k, COUNT(*),
+		SUM(CASE WHEN status >= 400 OR error != '' THEN 1 ELSE 0 END),
+		COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
+		SUM(CASE WHEN status < 400 AND completion_tokens IS NULL THEN 1 ELSE 0 END),
+		AVG(ttft_ms), AVG(duration_ms),
+		SUM(CASE WHEN stream AND ttft_ms IS NOT NULL AND completion_tokens > 1 AND duration_ms > ttft_ms THEN completion_tokens - 1 END) * 1000.0 /
+		NULLIF(SUM(CASE WHEN stream AND ttft_ms IS NOT NULL AND completion_tokens > 1 AND duration_ms > ttft_ms THEN duration_ms - ttft_ms END), 0)
+		FROM requests` + w + ` GROUP BY k ORDER BY k`
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UsageRow
+	for rows.Next() {
+		var u UsageRow
+		if err := rows.Scan(&u.Key, &u.Requests, &u.Errors, &u.PromptTokens, &u.CompletionTokens, &u.CachedTokens,
+			&u.ReasoningTokens, &u.UnmeteredReqs, &u.AvgTTFTMS, &u.AvgDurationMS, &u.DecodeTokPerSec); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// InstanceSamples lists instance samples, newest first.
+func (db *DB) InstanceSamples(f Filter) ([]InstanceSample, error) {
+	w, args := f.where("ts", "model", "engine", "instance")
+	rows, err := db.Query(`SELECT ts, instance, engine, model, gpu_mem_mib, rss_mib, processes FROM instance_samples`+w+
+		` ORDER BY ts DESC`+limit(f.Limit), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InstanceSample
+	for rows.Next() {
+		var s InstanceSample
+		if err := rows.Scan(&s.TS, &s.Instance, &s.Engine, &s.Model, &s.GPUMemMiB, &s.RSSMiB, &s.Processes); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// GPUSamples lists GPU samples, newest first.
+func (db *DB) GPUSamples(f Filter) ([]GPUSample, error) {
+	w, args := f.where("ts")
+	rows, err := db.Query(`SELECT ts, gpu, name, mem_used_mib, mem_total_mib, util_pct, power_w FROM gpu_samples`+w+
+		` ORDER BY ts DESC, gpu`+limit(f.Limit), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GPUSample
+	for rows.Next() {
+		var g GPUSample
+		if err := rows.Scan(&g.TS, &g.GPU, &g.Name, &g.MemUsedMiB, &g.MemTotalMiB, &g.UtilPct, &g.PowerW); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}

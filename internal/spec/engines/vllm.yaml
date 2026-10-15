@@ -1,0 +1,54 @@
+spec: substrate.engine/v1
+id: vllm
+name: vLLM
+description: High-throughput PagedAttention server for Hugging Face checkpoints.
+homepage: https://github.com/vllm-project/vllm
+
+binary:
+  env: VLLM_BIN
+  candidates:
+    - vllm
+    - "{data}/venvs/vllm/bin/vllm"
+  version: [--version]
+
+install:
+  notes: Installs vLLM into its own virtualenv under the substrate data dir.
+  steps:
+    - python3 -m venv "{data}/venvs/vllm"
+    - '"{data}/venvs/vllm/bin/pip" install -U vllm'
+
+launch:
+  command: ["{bin}", serve, "{model}", --host, "{host}", --port, "{port}", --served-model-name, "{name}"]
+  # Activate the virtualenv: vLLM JIT-compiles kernels with the venv's ninja.
+  env: {PATH: "{bin_dir}:{env.PATH}"}
+  stop_signal: SIGINT
+  stop_timeout: 60s
+
+health:
+  path: /health
+  timeout: 20m
+
+flags:
+  ctx: [--max-model-len, "{value}"]
+  gpus:
+    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+  tp: [--tensor-parallel-size, "{value}"]
+  parallel: [--max-num-seqs, "{value}"]
+  mem_fraction: [--gpu-memory-utilization, "{value}"]
+  kv_cache_type:
+    args: [--kv-cache-dtype, "{value}"]
+    values: {f16: auto, bf16: auto, q8_0: fp8}
+  quantization: [--quantization, "{value}"]
+  dtype: [--dtype, "{value}"]
+  api_key: [--api-key, "{value}"]
+  trust_remote_code: [--trust-remote-code]
+  embeddings: [--runner, pooling]
+
+capabilities:
+  formats: [safetensors, gguf]
+  quantizations: [fp8, gptq, gptq_marlin, awq, awq_marlin, compressed-tensors, auto-round, bitsandbytes, modelopt, modelopt_fp4, mxfp4, gguf, experts_int8, fbgemm_fp8]
+  apis: [chat, completions, embeddings, responses, messages, rerank]
+  features: [tensor-parallel, pipeline-parallel, multi-gpu, vision, speculative, kv-quant, prefix-cache, lora]
+
+routing:
+  priority: {safetensors: 80, gguf: 10}

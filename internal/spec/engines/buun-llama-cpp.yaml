@@ -1,0 +1,52 @@
+spec: substrate.engine/v1
+id: buun-llama-cpp
+name: buun-llama-cpp
+description: Experimental llama.cpp fork; VBR/TurboQuant/TCQ KV cache codecs, native safetensors and EXL3 loading.
+homepage: https://github.com/spiritbuun/buun-llama-cpp
+
+binary:
+  env: BUUN_LLAMA_SERVER
+  candidates:
+    - buun-llama-server
+    - ~/buun-llama-cpp/build/bin/llama-server
+    - "{data}/engines/buun-llama-cpp/build/bin/llama-server"
+  version: [--version]
+
+install:
+  notes: Turbo KV codecs need the CUDA or ROCm backend; builds with CUDA when nvcc is on PATH.
+  steps:
+    - git clone --depth 1 https://github.com/spiritbuun/buun-llama-cpp "{data}/engines/buun-llama-cpp" || git -C "{data}/engines/buun-llama-cpp" pull --ff-only
+    - cmake -S "{data}/engines/buun-llama-cpp" -B "{data}/engines/buun-llama-cpp/build" -DCMAKE_BUILD_TYPE=Release $(command -v nvcc >/dev/null && echo -DGGML_CUDA=ON)
+    - cmake --build "{data}/engines/buun-llama-cpp/build" -j --target llama-server
+
+launch:
+  command: ["{bin}", -m, "{model_path}", --host, "{host}", --port, "{port}", --alias, "{name}"]
+  stop_signal: SIGTERM
+  stop_timeout: 30s
+
+health:
+  path: /health
+  timeout: 10m
+
+flags:
+  ctx: [-c, "{value}"]
+  gpus:
+    env: {CUDA_VISIBLE_DEVICES: "{value}"}
+  gpu_layers: [-ngl, "{value}"]
+  parallel: [-np, "{value}"]
+  # VBR is buun's default cache; "vbr" selects its full ladder explicitly.
+  kv_cache_type:
+    args: [-ct, "{value}"]
+    values: {fp8: turbo8, bf16: bf16, f16: f16}
+  api_key: [--api-key, "{value}"]
+  flash_attn: [-fa, "on"]
+  embeddings: [--embeddings]
+
+capabilities:
+  formats: [gguf, safetensors]
+  quantizations: ["*"]
+  apis: [chat, completions, embeddings, responses, messages, rerank]
+  features: [cpu-offload, multi-gpu, vision, speculative, kv-quant, vbr-kv, tcq-kv, exl3]
+
+routing:
+  priority: {gguf: 50, safetensors: 20}
