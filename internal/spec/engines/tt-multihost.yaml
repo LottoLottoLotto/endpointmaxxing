@@ -1,0 +1,111 @@
+spec: substrate.engine/v1
+id: tt-multihost
+name: Tenstorrent multi-model host (docker)
+description: >-
+  One container owns a Tenstorrent chip group and keeps several tt-metal tt_transformers models
+  (Llama 3.x, Qwen2.5, Qwen3, Mistral, ...) resident in device DRAM, each with its own KV cache and
+  decode trace, so switching between them costs no load. substrate loads a model on its first request;
+  the host unloads the least recently used model when DRAM runs short. The server ships with substrate
+  (written to {assets}) and runs in a tt-metal image: vars.image (required) and vars.models (required: a
+  directory holding every hosted checkpoint, mounted read-only at the same path).
+homepage: https://github.com/tenstorrent/tt-metal/tree/main/models/tt_transformers
+
+binary:
+  env: DOCKER_BIN
+  candidates: [docker]
+  version: [version, --format, "{{.Client.Version}}"]
+
+vars:
+  image: ""                                        # required: a tt-metal image with models/tt_transformers
+  models: ""                                       # required: directory holding the hosted checkpoints
+  cache: "{data}/tt-multihost"                     # converted weights, one directory per served model name
+  kernel_cache: "{cache}/kernel"                   # compiled kernels (shared by all hosted models)
+  mesh: P150                                       # MESH_DEVICE: P150, P150x4, P150x8, BHGLX, N150, N300, T3K
+  ctx: "4096"                                      # default context per model (a model's --ctx wins)
+  tt_metal: /home/container_app_user/tt-metal
+  python: "{tt_metal}/python_env/bin/python"
+
+launch:
+  command:
+    - "{bin}"
+    - run
+    - --rm
+    - --init
+    - --name
+    - "substrate-{instance}"
+    - --publish
+    - "127.0.0.1:{port}:8000"
+    - --device
+    - /dev/tenstorrent:/dev/tenstorrent
+    - -v
+    - /dev/hugepages:/dev/hugepages
+    - -v
+    - /dev/hugepages-1G:/dev/hugepages-1G
+    - -v
+    - "{models}:{models}:ro"
+    - -v
+    - "{cache}:/cache"
+    - -v
+    - "{kernel_cache}:/home/container_app_user/.cache/tt-metal-cache"
+    - -v
+    - "{assets}:/opt/substrate:ro"
+    - -e
+    - "PYTHONPATH={tt_metal}:/opt/substrate"
+    - -e
+    - "MESH_DEVICE={mesh}"
+    - -e
+    - "TT_VISIBLE_DEVICES={devices}"
+    - -e
+    - HF_HUB_OFFLINE=1
+    - -e
+    - TRANSFORMERS_OFFLINE=1
+    - -e
+    - MPLCONFIGDIR=/tmp
+    - -w
+    - "{tt_metal}"
+    - --entrypoint
+    - "{python}"
+    - "{image}"
+    - -m
+    - tt_multihost
+    - --cache
+    - /cache
+    - --max-seq-len
+    - "{ctx}"
+    - --port
+    - "8000"
+  # The docker client forwards SIGTERM to the container (tini -> python closes the device).
+  stop_signal: SIGTERM
+  stop_timeout: 60s
+  cleanup:
+    - ["{bin}", rm, -f, "substrate-{instance}"]
+  prepare:
+    - [mkdir, -p, "{cache}", "{kernel_cache}"]
+
+health:
+  path: /health
+  timeout: 10m
+
+host:
+  load: /admin/load
+  unload: /admin/unload
+  models: /admin/models
+  # A model's first load converts its weights (minutes); later loads read the cache (seconds).
+  load_timeout: 45m
+
+accelerator:
+  kind: tenstorrent
+  devices: 1
+  lock: substrate
+  reset_on_kill: true
+
+capabilities:
+  formats: [safetensors]
+  # tt_transformers converts bf16/fp16 checkpoints itself; pre-quantized weights are not supported.
+  quantizations: [bf16]
+  apis: [chat, completions]
+  features: [tenstorrent, docker, multi-model, trace-capture]
+
+routing:
+  # Never chosen automatically: a model opts in with --engine tt-multihost.
+  priority: {safetensors: 0}

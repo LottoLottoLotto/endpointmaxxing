@@ -247,12 +247,21 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	}
 	ins, _ := runtime.List()
 	for _, in := range ins {
-		if !in.Alive() || !p.allows(in.Name) {
+		if !in.Alive() {
 			continue
 		}
-		e := entry(in.Name, in.StartedAt.Unix())
-		e.Substrate["instances"] = append(e.Substrate["instances"].([]map[string]any),
-			map[string]any{"id": in.ID, "engine": in.Engine, "status": g.instanceStatus(r.Context(), in), "apis": in.APIs, "gpus": in.GPUs})
+		names := []string{in.Name}
+		if in.Hosting { // a multi-model host is listed under the models it holds
+			names = g.hosted(r.Context(), in)
+		}
+		for _, n := range names {
+			if !p.allows(n) {
+				continue
+			}
+			e := entry(n, in.StartedAt.Unix())
+			e.Substrate["instances"] = append(e.Substrate["instances"].([]map[string]any),
+				map[string]any{"id": in.ID, "engine": in.Engine, "status": g.instanceStatus(r.Context(), in), "apis": in.APIs, "gpus": in.GPUs})
+		}
 	}
 	if err := g.App.Refresh(); err != nil {
 		g.Log.Printf("refresh: %v", err)

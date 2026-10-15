@@ -69,6 +69,12 @@ accelerator:                     # optional; default {kind: nvidia}
   lock: substrate                # substrate: the engine inherits the per-chip locks; engine: it takes them itself
   reset_on_kill: true            # tt-smi -r the chips after a forced stop or a crash
 
+host:                            # optional: a multi-model host (see below)
+  load: /admin/load
+  unload: /admin/unload
+  models: /admin/models
+  load_timeout: 45m              # default 30m
+
 health:
   path: /health                  # required
   timeout: 10m                   # how long `run`/the gateway wait for readiness; default 10m
@@ -126,9 +132,10 @@ install can override the block in `config.yaml`, under
 | `{host}`, `{port}` | listen address and port |
 | `{instance}` | the instance id (e.g. for container names) |
 | `{devices}`, `{device_count}` | the Tenstorrent chips placement assigned (`0,1`) and how many |
+| `{assets}` | where a builtin engine's shipped files are written before each launch (`{data}/assets/<id>`) |
 | `{value}` | the flag value, inside `flags` only |
 | `{env.NAME}` | the environment variable `NAME` |
-| `{<var>}` | anything declared in `vars`. Install overrides and models (`model add --var K=V`) replace values, and vars may reference each other. A var declared `""` must be set per model. |
+| `{<var>}` | anything declared in `vars`. Install overrides and models (`model add --var K=V`) replace values, and vars may reference each other. A var declared `""` must be set per model (per engine, with `engine set --var`, for a multi-model host). |
 
 `{pre_args}`, as a whole element of `launch.command`, is replaced by the
 model's `--pre-arg` list. It is used for options that must sit
@@ -137,6 +144,24 @@ mid-command, such as docker options before the image name.
 Validation rejects an unknown placeholder, an unknown field, an unknown
 format or API, a flag that is not in the unified vocabulary, a non-bool flag
 without `{value}`, and a command without `{port}`.
+
+### Multi-model hosts
+
+An engine with a `host` block keeps several models loaded in one process. It
+runs as one instance per engine (the instance id is the engine id), launched
+without a model, and serves every model routed to the engine:
+
+| Request | Body | Answer |
+| --- | --- | --- |
+| `POST <host.load>` | `{"name": "<served name>", "path": "<local model dir>", "ctx": <tokens, 0 = default>}` | 200 once the model serves; the host may unload other models to make room |
+| `POST <host.unload>` | `{"name": "<served name>"}` | 200, or 404 when the model isn't loaded |
+| `GET <host.models>` | | `[{"name": "<served name>", ...}]`: the models loaded now |
+
+The gateway routes a request to the host when `models` lists the requested
+model, and calls `load` otherwise. Requests carry the served name in their
+`model` field. Because the launch serves no single model, it may not use
+`{model}`, `{model_path}`, `{name}` or `{pre_args}`, and `flags` must be
+empty. Each load sends the model's `--ctx`.
 
 ## Unified flags
 

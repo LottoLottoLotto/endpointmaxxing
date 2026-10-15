@@ -194,6 +194,38 @@ substrate model add lfm2.5-24b /var/tmp/lfm25/quant/ckpt --engine tt-vllm \
 which processes have it open. The device column of `substrate ps` shows
 `tt:<chips>`.
 
+#### Several models on one chip group
+
+Swapping a model onto a chip takes 30 seconds to minutes. The builtin
+`tt-multihost` engine avoids that for models tt-metal's `tt_transformers`
+supports (Llama 3.x, Qwen2.5, Qwen3, Mistral, ...): one container owns the
+chips and keeps several models loaded in device memory, so switching between
+them costs nothing.
+
+```sh
+substrate engine set tt-multihost --var image=lfm25-p150:dev-m12 --var models=/var/tmp/tt-multihost/models
+substrate model add qwen2.5-3b /var/tmp/tt-multihost/models/Qwen2.5-3B-Instruct --engine tt-multihost
+substrate model add qwen2.5-coder-0.5b /var/tmp/tt-multihost/models/Qwen2.5-Coder-0.5B-Instruct --engine tt-multihost
+```
+
+- The first request for a model starts the host (when it isn't running) and
+  loads the model into it. Later requests for any loaded model go straight to
+  the host.
+- A model's first load converts its weights (minutes); later loads read the
+  converted copy from `vars.cache` and take seconds.
+- When device memory runs short, the host unloads its least recently used
+  model. `substrate stop <model>` unloads one; `substrate stop tt-multihost`
+  stops the host.
+- `vars.models` is a directory holding every hosted checkpoint, mounted
+  read-only at the same path. `--ctx` sets a model's context (default
+  `vars.ctx`, 4096). `vars.mesh` sets the chip group shape (`P150x4`, ...).
+- To other Tenstorrent models the host is one instance: it swaps chips with
+  them under the rules above.
+- `substrate ps` shows the models the host holds.
+
+Measured on one P150: a warm host start plus first load takes about 7s, a warm
+load 1–3s, and switching between loaded models adds no time to a request.
+
 ### Management API
 
 For agents that only speak HTTP, the gateway also offers a management API
@@ -432,3 +464,4 @@ tenstorrent:
 | `sglang` | safetensors (gguf at low priority) | entry point is a python that can import sglang |
 | `strata` | strata-config | the model is the `strata-<model>.json` that Strata's setup writes; a Tenstorrent build sets `engines.strata.accelerator: {kind: tenstorrent, lock: engine}` |
 | `tt-vllm` | safetensors (opt-in with `--engine tt-vllm`) | tt-metal vLLM in docker, one image per model (`--var image=...`), whole Tenstorrent chips |
+| `tt-multihost` | safetensors, bf16 (opt-in with `--engine tt-multihost`) | one tt-metal container keeps several `tt_transformers` models loaded on its chips; its server ships with substrate (`engine set tt-multihost --var image=... --var models=...`) |

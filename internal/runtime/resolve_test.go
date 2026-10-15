@@ -134,6 +134,38 @@ func TestTTVLLMPlanPlacesPreArgsVarsAndChips(t *testing.T) {
 	}
 }
 
+// The multi-model host launches without a model: its required vars come from the
+// engine's config, its server files are shipped to {assets} and mounted into the container.
+func TestMultiHostPlanShipsItsServer(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	r := Request{ID: "tt-multihost", Name: "tt-multihost", Host: "127.0.0.1", Port: 9000, Devices: []int{0}}
+	if _, err := engine(t, "tt-multihost", config.EngineOverride{}).Build(r); err == nil ||
+		!strings.Contains(err.Error(), "substrate engine set tt-multihost --var image=") {
+		t.Fatalf("missing image: %v", err)
+	}
+	e := engine(t, "tt-multihost", config.EngineOverride{Vars: map[string]string{"image": "tt:dev", "models": "/srv/models"}})
+	p, err := e.Build(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Join(p.Argv, " ")
+	for _, want := range []string{"-v /srv/models:/srv/models:ro", "-v " + p.Assets + ":/opt/substrate:ro",
+		"TT_VISIBLE_DEVICES=0", "tt:dev -m tt_multihost"} {
+		if !strings.Contains(argv, want) {
+			t.Fatalf("argv lacks %q:\n%s", want, argv)
+		}
+	}
+	if !p.Hosting || p.Assets == "" {
+		t.Fatalf("plan %+v", p)
+	}
+	if err := spec.SyncAssets(p.Engine, p.Assets); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(p.Assets, "tt_multihost", "__main__.py")); err != nil {
+		t.Fatalf("server not shipped: %v", err)
+	}
+}
+
 func TestStrataVarsOverride(t *testing.T) {
 	e := engine(t, "strata", config.EngineOverride{Vars: map[string]string{"server": "tt/serve/server_tt.py"}})
 	r := req(nil)

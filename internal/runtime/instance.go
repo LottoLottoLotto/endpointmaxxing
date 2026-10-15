@@ -58,6 +58,8 @@ type Instance struct {
 	// Accelerator is the device kind; Devices the Tenstorrent chips the instance owns.
 	Accelerator string `json:"accelerator,omitempty"`
 	Devices     []int  `json:"devices,omitempty"`
+	// Hosting marks a multi-model host: it serves the models it has loaded (see HostedModels), not Name.
+	Hosting bool `json:"hosting,omitempty"`
 	// Cleanup runs after the instance stops or dies; ResetOnKill resets its chips after a forced stop or crash.
 	Cleanup     [][]string `json:"cleanup,omitempty"`
 	ResetOnKill bool       `json:"reset_on_kill,omitempty"`
@@ -353,6 +355,11 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 	}
 	// A container or process left behind by an earlier run of this id would hold the name or the chips.
 	runCleanup(p.Cleanup, nil)
+	if p.Assets != "" {
+		if err := spec.SyncAssets(p.Engine, p.Assets); err != nil {
+			return nil, errs.New(errs.EngineFailed, "writing %s's files to %s: %v", p.Engine, p.Assets, err)
+		}
+	}
 	for _, c := range p.Prepare {
 		if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
 			return nil, errs.New(errs.EngineFailed, "prepare %s: %v: %s", ShellJoin(c), err, strings.TrimSpace(string(out)))
@@ -418,6 +425,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		StartedAt: time.Now().UTC(), StopSignal: p.stopSignal, StopTimeout: p.stopTimeout, ReadyIn: p.readyIn,
 		APIKey: p.apiKey, GPUs: p.GPUs, PlannedMiB: p.PlannedMiB,
 		Accelerator: p.Accelerator, Devices: p.Devices, Cleanup: p.Cleanup, ResetOnKill: p.resetOnKill,
+		Hosting: p.Hosting,
 	}
 	for i := 0; i < 50 && in.StartTick == 0; i++ {
 		if in.StartTick = procStart(in.PID); in.StartTick == 0 {

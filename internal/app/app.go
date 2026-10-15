@@ -180,6 +180,8 @@ type Target struct {
 	Info  *model.Info
 	// Registered is false for an ad hoc path or repo id.
 	Registered bool
+	// host marks the launch of a multi-model host itself (no model).
+	host bool
 }
 
 // ResolveModel accepts a registered name, a path or a repo id.
@@ -274,7 +276,7 @@ func (a *App) Plan(t *Target, o LaunchOpts) (*runtime.Plan, string, error) {
 			return nil, "", err
 		}
 		for _, c := range a.Route(t) {
-			if c.Engine == engineID && !c.Compatible {
+			if c.Engine == engineID && !c.Compatible && !t.host {
 				return nil, "", errs.New(errs.Unsupported, "%s cannot serve %s: %s", engineID, t.Model.Name, strings.Join(c.Reasons, "; "))
 			}
 		}
@@ -335,6 +337,9 @@ func (a *App) Launch(t *Target, o LaunchOpts) (*runtime.Instance, *runtime.Plan,
 	if o.Owner == "" {
 		o.Owner = "cli"
 	}
+	if e := a.HostEngine(t, o.Engine); e != nil {
+		return nil, nil, errs.New(errs.Usage, "%s runs inside %s's multi-model host, which loads it on demand: use ensure (or the gateway)", t.Model.Name, e.ID)
+	}
 	var (
 		in   *runtime.Instance
 		plan *runtime.Plan
@@ -367,8 +372,12 @@ func (a *App) Launch(t *Target, o LaunchOpts) (*runtime.Instance, *runtime.Plan,
 // EnsureResult says what Ensure did.
 type EnsureResult struct {
 	Instance *runtime.Instance
+	// Model is the served model name (a multi-model host serves several).
+	Model string
 	// Started is true when this call launched the instance.
 	Started bool
+	// Loaded is true when this call loaded the model into a multi-model host.
+	Loaded bool
 }
 
 // Ensure returns a ready instance serving ref, launching one if none exists.
@@ -383,6 +392,9 @@ func (a *App) Ensure(ctx context.Context, ref string, o LaunchOpts, timeout time
 	if name == "" {
 		name = t.Model.Name
 	}
+	if e := a.HostEngine(t, o.Engine); e != nil {
+		return a.ensureHosted(ctx, t, e, name, o, timeout)
+	}
 	ins, err := runtime.List()
 	if err != nil {
 		return nil, err
@@ -394,7 +406,7 @@ func (a *App) Ensure(ctx context.Context, ref string, o LaunchOpts, timeout time
 		if err := in.WaitReady(ctx, timeout); err != nil {
 			return nil, err
 		}
-		return &EnsureResult{Instance: in}, nil
+		return &EnsureResult{Instance: in, Model: name}, nil
 	}
 	in, _, err := a.Launch(t, o)
 	if err != nil {
@@ -403,5 +415,5 @@ func (a *App) Ensure(ctx context.Context, ref string, o LaunchOpts, timeout time
 	if err := a.AwaitReady(ctx, in, timeout); err != nil {
 		return nil, err
 	}
-	return &EnsureResult{Instance: in, Started: true}, nil
+	return &EnsureResult{Instance: in, Model: name, Started: true}, nil
 }

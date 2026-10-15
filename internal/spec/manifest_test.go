@@ -25,6 +25,8 @@ health: {path: /health}
 capabilities: {formats: [gguf], quantizations: ["*"], apis: [chat]}
 `
 
+const host = "host: {load: /admin/load, unload: /admin/unload, models: /admin/models}\n"
+
 func TestParseRejects(t *testing.T) {
 	cases := map[string]struct{ yaml, want string }{
 		"no port": {
@@ -47,6 +49,15 @@ func TestParseRejects(t *testing.T) {
 		},
 		"priority for unsupported format": {
 			minimal + "routing: {priority: {safetensors: 5}}\n", "format not in capabilities.formats",
+		},
+		"host without paths": {
+			minimal + "host: {load: /admin/load}\n", "host.unload: required",
+		},
+		"host launch naming a model": {
+			strings.Replace(minimal, `"{bin}"`, `"{bin}", -m, "{model_path}"`, 1) + host, "per-model placeholder {model_path}",
+		},
+		"host with per-model flags": {
+			minimal + host + "flags: {ctx: [-c, \"{value}\"]}\n", "takes no per-model flags",
 		},
 	}
 	for name, c := range cases {

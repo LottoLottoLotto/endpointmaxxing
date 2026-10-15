@@ -187,6 +187,10 @@ type Plan struct {
 	Cleanup [][]string `json:"cleanup,omitempty"`
 	// Prepare runs before the launch.
 	Prepare [][]string `json:"prepare,omitempty"`
+	// Assets is where the engine's builtin files are written before the launch ("" when it ships none).
+	Assets string `json:"assets,omitempty"`
+	// Hosting marks a multi-model host launch (no model; models are loaded over HTTP).
+	Hosting bool `json:"hosting,omitempty"`
 
 	lockMode    string // substrate | engine (Tenstorrent)
 	resetOnKill bool
@@ -212,6 +216,7 @@ func (e *Engine) vars(r Request) (map[string]string, error) {
 	v["instance"] = r.ID
 	v["devices"] = joinInts(r.Devices)
 	v["device_count"] = fmt.Sprint(len(r.Devices))
+	v["assets"] = filepath.Join(paths.Data(), "assets", e.ID)
 	raw := map[string]string{}
 	for _, layer := range []map[string]string{e.Manifest.Vars, e.Override.Vars, r.Vars} {
 		for k, x := range layer {
@@ -268,19 +273,26 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A manifest var declared empty is a required per-model setting (e.g. a container image).
+	// A manifest var declared empty is a required setting: per model (e.g. a container image),
+	// or per engine for a multi-model host, whose launch serves no one model.
 	for k, x := range e.Manifest.Vars {
 		if x == "" && v[k] == "" {
+			if e.Host != nil {
+				return nil, errs.New(errs.Usage, "engine %s needs vars.%s (substrate engine set %s --var %s=...)", e.ID, k, e.ID, k)
+			}
 			return nil, errs.New(errs.Usage, "engine %s needs vars.%s for model %s (substrate model add ... --var %s=...)", e.ID, k, r.Name, k)
 		}
 	}
 	p := &Plan{
 		Engine: e.ID, Name: r.Name, Model: r.Model.Source, Format: r.Model.Format,
 		Host: r.Host, Port: r.Port, Env: map[string]string{}, APIs: e.Capabilities.APIs,
-		Accelerator: e.AcceleratorKind(), Devices: r.Devices,
+		Accelerator: e.AcceleratorKind(), Devices: r.Devices, Hosting: e.Host != nil,
 		lockMode: e.Accelerator.Lock, resetOnKill: e.Accelerator.ResetOnKill,
 		stopSignal: e.Launch.StopSignal, stopTimeout: e.Launch.StopTimeout.Or(30 * time.Second),
 		readyIn: e.Health.Timeout.Or(10 * time.Minute), apiKey: r.Flags["api_key"],
+	}
+	if spec.HasAssets(e.ID) && e.Source == "builtin" {
+		p.Assets = v["assets"]
 	}
 	if p.lockMode == "" {
 		p.lockMode = "substrate"

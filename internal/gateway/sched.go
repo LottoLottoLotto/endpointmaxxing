@@ -14,6 +14,7 @@ import (
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/spec"
 	"github.com/lotto/substrate/internal/store"
+	"github.com/lotto/substrate/internal/tenstorrent"
 )
 
 // Run starts the background loops until ctx ends: exit monitor (and crash
@@ -272,6 +273,7 @@ func (g *Gateway) ensure(ctx context.Context, model, engine, api string, timeout
 			return nil, errs.New(errs.Unsupported, "%s would run on %s, which does not implement %s", model, id, spec.APIs[api])
 		}
 	}
+	start := time.Now()
 	res, err := g.App.Ensure(ctx, model, app.LaunchOpts{Engine: engine, Owner: "gateway", Evict: g.evict(model), Activity: g.activity}, timeout)
 	if err != nil {
 		return nil, err
@@ -279,6 +281,9 @@ func (g *Gateway) ensure(ctx context.Context, model, engine, api string, timeout
 	in := res.Instance
 	if res.Started {
 		g.Log.Printf("%s ready at %s in %s (%s)", in.ID, in.BaseURL, time.Since(in.StartedAt).Round(time.Second), placementNote(in))
+	}
+	if res.Loaded {
+		g.Log.Printf("%s loaded into %s in %s", model, in.ID, time.Since(start).Round(10*time.Millisecond))
 	}
 	g.setStatus(in.ID, runtime.StatusReady)
 	g.touch(in.ID)
@@ -289,6 +294,9 @@ func (g *Gateway) ensure(ctx context.Context, model, engine, api string, timeout
 }
 
 func placementNote(in *runtime.Instance) string {
+	if len(in.Devices) > 0 {
+		return "Tenstorrent chip(s) " + tenstorrent.Join(in.Devices)
+	}
 	if len(in.GPUs) == 0 {
 		return "no placement"
 	}
@@ -305,10 +313,13 @@ func (g *Gateway) ready(ctx context.Context, model, api string) ([]*runtime.Inst
 	ins, _ := runtime.List()
 	var ok, wrongAPI []*runtime.Instance
 	for _, in := range ins {
-		if model != "" && in.Name != model {
+		if model != "" && !in.Hosting && in.Name != model {
 			continue
 		}
 		if g.instanceStatus(ctx, in) != runtime.StatusReady {
+			continue
+		}
+		if model != "" && in.Hosting && !contains(g.hosted(ctx, in), model) {
 			continue
 		}
 		if !in.HasAPI(api) {
@@ -334,6 +345,20 @@ func (g *Gateway) ready(ctx context.Context, model, api string) ([]*runtime.Inst
 	g.rr[model]++
 	g.activeMu.Unlock()
 	return append(ok[k:], ok[:k]...), nil
+}
+
+// hosted lists the models multi-model host in holds now (nil when it cannot say).
+// The host may unload models on its own (to fit another), so it is asked every time.
+func (g *Gateway) hosted(ctx context.Context, in *runtime.Instance) []string {
+	e, err := g.App.Engine(in.Engine)
+	if err != nil || e.Host == nil {
+		return nil
+	}
+	names, err := runtime.HostedModels(ctx, in, e.Host)
+	if err != nil {
+		g.Log.Printf("%s: listing hosted models: %v", in.ID, err)
+	}
+	return names
 }
 
 // evict returns the evictor placement calls to make room for model.

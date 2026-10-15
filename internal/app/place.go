@@ -43,6 +43,7 @@ func (a *App) WouldEvict(t *Target, o LaunchOpts) ([]string, error) {
 		flags[k] = v
 	}
 	o.Flags = flags
+	t = a.asHost(t, &o)
 	p, err := a.place(t, &o)
 	if err != nil || p == nil {
 		return nil, err
@@ -79,6 +80,7 @@ func (a *App) PlanPlaced(t *Target, o LaunchOpts) (*runtime.Plan, string, error)
 		flags[k] = v
 	}
 	o.Flags = flags
+	t = a.asHost(t, &o)
 	p, err := a.place(t, &o)
 	if err != nil {
 		return nil, "", err
@@ -188,6 +190,9 @@ func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
 	e, err := a.Engine(engineID)
 	if err != nil {
 		return nil, err
+	}
+	if t.host && HostInstance(engineID) != nil {
+		return nil, nil // the running host takes the model: nothing to place
 	}
 	if e.AcceleratorKind() == spec.AccelTenstorrent {
 		// Chips are always assigned (the engine needs TT_VISIBLE_DEVICES and the locks);

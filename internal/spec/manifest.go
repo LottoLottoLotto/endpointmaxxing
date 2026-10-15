@@ -50,6 +50,8 @@ type Manifest struct {
 	Routing      Routing            `yaml:"routing,omitempty" json:"routing,omitempty"`
 	Memory       Memory             `yaml:"memory,omitempty" json:"memory,omitempty"`
 	Accelerator  Accelerator        `yaml:"accelerator,omitempty" json:"accelerator,omitempty"`
+	// Host, when set, makes the engine a multi-model host (see Host).
+	Host *Host `yaml:"host,omitempty" json:"host,omitempty"`
 
 	// Source is "builtin" or the manifest's file path.
 	Source string `yaml:"-" json:"source"`
@@ -149,6 +151,26 @@ type Accelerator struct {
 	ResetOnKill bool `yaml:"reset_on_kill,omitempty" json:"reset_on_kill,omitempty"`
 }
 
+// Host makes an engine a multi-model host: one instance (per engine) keeps several
+// models loaded and serves them all, so switching between them needs no restart.
+// The launch command starts the host without a model; substrate loads each model
+// routed to the engine on its first request:
+//
+//	POST {load}   {"name": "<served name>", "path": "<local model dir>", "ctx": <tokens, 0 = default>}
+//	              200 once the model serves; the host may unload other models to make room
+//	POST {unload} {"name": "<served name>"}  200, or 404 when not loaded
+//	GET  {models} [{"name": "<served name>", ...}, ...]  the models loaded now
+type Host struct {
+	Load   string `yaml:"load" json:"load"`
+	Unload string `yaml:"unload" json:"unload"`
+	Models string `yaml:"models" json:"models"`
+	// LoadTimeout bounds one load (weight conversion on a cold cache can take minutes); default 30m.
+	LoadTimeout Duration `yaml:"load_timeout,omitempty" json:"load_timeout,omitempty"`
+}
+
+// ModelVars are the placeholders that describe one model; a multi-model host's launch cannot use them.
+var ModelVars = []string{"model", "model_path", "name"}
+
 // AcceleratorKind returns the accelerator kind with the default applied.
 func (m *Manifest) AcceleratorKind() string {
 	if m.Accelerator.Kind == "" {
@@ -234,7 +256,7 @@ var (
 
 // BaseVars are the placeholders substrate always defines for templates.
 var BaseVars = []string{"bin", "bin_dir", "home", "data", "state", "model", "model_path", "name", "host", "port",
-	"instance", "devices", "device_count"}
+	"instance", "devices", "device_count", "assets"}
 
 // PreArgs is the command element replaced by per-model arguments inserted mid-command
 // (e.g. docker options before the image name); it must stand alone.
@@ -397,6 +419,42 @@ func (m *Manifest) Validate() []string {
 	for f := range m.Routing.Priority {
 		if !contains(m.Capabilities.Formats, f) {
 			bad("routing.priority.%s: format not in capabilities.formats", f)
+		}
+	}
+	if h := m.Host; h != nil {
+		for _, p := range [][2]string{{"load", h.Load}, {"unload", h.Unload}, {"models", h.Models}} {
+			if !strings.HasPrefix(p[1], "/") {
+				bad("host.%s: required, must start with /", p[0])
+			}
+		}
+		// The host starts before (and outlives) any one model, so nothing in its launch may name one.
+		uses := map[string][]string{"launch.command": m.Launch.Command, "launch.cwd": {m.Launch.Cwd}}
+		for k, v := range m.Vars {
+			uses["vars."+k] = []string{v}
+		}
+		for k, v := range m.Launch.Env {
+			uses["launch.env."+k] = []string{v}
+		}
+		for i, c := range m.Launch.Prepare {
+			uses[fmt.Sprintf("launch.prepare[%d]", i)] = c
+		}
+		for i, c := range m.Launch.Cleanup {
+			uses[fmt.Sprintf("launch.cleanup[%d]", i)] = c
+		}
+		for _, where := range sortedKeys(uses) {
+			for _, a := range uses[where] {
+				if a == PreArgs {
+					bad("%s: a multi-model host has no per-model %s", where, PreArgs)
+				}
+				for _, p := range Placeholders(a) {
+					if contains(ModelVars, p) {
+						bad("%s: a multi-model host cannot use the per-model placeholder {%s}", where, p)
+					}
+				}
+			}
+		}
+		if len(m.Flags) > 0 {
+			bad("flags: a multi-model host takes no per-model flags (ctx is sent with each load)")
 		}
 	}
 	return errs

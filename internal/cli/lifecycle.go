@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"time"
 
@@ -87,6 +88,9 @@ func cmdRun() *command {
 					plan.Argv = runtime.Redact(plan.Argv, l.flags["api_key"])
 					return e.out(map[string]any{"id": iid, "plan": plan}, func(w io.Writer) { printPlan(w, iid, plan) })
 				}
+				if a.HostEngine(t, opts.Engine) != nil {
+					return ensure(e, a, pos[0], opts, *l.timeout) // hosted models are loaded, not launched
+				}
 				in, plan, err := a.Launch(t, opts)
 				if err != nil {
 					return err
@@ -128,26 +132,38 @@ func cmdEnsure() *command {
 				if err != nil {
 					return err
 				}
-				ctx, stop := e.interruptible()
-				defer stop()
-				res, err := a.Ensure(ctx, pos[0], l.opts(e, extra), *l.timeout)
-				if err != nil {
-					return err
-				}
-				v := instanceView(res.Instance, runtime.StatusReady)
-				return e.out(map[string]any{"instance": v, "started": res.Started}, func(w io.Writer) {
-					verb := "reused"
-					if res.Started {
-						verb = "started"
-					}
-					fmt.Fprintf(w, "%s %s: %s (model %q, engine %s)\n", verb, v.ID, v.APIURL, v.Name, v.Engine)
-				})
+				return ensure(e, a, pos[0], l.opts(e, extra), *l.timeout)
 			}
 		}}
 }
 
+// ensure runs App.Ensure and reports the instance serving ref.
+func ensure(e *env, a *app.App, ref string, o app.LaunchOpts, timeout time.Duration) error {
+	ctx, stop := e.interruptible()
+	defer stop()
+	res, err := a.Ensure(ctx, ref, o, timeout)
+	if err != nil {
+		return err
+	}
+	v := instanceView(res.Instance, runtime.StatusReady)
+	return e.out(map[string]any{"instance": v, "model": res.Model, "started": res.Started, "loaded": res.Loaded}, func(w io.Writer) {
+		verb := "reused"
+		switch {
+		case res.Started:
+			verb = "started"
+		case res.Loaded:
+			verb = "loaded " + res.Model + " into"
+		}
+		fmt.Fprintf(w, "%s %s: %s (model %q, engine %s)\n", verb, v.ID, v.APIURL, res.Model, v.Engine)
+	})
+}
+
 func printPlan(w io.Writer, id string, p *runtime.Plan) {
-	fmt.Fprintf(w, "instance: %s\nengine:   %s\nmodel:    %s (%s)\nendpoint: %s/v1\n", id, p.Engine, p.Model, p.Format, p.BaseURL)
+	model := fmt.Sprintf("%s (%s)", p.Model, p.Format)
+	if p.Hosting {
+		model = "none: a multi-model host, models are loaded into it on first use"
+	}
+	fmt.Fprintf(w, "instance: %s\nengine:   %s\nmodel:    %s\nendpoint: %s/v1\n", id, p.Engine, model, p.BaseURL)
 	if p.Cwd != "" {
 		fmt.Fprintf(w, "cwd:      %s\n", p.Cwd)
 	}
@@ -170,6 +186,8 @@ type view struct {
 	*runtime.Instance
 	Status string `json:"status"`
 	APIURL string `json:"api_url"`
+	// Hosted lists the models a multi-model host holds (ps only).
+	Hosted []string `json:"hosted,omitempty"`
 }
 
 func instanceView(in *runtime.Instance, status string) view {
@@ -184,7 +202,8 @@ func cmdPs() *command {
 				if err := wantArgs("ps", pos, 0, 0); err != nil {
 					return err
 				}
-				if _, err := e.app(); err != nil { // installs the event recorder
+				a, err := e.app() // installs the event recorder
+				if err != nil {
 					return err
 				}
 				ins, err := runtime.List()
@@ -203,7 +222,13 @@ func cmdPs() *command {
 						}
 						in.NoteExit()
 					}
-					views = append(views, instanceView(in, st))
+					v := instanceView(in, st)
+					if in.Hosting && st == runtime.StatusReady {
+						if eng, err := a.Engine(in.Engine); err == nil && eng.Host != nil {
+							v.Hosted, _ = runtime.HostedModels(e.ctx, in, eng.Host)
+						}
+					}
+					views = append(views, v)
 				}
 				return e.out(views, func(w io.Writer) {
 					if len(views) == 0 {
@@ -219,7 +244,11 @@ func cmdPs() *command {
 						case len(v.GPUs) > 0:
 							where = "gpu:" + tenstorrent.Join(v.GPUs)
 						}
-						rows[i] = []string{v.ID, v.Name, v.Engine, v.Status, where, fmt.Sprint(v.PID), v.APIURL, v.Owner,
+						name := v.Name
+						if v.Hosting {
+							name = "host: " + strings.Join(v.Hosted, ",")
+						}
+						rows[i] = []string{v.ID, name, v.Engine, v.Status, where, fmt.Sprint(v.PID), v.APIURL, v.Owner,
 							time.Since(v.StartedAt).Round(time.Second).String()}
 					}
 					e.table("ID\tMODEL\tENGINE\tSTATUS\tDEVICES\tPID\tENDPOINT\tOWNER\tUP", rows)
@@ -229,16 +258,17 @@ func cmdPs() *command {
 }
 
 func cmdStop() *command {
-	return &command{name: "stop", synopsis: "<instance|model>... | --all", summary: "stop instances", tool: true,
+	return &command{name: "stop", synopsis: "<instance|model>... | --all", summary: "stop instances (a model in a multi-model host is unloaded)", tool: true,
 		build: func(fs *flag.FlagSet) action {
 			all := fs.Bool("all", false, "stop every instance")
 			return func(e *env, pos, _ []string) error {
-				if _, err := e.app(); err != nil {
+				a, err := e.app()
+				if err != nil {
 					return err
 				}
 				var targets []*runtime.Instance
+				unloaded := []string{}
 				if *all {
-					var err error
 					if targets, err = runtime.List(); err != nil {
 						return err
 					}
@@ -248,6 +278,15 @@ func cmdStop() *command {
 					}
 					for _, ref := range pos {
 						in, err := runtime.Find(ref)
+						if errs.CodeOf(err) == errs.NotFound {
+							if host := hostOf(e.ctx, a, ref); host != nil {
+								if err := a.UnloadHosted(e.ctx, host.Engine, ref); err != nil {
+									return err
+								}
+								unloaded = append(unloaded, ref)
+								continue
+							}
+						}
 						if err != nil {
 							return err
 						}
@@ -262,13 +301,32 @@ func cmdStop() *command {
 					}
 					stopped = append(stopped, in.ID)
 				}
-				return e.out(map[string]any{"stopped": stopped}, func(w io.Writer) {
-					if len(stopped) == 0 {
+				return e.out(map[string]any{"stopped": stopped, "unloaded": unloaded}, func(w io.Writer) {
+					for _, m := range unloaded {
+						fmt.Fprintf(w, "unloaded %s\n", m)
+					}
+					if len(stopped) == 0 && len(unloaded) == 0 {
 						fmt.Fprintln(w, "nothing to stop")
 					}
 				})
 			}
 		}}
+}
+
+// hostOf returns the running multi-model host that holds model, or nil.
+func hostOf(ctx context.Context, a *app.App, model string) *runtime.Instance {
+	ins, _ := runtime.List()
+	for _, in := range ins {
+		if !in.Hosting || !in.Alive() {
+			continue
+		}
+		if eng, err := a.Engine(in.Engine); err == nil && eng.Host != nil {
+			if names, err := runtime.HostedModels(ctx, in, eng.Host); err == nil && slices.Contains(names, model) {
+				return in
+			}
+		}
+	}
+	return nil
 }
 
 func cmdLogs() *command {
@@ -453,7 +511,7 @@ func chat(ctx context.Context, e *env, model string, body map[string]any, via st
 			return nil, err
 		}
 		in = r.Instance
-		body["model"] = in.Name
+		body["model"] = r.Model
 		res.Via, url, key = "direct", in.BaseURL+"/v1/chat/completions", in.APIKey
 		res.Instance, res.Engine = in.ID, in.Engine
 	}
