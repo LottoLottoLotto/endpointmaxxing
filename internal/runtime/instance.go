@@ -24,6 +24,7 @@ import (
 	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/spec"
 	"github.com/lotto/substrate/internal/store"
+	"github.com/lotto/substrate/internal/tenstorrent"
 )
 
 // Instance is a launched engine process, persisted as state/instances/<id>.json (mode 0600: it may hold an API key).
@@ -54,6 +55,12 @@ type Instance struct {
 	// reserves PlannedMiB minus what it already uses, so concurrent launches don't overcommit.
 	GPUs       []int `json:"gpus,omitempty"`
 	PlannedMiB int64 `json:"planned_mib,omitempty"`
+	// Accelerator is the device kind; Devices the Tenstorrent chips the instance owns.
+	Accelerator string `json:"accelerator,omitempty"`
+	Devices     []int  `json:"devices,omitempty"`
+	// Cleanup runs after the instance stops or dies; ResetOnKill resets its chips after a forced stop or crash.
+	Cleanup     [][]string `json:"cleanup,omitempty"`
+	ResetOnKill bool       `json:"reset_on_kill,omitempty"`
 
 	StopSignal  string        `json:"stop_signal,omitempty"`
 	StopTimeout time.Duration `json:"stop_timeout"`
@@ -69,6 +76,9 @@ const (
 
 // Recorder receives lifecycle events; nil disables recording. Set once at startup.
 var Recorder func(store.Event)
+
+// TT locates Tenstorrent chip locks and tt-smi. Set once at startup.
+var TT = tenstorrent.Config{Lock: "/var/tmp/tenstorrent/chip-{n}.lock", TTSmi: "tt-smi"}
 
 func record(kind string, in *Instance, dur *time.Duration, detail string) {
 	if Recorder == nil {
@@ -341,8 +351,33 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		old.noteExit()
 		os.Remove(old.path())
 	}
+	// A container or process left behind by an earlier run of this id would hold the name or the chips.
+	runCleanup(p.Cleanup, nil)
+	for _, c := range p.Prepare {
+		if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
+			return nil, errs.New(errs.EngineFailed, "prepare %s: %v: %s", ShellJoin(c), err, strings.TrimSpace(string(out)))
+		}
+	}
 	if PortInUse(p.Host, p.Port) {
 		return nil, errs.Wrap(errs.Conflict, fmt.Errorf("port %d: %w", p.Port, ErrPortInUse))
+	}
+	var lockFiles []*os.File
+	if p.Accelerator == spec.AccelTenstorrent && len(p.Devices) > 0 {
+		var err error
+		if p.lockMode == "engine" {
+			err = TT.Check(p.Devices) // the engine takes the locks itself
+		} else {
+			lockFiles, err = TT.Acquire(p.Devices)
+		}
+		if err != nil {
+			return nil, errs.Wrap(errs.Capacity, err)
+		}
+		// The engine inherits the lock descriptors: the locks live exactly as long as it does.
+		defer func() {
+			for _, f := range lockFiles {
+				f.Close()
+			}
+		}()
 	}
 	if err := os.MkdirAll(logsDir(), 0o755); err != nil {
 		return nil, err
@@ -368,6 +403,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		cmd.Env = append(cmd.Env, k+"="+p.Env[k])
 	}
 	cmd.Stdout, cmd.Stderr = logf, logf
+	cmd.ExtraFiles = lockFiles
 	// Own session: the engine outlives this CLI and is stopped as a process group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -381,6 +417,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		APIs: p.APIs, Argv: p.Argv, Env: p.Env, Cwd: p.Cwd, Log: logPath, Owner: owner,
 		StartedAt: time.Now().UTC(), StopSignal: p.stopSignal, StopTimeout: p.stopTimeout, ReadyIn: p.readyIn,
 		APIKey: p.apiKey, GPUs: p.GPUs, PlannedMiB: p.PlannedMiB,
+		Accelerator: p.Accelerator, Devices: p.Devices, Cleanup: p.Cleanup, ResetOnKill: p.resetOnKill,
 	}
 	for i := 0; i < 50 && in.StartTick == 0; i++ {
 		if in.StartTick = procStart(in.PID); in.StartTick == 0 {
@@ -471,6 +508,11 @@ func (in *Instance) noteExit() {
 			detail = fmt.Sprintf("killed %d orphaned worker(s)\n%s", len(orphans), detail)
 		}
 	}
+	runCleanup(in.Cleanup, in)
+	// Reset a crashed engine's chips only once they are free: never under another job.
+	if in.waitChipsFree(time.Minute) && in.ResetOnKill {
+		detail = in.reset("crashed") + detail
+	}
 	record("exited", in, &up, detail)
 	in.ExitNoted = true
 	if _, err := os.Stat(in.path()); err == nil {
@@ -519,6 +561,13 @@ func (in *Instance) stop(reason string) error {
 		if forced {
 			detail = strings.TrimPrefix(detail+"; killed after stop timeout", "; ")
 		}
+		runCleanup(in.Cleanup, in)
+		switch {
+		case !in.waitChipsFree(in.StopTimeout + 30*time.Second):
+			detail = strings.TrimPrefix(detail+"; chips still busy after the stop, not reset", "; ")
+		case forced && in.ResetOnKill:
+			detail += "; " + in.reset("killed")
+		}
 		record("stop", in, &up, detail)
 	} else {
 		in.noteExit()
@@ -527,6 +576,58 @@ func (in *Instance) stop(reason string) error {
 		return err
 	}
 	return nil
+}
+
+// runCleanup runs cleanup commands, ignoring failures (the thing to clean may be gone);
+// output goes to the instance log when there is one.
+func runCleanup(cmds [][]string, in *Instance) {
+	for _, c := range cmds {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		out, err := exec.CommandContext(ctx, c[0], c[1:]...).CombinedOutput()
+		cancel()
+		if in != nil {
+			if f, ferr := os.OpenFile(in.Log, os.O_WRONLY|os.O_APPEND, 0o600); ferr == nil {
+				fmt.Fprintf(f, "# substrate cleanup: %s: err=%v %s\n", ShellJoin(c), err, strings.TrimSpace(string(out)))
+				f.Close()
+			}
+		}
+	}
+}
+
+// waitChipsFree waits until the instance's chips are unlocked and unopened: helpers
+// outside its session (a docker client and container, an engine's own lock holder)
+// may outlive the process substrate stopped. It reports whether they came free.
+func (in *Instance) waitChipsFree(max time.Duration) bool {
+	if in.Accelerator != spec.AccelTenstorrent || len(in.Devices) == 0 {
+		return true
+	}
+	deadline := time.Now().Add(max)
+	for {
+		busy := false
+		for _, d := range in.Devices {
+			if TT.Held(d) || len(tenstorrent.Users(d)) > 0 {
+				busy = true
+			}
+		}
+		if !busy {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// reset resets the instance's Tenstorrent chips and describes the outcome for the event log.
+func (in *Instance) reset(why string) string {
+	if in.Accelerator != spec.AccelTenstorrent || len(in.Devices) == 0 {
+		return ""
+	}
+	if err := TT.Reset(in.Devices); err != nil {
+		return fmt.Sprintf("chip reset after %s failed: %v\n", why, err)
+	}
+	return fmt.Sprintf("chips %s reset after %s\n", tenstorrent.Join(in.Devices), why)
 }
 
 // killSession SIGKILLs every process left in the engine's session (sid == leader pid).

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lotto/substrate/internal/lock"
@@ -29,6 +30,29 @@ type Config struct {
 	Prefer map[string][]string `yaml:"prefer,omitempty" json:"prefer,omitempty"`
 	// Engines overrides per engine id.
 	Engines map[string]EngineOverride `yaml:"engines,omitempty" json:"engines,omitempty"`
+	// Tenstorrent configures chip locks and recovery.
+	Tenstorrent Tenstorrent `yaml:"tenstorrent" json:"tenstorrent"`
+}
+
+// Tenstorrent configures how substrate shares Tenstorrent chips with other jobs.
+type Tenstorrent struct {
+	// Lock is the per-chip lock file; {n} is the chip index. Every job on a card must use the same file.
+	Lock string `yaml:"lock" json:"lock"`
+	// Locks overrides the lock file of single chips (to interoperate with existing scripts).
+	Locks map[int]string `yaml:"locks,omitempty" json:"locks,omitempty"`
+	// TTSmi is the tt-smi binary used for resets.
+	TTSmi string `yaml:"tt_smi" json:"tt_smi"`
+}
+
+// Swap governs taking exclusive devices (Tenstorrent chips, or GPU memory under pressure)
+// from one model for another, so that slow model loads do not thrash.
+type Swap struct {
+	// MinResidency is how long a model keeps its devices after becoming ready before it may be swapped out.
+	MinResidency spec.Duration `yaml:"min_residency" json:"min_residency"`
+	// MaxResidency: a model with queued requests of its own yields after this long when others wait.
+	MaxResidency spec.Duration `yaml:"max_residency" json:"max_residency"`
+	// WaitTimeout bounds how long a request waits for its model to be swapped in (then 503 + Retry-After).
+	WaitTimeout spec.Duration `yaml:"wait_timeout" json:"wait_timeout"`
 }
 
 // Gateway configures `substrate serve`.
@@ -64,6 +88,8 @@ type Gateway struct {
 	// StreamUsage asks engines for a final usage chunk on streamed chat/completions
 	// (stream_options.include_usage) so streamed tokens are metered exactly.
 	StreamUsage bool `yaml:"stream_usage" json:"stream_usage"`
+	// Swap is the anti-thrash policy for evictions.
+	Swap Swap `yaml:"swap" json:"swap"`
 }
 
 // Placement modes.
@@ -96,6 +122,9 @@ type EngineOverride struct {
 	// Memory replaces the manifest's memory block for this install, e.g. {mode: none}
 	// for a Strata build that runs on a Tenstorrent card instead of the NVIDIA GPUs.
 	Memory *spec.Memory `yaml:"memory,omitempty" json:"memory,omitempty"`
+	// Accelerator replaces the manifest's accelerator block for this install
+	// (e.g. a Strata build for Tenstorrent: {kind: tenstorrent, lock: engine}).
+	Accelerator *spec.Accelerator `yaml:"accelerator,omitempty" json:"accelerator,omitempty"`
 }
 
 // Default is the configuration used when config.yaml is absent.
@@ -105,8 +134,11 @@ func Default() *Config {
 			EvictOwners: []string{"gateway"}, RestartCrashed: true, HealthInterval: spec.Duration(15 * time.Second),
 			MaxQueue: 64, QueueTimeout: spec.Duration(5 * time.Minute),
 			UpstreamHeaderTimeout: spec.Duration(10 * time.Minute), UpstreamIdleTimeout: spec.Duration(5 * time.Minute),
-			StreamUsage: true},
-		Logging: Logging{Enabled: true, BodyMaxBytes: 1 << 20, SampleInterval: spec.Duration(30 * time.Second)},
+			StreamUsage: true,
+			Swap: Swap{MinResidency: spec.Duration(30 * time.Second), MaxResidency: spec.Duration(10 * time.Minute),
+				WaitTimeout: spec.Duration(15 * time.Minute)}},
+		Tenstorrent: Tenstorrent{Lock: "/var/tmp/tenstorrent/chip-{n}.lock", TTSmi: "tt-smi"},
+		Logging:     Logging{Enabled: true, BodyMaxBytes: 1 << 20, SampleInterval: spec.Duration(30 * time.Second)},
 	}
 }
 
@@ -157,6 +189,9 @@ func (c *Config) validate() error {
 	}
 	if c.Gateway.MaxConcurrency < 0 || c.Gateway.MaxQueue < 0 {
 		return fmt.Errorf("%s: gateway.max_concurrency and max_queue must be >= 0", ConfigPath())
+	}
+	if !strings.Contains(c.Tenstorrent.Lock, "{n}") {
+		return fmt.Errorf("%s: tenstorrent.lock must contain {n} (the chip index)", ConfigPath())
 	}
 	if c.Logging.BodyMaxBytes <= 0 {
 		return fmt.Errorf("%s: logging.body_max_bytes must be positive", ConfigPath())
@@ -222,6 +257,12 @@ type Model struct {
 	IdleUnload spec.Duration `yaml:"idle_unload,omitempty" json:"idle_unload,omitempty"`
 	// MaxConcurrency overrides gateway.max_concurrency for this model.
 	MaxConcurrency int `yaml:"max_concurrency,omitempty" json:"max_concurrency,omitempty"`
+	// Devices is how many accelerator chips one instance owns (Tenstorrent; overrides the manifest).
+	Devices int `yaml:"devices,omitempty" json:"devices,omitempty"`
+	// Vars set manifest placeholders for this model (e.g. image, cache) and win over engine vars.
+	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
+	// PreArgs are inserted at the manifest's {pre_args} element, per engine id (e.g. docker -e options).
+	PreArgs map[string][]string `yaml:"pre_args,omitempty" json:"pre_args,omitempty"`
 }
 
 // NameRe is what model and instance names must match (they become file names and API model ids).
@@ -235,8 +276,8 @@ func (m *Model) Validate() error {
 	if m.Source == "" {
 		return fmt.Errorf("model %s: empty source", m.Name)
 	}
-	if m.VRAMMiB < 0 || m.MaxConcurrency < 0 || m.IdleUnload < 0 {
-		return fmt.Errorf("model %s: vram_mib, max_concurrency and idle_unload must be >= 0", m.Name)
+	if m.VRAMMiB < 0 || m.MaxConcurrency < 0 || m.IdleUnload < 0 || m.Devices < 0 {
+		return fmt.Errorf("model %s: vram_mib, max_concurrency, idle_unload and devices must be >= 0", m.Name)
 	}
 	for k, v := range m.Flags {
 		f, ok := spec.FlagByKey(k)

@@ -33,6 +33,17 @@ func Expand(s string, vars map[string]string) (string, error) {
 	return out, err
 }
 
+// Placeholders lists the keys referenced in s ({name} -> name), excluding {env.*}.
+func Placeholders(s string) []string {
+	var out []string
+	for _, m := range placeholderRe.FindAllStringSubmatch(s, -1) {
+		if !strings.HasPrefix(m[1], "env.") {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
 // ExpandAll expands every element of xs.
 func ExpandAll(xs []string, vars map[string]string) ([]string, error) {
 	out := make([]string, len(xs))

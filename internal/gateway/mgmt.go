@@ -52,6 +52,12 @@ func (g *Gateway) mgmtEnsure(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	g.addWaiting(req.Model, 1)
+	defer g.addWaiting(req.Model, -1)
+	if err := g.awaitTurn(r.Context(), req.Model, req.Engine); err != nil {
+		writeErr(w, err)
+		return
+	}
 	in, err := g.ensure(context.WithoutCancel(r.Context()), req.Model, req.Engine, "", timeout)
 	if err != nil {
 		writeErr(w, err)

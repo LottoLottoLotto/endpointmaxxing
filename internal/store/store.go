@@ -468,6 +468,16 @@ func (db *DB) TokensSince(client string, since time.Time) (int64, error) {
 	return n, err
 }
 
+// LastLoad returns how long model last took to become ready (0 when never recorded).
+func (db *DB) LastLoad(model string) (time.Duration, error) {
+	var ms sql.NullInt64
+	err := db.QueryRow(`SELECT duration_ms FROM events WHERE model = ? AND kind = 'ready' ORDER BY ts DESC LIMIT 1`, model).Scan(&ms)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return time.Duration(ms.Int64) * time.Millisecond, err
+}
+
 // PeakGPU returns the largest GPU footprint (MiB, all GPUs) sampled for model on engine since t; 0 when none.
 func (db *DB) PeakGPU(model, engine string, since time.Time) (int64, error) {
 	var peak sql.NullInt64

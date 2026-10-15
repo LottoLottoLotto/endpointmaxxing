@@ -49,6 +49,7 @@ type Manifest struct {
 	Capabilities Capabilities       `yaml:"capabilities" json:"capabilities"`
 	Routing      Routing            `yaml:"routing,omitempty" json:"routing,omitempty"`
 	Memory       Memory             `yaml:"memory,omitempty" json:"memory,omitempty"`
+	Accelerator  Accelerator        `yaml:"accelerator,omitempty" json:"accelerator,omitempty"`
 
 	// Source is "builtin" or the manifest's file path.
 	Source string `yaml:"-" json:"source"`
@@ -79,6 +80,11 @@ type Launch struct {
 	Env         map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	StopSignal  string            `yaml:"stop_signal,omitempty" json:"stop_signal,omitempty"`
 	StopTimeout Duration          `yaml:"stop_timeout,omitempty" json:"stop_timeout,omitempty"`
+	// Cleanup commands run after every stop and after an unexpected exit (errors ignored),
+	// e.g. removing a container the engine's client process left behind.
+	Cleanup [][]string `yaml:"cleanup,omitempty" json:"cleanup,omitempty"`
+	// Prepare commands run before every launch; a failure aborts it (e.g. creating cache directories).
+	Prepare [][]string `yaml:"prepare,omitempty" json:"prepare,omitempty"`
 }
 
 // Health is the readiness probe: GET Path returns 200 once the model serves.
@@ -122,6 +128,33 @@ type Memory struct {
 	Factor          float64 `yaml:"factor,omitempty" json:"factor,omitempty"`
 	OverheadMiB     int64   `yaml:"overhead_mib,omitempty" json:"overhead_mib,omitempty"`
 	DefaultFraction float64 `yaml:"default_fraction,omitempty" json:"default_fraction,omitempty"`
+}
+
+// Accelerator kinds.
+const (
+	AccelNVIDIA      = "nvidia"
+	AccelTenstorrent = "tenstorrent"
+)
+
+// Accelerator says which devices an engine runs on. NVIDIA GPUs (the default) are
+// shared by memory (see Memory); Tenstorrent chips are owned exclusively by one process.
+type Accelerator struct {
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+	// Devices is how many chips one instance owns (models may override).
+	Devices int `yaml:"devices,omitempty" json:"devices,omitempty"`
+	// Lock: "substrate" holds the per-chip device locks for the instance's lifetime;
+	// "engine" means the engine takes them itself (substrate only checks they are free).
+	Lock string `yaml:"lock,omitempty" json:"lock,omitempty"`
+	// ResetOnKill resets the chips (tt-smi -r) after a forced stop or a crash.
+	ResetOnKill bool `yaml:"reset_on_kill,omitempty" json:"reset_on_kill,omitempty"`
+}
+
+// AcceleratorKind returns the accelerator kind with the default applied.
+func (m *Manifest) AcceleratorKind() string {
+	if m.Accelerator.Kind == "" {
+		return AccelNVIDIA
+	}
+	return m.Accelerator.Kind
 }
 
 // MemoryMode returns the memory mode with the default applied.
@@ -200,7 +233,12 @@ var (
 )
 
 // BaseVars are the placeholders substrate always defines for templates.
-var BaseVars = []string{"bin", "bin_dir", "home", "data", "state", "model", "model_path", "name", "host", "port"}
+var BaseVars = []string{"bin", "bin_dir", "home", "data", "state", "model", "model_path", "name", "host", "port",
+	"instance", "devices", "device_count"}
+
+// PreArgs is the command element replaced by per-model arguments inserted mid-command
+// (e.g. docker options before the image name); it must stand alone.
+const PreArgs = "{pre_args}"
 
 // Validate checks a manifest against the v1 spec and returns every problem found.
 func (m *Manifest) Validate() []string {
@@ -255,9 +293,43 @@ func (m *Manifest) Validate() []string {
 		check("vars."+k, v)
 	}
 	for i, a := range m.Launch.Command {
-		check(fmt.Sprintf("launch.command[%d]", i), a)
+		if a != PreArgs && strings.Contains(a, PreArgs) {
+			bad("launch.command[%d]: %s must be a whole element", i, PreArgs)
+		}
+		check(fmt.Sprintf("launch.command[%d]", i), a, "pre_args")
 	}
 	check("launch.cwd", m.Launch.Cwd)
+	for i, c := range m.Launch.Prepare {
+		if len(c) == 0 {
+			bad("launch.prepare[%d]: empty command", i)
+		}
+		for _, a := range c {
+			check(fmt.Sprintf("launch.prepare[%d]", i), a)
+		}
+	}
+	for i, c := range m.Launch.Cleanup {
+		if len(c) == 0 {
+			bad("launch.cleanup[%d]: empty command", i)
+		}
+		for _, a := range c {
+			check(fmt.Sprintf("launch.cleanup[%d]", i), a)
+		}
+	}
+	switch m.AcceleratorKind() {
+	case AccelNVIDIA:
+		if m.Accelerator.Lock != "" || m.Accelerator.Devices != 0 {
+			bad("accelerator: devices and lock apply to tenstorrent")
+		}
+	case AccelTenstorrent:
+		if m.Accelerator.Devices < 0 {
+			bad("accelerator.devices: must be >= 0")
+		}
+		if l := m.Accelerator.Lock; l != "" && l != "substrate" && l != "engine" {
+			bad("accelerator.lock: %q (want substrate or engine)", l)
+		}
+	default:
+		bad("accelerator.kind: %q unknown (nvidia, tenstorrent)", m.Accelerator.Kind)
+	}
 	for k, v := range m.Launch.Env {
 		check("launch.env."+k, v)
 	}

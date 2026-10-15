@@ -23,6 +23,7 @@ import (
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/spec"
 	"github.com/lotto/substrate/internal/store"
+	"github.com/lotto/substrate/internal/tenstorrent"
 )
 
 // App is one loaded view of the user's substrate setup.
@@ -73,6 +74,7 @@ func Open() (*App, error) {
 	} else {
 		runtime.Recorder = nil
 	}
+	runtime.TT = tenstorrent.Config{Lock: cfg.Tenstorrent.Lock, Locks: cfg.Tenstorrent.Locks, TTSmi: cfg.Tenstorrent.TTSmi}
 	return a, nil
 }
 
@@ -255,6 +257,8 @@ type LaunchOpts struct {
 	Activity func(id string) (idle bool, lastUsed time.Time)
 	// dryRun makes placement describe evictions instead of performing them.
 	dryRun bool
+	// devices are the Tenstorrent chips placement assigned.
+	devices []int
 }
 
 // Plan resolves the engine and builds the launch plan for t.
@@ -306,19 +310,20 @@ func (a *App) Plan(t *Target, o LaunchOpts) (*runtime.Plan, string, error) {
 	}
 	args := append(append([]string{}, t.Model.Args[engineID]...), o.Args...)
 
-	plan, err := e.Build(runtime.Request{
-		Name: name, Host: host, Port: port, Flags: flags, Args: args, Lenient: o.Lenient,
-		Model: runtime.ModelRef{Source: t.Info.Source, Path: t.Info.Path, Ref: t.Info.Ref, Format: t.Info.Format},
-	})
-	if err != nil {
-		return nil, "", err
-	}
 	id := o.ID
 	if id == "" {
 		id = runtime.InstanceID(name, engineID)
 	}
 	if !config.NameRe.MatchString(id) {
 		return nil, "", errs.New(errs.Usage, "instance id %q must match %s", id, config.NameRe)
+	}
+	plan, err := e.Build(runtime.Request{
+		ID: id, Name: name, Host: host, Port: port, Flags: flags, Args: args, Lenient: o.Lenient,
+		PreArgs: t.Model.PreArgs[engineID], Vars: t.Model.Vars, Devices: o.devices,
+		Model: runtime.ModelRef{Source: t.Info.Source, Path: t.Info.Path, Ref: t.Info.Ref, Format: t.Info.Format},
+	})
+	if err != nil {
+		return nil, "", err
 	}
 	return plan, id, nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/lotto/substrate/internal/meter"
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/store"
+	"github.com/lotto/substrate/internal/tenstorrent"
 )
 
 // launchFlags are shared by run and ensure.
@@ -211,10 +212,17 @@ func cmdPs() *command {
 					}
 					rows := make([][]string, len(views))
 					for i, v := range views {
-						rows[i] = []string{v.ID, v.Name, v.Engine, v.Status, fmt.Sprint(v.PID), v.APIURL, v.Owner,
+						where := "-"
+						switch {
+						case len(v.Devices) > 0:
+							where = "tt:" + tenstorrent.Join(v.Devices)
+						case len(v.GPUs) > 0:
+							where = "gpu:" + tenstorrent.Join(v.GPUs)
+						}
+						rows[i] = []string{v.ID, v.Name, v.Engine, v.Status, where, fmt.Sprint(v.PID), v.APIURL, v.Owner,
 							time.Since(v.StartedAt).Round(time.Second).String()}
 					}
-					e.table("ID\tMODEL\tENGINE\tSTATUS\tPID\tENDPOINT\tOWNER\tUP", rows)
+					e.table("ID\tMODEL\tENGINE\tSTATUS\tDEVICES\tPID\tENDPOINT\tOWNER\tUP", rows)
 				})
 			}
 		}}

@@ -223,6 +223,100 @@ func contains(xs []string, s string) bool {
 	return false
 }
 
+// DecideChips places a launch that owns count whole chips (Tenstorrent). Candidate
+// sets are contiguous windows of the sorted chip list, aligned to count when count
+// divides the number of chips (on a Galaxy: whole trays, halves, quarters), so
+// multi-chip models get neighboring chips. External marks chips another job uses;
+// holders occupy chips (MiB[chip] > 0). The window needing the fewest evictions
+// wins, preferring idle, least recently used victims.
+func DecideChips(chips []int, external map[int]bool, holders []Holder, count int) (*Decision, error) {
+	if count < 1 {
+		count = 1
+	}
+	sorted := append([]int(nil), chips...)
+	sort.Ints(sorted)
+	if count > len(sorted) {
+		return nil, &Error{Msg: fmt.Sprintf("needs %d chips, %d present", count, len(sorted))}
+	}
+	step := 1
+	if len(sorted)%count == 0 {
+		step = count
+	}
+	type cand struct {
+		d     *Decision
+		busy  int       // victims with requests in flight
+		older time.Time // most recent use among victims (earlier is better)
+	}
+	var best *cand
+	var reasons []string
+	var blockers []string
+	for start := 0; start+count <= len(sorted); start += step {
+		win := sorted[start : start+count]
+		in := map[int]bool{}
+		for _, c := range win {
+			in[c] = true
+		}
+		c := &cand{d: &Decision{GPUs: win, PerGPU: map[int]int64{}}}
+		ok := true
+		for _, ch := range win {
+			if external[ch] {
+				ok = false
+				reasons = append(reasons, fmt.Sprintf("chip %d is in use by another job", ch))
+			}
+		}
+		for _, h := range holders {
+			touches := false
+			for ch := range h.MiB {
+				if in[ch] && h.MiB[ch] > 0 {
+					touches = true
+				}
+			}
+			if !touches {
+				continue
+			}
+			if !h.Evictable {
+				ok = false
+				blockers = append(blockers, h.ID)
+				reasons = append(reasons, fmt.Sprintf("chips %v hold %s, which may not be evicted", win, h.ID))
+				continue
+			}
+			c.d.Evict = append(c.d.Evict, h.ID)
+			if !h.Idle {
+				c.busy++
+			}
+			if h.LastUsed.After(c.older) {
+				c.older = h.LastUsed
+			}
+		}
+		if !ok {
+			continue
+		}
+		if best == nil || len(c.d.Evict) < len(best.d.Evict) ||
+			(len(c.d.Evict) == len(best.d.Evict) && (c.busy < best.busy || (c.busy == best.busy && c.older.Before(best.older)))) {
+			best = c
+		}
+	}
+	if best == nil {
+		return nil, &Error{Msg: "no free chips: " + strings.Join(dedupe(reasons), "; "), Blockers: dedupe(blockers)}
+	}
+	for _, ch := range best.d.GPUs {
+		best.d.PerGPU[ch] = 1
+	}
+	return best.d, nil
+}
+
+func dedupe(xs []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, x := range xs {
+		if !seen[x] {
+			seen[x] = true
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // combinations returns every k-subset of xs, in order.
 func combinations(xs []int, k int) [][]int {
 	var out [][]int

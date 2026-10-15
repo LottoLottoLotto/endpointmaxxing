@@ -35,9 +35,14 @@ func baseVars() map[string]string {
 
 // Resolve finds m's binary: config override, then $binary.env, then candidates.
 func Resolve(m *spec.Manifest, ov config.EngineOverride) *Engine {
-	if ov.Memory != nil {
+	if ov.Memory != nil || ov.Accelerator != nil {
 		mm := *m // the override is local to this install: never mutate the shared manifest
-		mm.Memory = *ov.Memory
+		if ov.Memory != nil {
+			mm.Memory = *ov.Memory
+		}
+		if ov.Accelerator != nil {
+			mm.Accelerator = *ov.Accelerator
+		}
 		m = &mm
 	}
 	e := &Engine{Manifest: m, Override: ov}
@@ -117,30 +122,6 @@ func (e *Engine) Version() string {
 	return ""
 }
 
-// Vars returns the engine's placeholder values: base, binary, manifest vars, user vars.
-func (e *Engine) Vars() (map[string]string, error) {
-	v := baseVars()
-	v["bin"] = e.Bin
-	v["bin_dir"] = filepath.Dir(e.Bin)
-	layer := func(src map[string]string) error {
-		for _, k := range sortedKeys(src) {
-			x, err := spec.Expand(src[k], v)
-			if err != nil {
-				return fmt.Errorf("vars.%s: %w", k, err)
-			}
-			if strings.Contains(x, "/") {
-				x = filepath.Clean(x)
-			}
-			v[k] = x
-		}
-		return nil
-	}
-	if err := layer(e.Manifest.Vars); err != nil {
-		return nil, err
-	}
-	return v, layer(e.Override.Vars)
-}
-
 func sortedKeys(m map[string]string) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
@@ -152,6 +133,7 @@ func sortedKeys(m map[string]string) []string {
 
 // Request is everything needed to build a launch plan.
 type Request struct {
+	ID    string // instance id ({instance})
 	Name  string // served model name (API model id)
 	Model ModelRef
 	Host  string
@@ -160,6 +142,12 @@ type Request struct {
 	Flags map[string]string
 	// Args are extra engine arguments appended verbatim.
 	Args []string
+	// PreArgs replace the manifest's {pre_args} element.
+	PreArgs []string
+	// Vars are the model's placeholder values; they win over manifest and install vars.
+	Vars map[string]string
+	// Devices are the accelerator chips placement assigned (Tenstorrent).
+	Devices []int
 	// Lenient drops unified flags the engine cannot express instead of failing.
 	Lenient bool
 }
@@ -190,13 +178,82 @@ type Plan struct {
 	// GPUs and PlannedMiB are filled by placement before Start.
 	GPUs       []int `json:"gpus,omitempty"`
 	PlannedMiB int64 `json:"planned_mib,omitempty"`
-	// Placement explains the memory decision (need, source, evictions).
+	// Placement explains the placement decision (need, source, evictions).
 	Placement string `json:"placement,omitempty"`
+	// Accelerator is the engine's device kind; Devices the chips it owns (Tenstorrent).
+	Accelerator string `json:"accelerator"`
+	Devices     []int  `json:"devices,omitempty"`
+	// Cleanup runs after the instance stops or dies.
+	Cleanup [][]string `json:"cleanup,omitempty"`
+	// Prepare runs before the launch.
+	Prepare [][]string `json:"prepare,omitempty"`
 
+	lockMode    string // substrate | engine (Tenstorrent)
+	resetOnKill bool
 	stopSignal  string
 	stopTimeout time.Duration
 	readyIn     time.Duration
 	apiKey      string
+}
+
+// vars returns the placeholder values for one launch: base, binary and request values,
+// plus manifest vars overridden by install vars overridden by model vars. Vars may
+// reference each other in any order: a model that sets cache also moves every var
+// derived from {cache}.
+func (e *Engine) vars(r Request) (map[string]string, error) {
+	v := baseVars()
+	v["bin"] = e.Bin
+	v["bin_dir"] = filepath.Dir(e.Bin)
+	v["model"] = r.Model.Ref
+	v["model_path"] = r.Model.Path
+	v["name"] = r.Name
+	v["host"] = r.Host
+	v["port"] = fmt.Sprint(r.Port)
+	v["instance"] = r.ID
+	v["devices"] = joinInts(r.Devices)
+	v["device_count"] = fmt.Sprint(len(r.Devices))
+	raw := map[string]string{}
+	for _, layer := range []map[string]string{e.Manifest.Vars, e.Override.Vars, r.Vars} {
+		for k, x := range layer {
+			raw[k] = x
+		}
+	}
+	for len(raw) > 0 {
+		progress := false
+		for _, k := range sortedKeys(raw) {
+			ready := true
+			for _, ref := range spec.Placeholders(raw[k]) {
+				if _, pending := raw[ref]; pending && ref != k {
+					ready = false
+				}
+			}
+			if !ready {
+				continue
+			}
+			x, err := spec.Expand(raw[k], v)
+			if err != nil {
+				return nil, fmt.Errorf("vars.%s: %w", k, err)
+			}
+			if strings.Contains(x, "/") && !strings.Contains(x, ":") {
+				x = filepath.Clean(x) // paths only: image refs (name:tag) stay as written
+			}
+			v[k] = x
+			delete(raw, k)
+			progress = true
+		}
+		if !progress {
+			return nil, fmt.Errorf("vars %v reference each other in a cycle", sortedKeys(raw))
+		}
+	}
+	return v, nil
+}
+
+func joinInts(xs []int) string {
+	s := make([]string, len(xs))
+	for i, x := range xs {
+		s[i] = fmt.Sprint(x)
+	}
+	return strings.Join(s, ",")
 }
 
 // Build turns a request into a plan without side effects.
@@ -204,27 +261,43 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 	if !e.Installed() {
 		return nil, errs.New(errs.NotFound, "engine %s is not installed (tried: %s)", e.ID, strings.Join(e.Tried, ", "))
 	}
-	v, err := e.Vars()
-	if err != nil {
-		return nil, err
-	}
 	if strings.Contains(strings.Join(e.Launch.Command, " "), "{model_path}") && r.Model.Path == "" {
 		return nil, errs.New(errs.Unsupported, "engine %s needs a local model file; %s is not downloaded", e.ID, r.Model.Source)
 	}
-	v["model"] = r.Model.Ref
-	v["model_path"] = r.Model.Path
-	v["name"] = r.Name
-	v["host"] = r.Host
-	v["port"] = fmt.Sprint(r.Port)
-
+	v, err := e.vars(r)
+	if err != nil {
+		return nil, err
+	}
+	// A manifest var declared empty is a required per-model setting (e.g. a container image).
+	for k, x := range e.Manifest.Vars {
+		if x == "" && v[k] == "" {
+			return nil, errs.New(errs.Usage, "engine %s needs vars.%s for model %s (substrate model add ... --var %s=...)", e.ID, k, r.Name, k)
+		}
+	}
 	p := &Plan{
 		Engine: e.ID, Name: r.Name, Model: r.Model.Source, Format: r.Model.Format,
 		Host: r.Host, Port: r.Port, Env: map[string]string{}, APIs: e.Capabilities.APIs,
+		Accelerator: e.AcceleratorKind(), Devices: r.Devices,
+		lockMode: e.Accelerator.Lock, resetOnKill: e.Accelerator.ResetOnKill,
 		stopSignal: e.Launch.StopSignal, stopTimeout: e.Launch.StopTimeout.Or(30 * time.Second),
 		readyIn: e.Health.Timeout.Or(10 * time.Minute), apiKey: r.Flags["api_key"],
 	}
-	if p.Argv, err = spec.ExpandAll(e.Launch.Command, v); err != nil {
-		return nil, err
+	if p.lockMode == "" {
+		p.lockMode = "substrate"
+	}
+	for _, a := range e.Launch.Command {
+		if a == spec.PreArgs {
+			p.Argv = append(p.Argv, r.PreArgs...)
+			continue
+		}
+		x, err := spec.Expand(a, v)
+		if err != nil {
+			return nil, err
+		}
+		p.Argv = append(p.Argv, x)
+	}
+	if len(r.PreArgs) > 0 && !contains(e.Launch.Command, spec.PreArgs) {
+		return nil, errs.New(errs.Unsupported, "engine %s has no %s slot for pre-args %v", e.ID, spec.PreArgs, r.PreArgs)
 	}
 	if p.Cwd, err = spec.Expand(e.Launch.Cwd, v); err != nil {
 		return nil, err
@@ -233,6 +306,20 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 		if p.Env[k], err = spec.Expand(x, v); err != nil {
 			return nil, err
 		}
+	}
+	for _, c := range e.Launch.Prepare {
+		cmd, err := spec.ExpandAll(c, v)
+		if err != nil {
+			return nil, err
+		}
+		p.Prepare = append(p.Prepare, cmd)
+	}
+	for _, c := range e.Launch.Cleanup {
+		cmd, err := spec.ExpandAll(c, v)
+		if err != nil {
+			return nil, err
+		}
+		p.Cleanup = append(p.Cleanup, cmd)
 	}
 
 	var unsupported []string
@@ -286,4 +373,13 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 	p.BaseURL = fmt.Sprintf("http://%s:%d", connect, r.Port)
 	p.HealthURL = p.BaseURL + e.Health.Path
 	return p, nil
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

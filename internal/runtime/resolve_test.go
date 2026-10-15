@@ -102,6 +102,38 @@ func TestMemoryOverrideIsPerInstall(t *testing.T) {
 	}
 }
 
+func TestTTVLLMPlanPlacesPreArgsVarsAndChips(t *testing.T) {
+	e := engine(t, "tt-vllm", config.EngineOverride{})
+	r := req(map[string]string{"ctx": "8192"})
+	r.ID, r.Devices = "lfm.tt-vllm", []int{2, 3}
+	r.PreArgs = []string{"-e", "LFM2_SPECULATE=1"}
+	r.Args = []string{"--max-num-seqs", "1"}
+	if _, err := e.Build(r); err == nil || !strings.Contains(err.Error(), "vars.image") {
+		t.Fatalf("missing image: %v", err)
+	}
+	r.Vars = map[string]string{"image": "lfm25-p150:dev-m12", "mesh": "P150x2"}
+	p, err := e.Build(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Join(p.Argv, " ")
+	for _, want := range []string{
+		"--name substrate-lfm.tt-vllm",
+		"-e TT_VISIBLE_DEVICES=2,3 -e LFM2_SPECULATE=1 --entrypoint", // pre-args sit before the image
+		"lfm25-p150:dev-m12 -m vllm.entrypoints.openai.api_server",   // an image tag survives path cleaning
+		"MESH_DEVICE=P150x2",
+		"--served-model-name m",
+		"--max-model-len 8192 --max-num-seqs 1",
+	} {
+		if !strings.Contains(argv, want) {
+			t.Fatalf("argv lacks %q:\n%s", want, argv)
+		}
+	}
+	if p.Accelerator != spec.AccelTenstorrent || len(p.Cleanup) != 1 || p.Cleanup[0][3] != "substrate-lfm.tt-vllm" {
+		t.Fatalf("plan %+v", p)
+	}
+}
+
 func TestStrataVarsOverride(t *testing.T) {
 	e := engine(t, "strata", config.EngineOverride{Vars: map[string]string{"server": "tt/serve/server_tt.py"}})
 	r := req(nil)

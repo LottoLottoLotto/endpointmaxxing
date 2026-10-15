@@ -60,6 +60,14 @@ launch:
   env: {PATH: "{bin_dir}:{env.PATH}"}  # optional
   stop_signal: SIGTERM           # SIGTERM (default) | SIGINT | SIGQUIT | SIGHUP
   stop_timeout: 30s              # default 30s
+  prepare: [[mkdir, -p, "{cache}"]]                 # optional: run before each launch; failure aborts it
+  cleanup: [[docker, rm, -f, "substrate-{instance}"]] # optional: run after every stop and after a crash
+
+accelerator:                     # optional; default {kind: nvidia}
+  kind: tenstorrent              # nvidia | tenstorrent
+  devices: 1                     # chips per instance (models override with --devices)
+  lock: substrate                # substrate: the engine inherits the per-chip locks; engine: it takes them itself
+  reset_on_kill: true            # tt-smi -r the chips after a forced stop or a crash
 
 health:
   path: /health                  # required
@@ -116,9 +124,15 @@ install can override the block in `config.yaml`, under
 | `{model_path}` | local file or directory. If the command uses it, launching an undownloaded repo fails |
 | `{name}` | served model name, which is the API `model` id |
 | `{host}`, `{port}` | listen address and port |
+| `{instance}` | the instance id (e.g. for container names) |
+| `{devices}`, `{device_count}` | the Tenstorrent chips placement assigned (`0,1`) and how many |
 | `{value}` | the flag value, inside `flags` only |
 | `{env.NAME}` | the environment variable `NAME` |
-| `{<var>}` | anything declared in `vars` |
+| `{<var>}` | anything declared in `vars`. Install overrides and models (`model add --var K=V`) replace values, and vars may reference each other. A var declared `""` must be set per model. |
+
+`{pre_args}`, as a whole element of `launch.command`, is replaced by the
+model's `--pre-arg` list. It is used for options that must sit
+mid-command, such as docker options before the image name.
 
 Validation rejects an unknown placeholder, an unknown field, an unknown
 format or API, a flag that is not in the unified vocabulary, a non-bool flag
@@ -162,4 +176,5 @@ engines:
     vars: {server: tt/serve/server_tt.py}   # Tenstorrent port's server
     env: {STRATA_ENGINE_READY_S: "0"}
     args: [--idle-unload, "900"]            # appended to every launch
+    accelerator: {kind: tenstorrent, lock: engine}   # this build runs on Tenstorrent chips
 ```

@@ -26,8 +26,10 @@ import (
 	"github.com/lotto/substrate/internal/model"
 	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/route"
+	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/spec"
 	"github.com/lotto/substrate/internal/store"
+	"github.com/lotto/substrate/internal/tenstorrent"
 )
 
 // ---- model ----
@@ -72,6 +74,10 @@ func modelAddCmd() *command {
 			vram := fs.Int64("vram-mib", 0, "declare the model's total GPU memory need (overrides estimates and measurements)")
 			idle := fs.Duration("idle-unload", 0, "unload after this long without requests (overrides gateway.idle_unload)")
 			maxConc := fs.Int("max-concurrency", 0, "in-flight request limit for this model (overrides gateway.max_concurrency)")
+			devices := fs.Int("devices", 0, "accelerator chips one instance owns (Tenstorrent; overrides the engine's default)")
+			var vars, preArgs multi
+			fs.Var(&vars, "var", "manifest placeholder for this model, KEY=VALUE (repeatable; e.g. image=lfm25-p150:dev-m12)")
+			fs.Var(&preArgs, "pre-arg", "argument inserted at the engine's {pre_args} slot (repeatable; needs --engine; e.g. -e X=1)")
 			flags := map[string]string{}
 			addUnified(fs, flags)
 			return func(e *env, pos, extra []string) error {
@@ -79,6 +85,13 @@ func modelAddCmd() *command {
 					return err
 				}
 				name, source := pos[0], pos[1]
+				if len(preArgs) > 0 && *engine == "" {
+					return errs.New(errs.Usage, "model add: --pre-arg needs --engine (pre-args are engine-specific)")
+				}
+				vm, err := kv(vars, "--var")
+				if err != nil {
+					return err
+				}
 				if len(extra) > 0 && *engine == "" {
 					return errs.New(errs.Usage, "model add: engine args after -- need --engine (they are engine-specific)")
 				}
@@ -100,6 +113,13 @@ func modelAddCmd() *command {
 				m := app.FromInfo(name, info)
 				m.Engine = *engine
 				m.VRAMMiB, m.IdleUnload, m.MaxConcurrency = *vram, spec.Duration(*idle), *maxConc
+				m.Devices = *devices
+				if len(vm) > 0 {
+					m.Vars = vm
+				}
+				if len(preArgs) > 0 {
+					m.PreArgs = map[string][]string{*engine: preArgs}
+				}
 				if len(flags) > 0 {
 					m.Flags = flags
 				}
@@ -673,6 +693,17 @@ func cmdDoctor() *command {
 					"gpus": gs, "engines": engines, "manifest_errors": manifestErrs, "models": len(a.RegisteredModels()),
 					"usage_db": dbStatus, "logging": a.Cfg.Logging,
 				}
+				type chip struct {
+					Index int    `json:"index"`
+					Lock  string `json:"lock"`
+					Held  bool   `json:"lock_held"`
+					Users []int  `json:"users"`
+				}
+				chips := []chip{}
+				for _, n := range tenstorrent.Chips() {
+					chips = append(chips, chip{Index: n, Lock: runtime.TT.LockPath(n), Held: runtime.TT.Held(n), Users: tenstorrent.Users(n)})
+				}
+				res["tenstorrent"] = chips
 				if gerr != nil {
 					res["gpu_error"] = gerr.Error()
 				}
@@ -688,6 +719,13 @@ func cmdDoctor() *command {
 						for _, g := range gs {
 							fmt.Fprintf(w, "GPU %d: %s, %d/%d MiB used\n", g.Index, g.Name, g.MemUsedMiB, g.MemTotalMiB)
 						}
+					}
+					for _, c := range chips {
+						state := "free"
+						if c.Held || len(c.Users) > 0 {
+							state = fmt.Sprintf("busy (lock held=%v, open by pids %v)", c.Held, c.Users)
+						}
+						fmt.Fprintf(w, "Tenstorrent chip %d: %s; lock %s\n", c.Index, state, c.Lock)
 					}
 					fmt.Fprintln(w)
 					for _, r := range engines {

@@ -56,6 +56,10 @@ type Gateway struct {
 	lastUsed map[string]time.Time // per instance
 	idle     *sync.Cond
 	rr       map[string]int
+	// waiting counts requests per model waiting for it to be (swapped in and) started.
+	waiting map[string]int
+	// swapQueue orders models waiting for devices other models hold.
+	swapQueue []string
 
 	statusMu sync.Mutex
 	status   map[string]*instState
@@ -89,7 +93,7 @@ func New(a *app.App, logger *log.Logger) *Gateway {
 	c := a.Cfg.Gateway
 	g := &Gateway{App: a, Cfg: c, Autostart: c.Autostart, Log: logger,
 		startLocks: map[string]*sync.Mutex{}, active: map[string]int{}, lastUsed: map[string]time.Time{},
-		rr: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics()}
+		rr: map[string]int{}, waiting: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics()}
 	g.idle = sync.NewCond(&g.activeMu)
 	g.lim.byModel = map[string]*limiter{}
 	if a.Cfg.Logging.Enabled {
@@ -377,6 +381,11 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	cands, started, err := g.pick(r.Context(), req.Model, api)
 	rec.Autostarted = started
 	if err != nil {
+		if c := errs.CodeOf(err); c == errs.Timeout || c == errs.Capacity {
+			if s := g.loadEstimate(req.Model); s > 0 {
+				w.Header().Set("Retry-After", fmt.Sprint(s))
+			}
+		}
 		fail(statusFor(err), err)
 		return
 	}

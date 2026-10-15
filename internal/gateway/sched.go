@@ -77,12 +77,162 @@ func (g *Gateway) pick(ctx context.Context, model, api string) ([]*runtime.Insta
 	if _, ok := g.App.RegisteredModel(model); !ok {
 		return nil, false, errs.New(errs.NotFound, "model %q is neither running nor registered (see `substrate model add`)", model)
 	}
+	g.addWaiting(model, 1)
+	defer g.addWaiting(model, -1)
+	// Wait (as long as this client does) until the devices the model needs may be taken.
+	if err := g.awaitTurn(ctx, model, ""); err != nil {
+		return nil, false, err
+	}
 	// A start outlives the client that triggered it: other requests wait on it.
 	in, err := g.ensure(context.WithoutCancel(ctx), model, "", api, 0)
 	if err != nil {
 		return nil, false, err
 	}
 	return []*runtime.Instance{in}, true, nil
+}
+
+func (g *Gateway) addWaiting(model string, d int) {
+	g.activeMu.Lock()
+	g.waiting[model] += d
+	if g.waiting[model] <= 0 {
+		delete(g.waiting, model)
+	}
+	g.activeMu.Unlock()
+}
+
+// swappable reports whether instance id may give up its devices now: it has been
+// resident for min_residency and has no demand of its own, or it has held them for
+// max_residency while others wait (its in-flight requests are then drained first).
+func (g *Gateway) swappable(id string) bool {
+	in, err := runtime.Get(id)
+	if err != nil || !in.Alive() {
+		return true
+	}
+	if in.ReadyAt == nil {
+		return false // still loading: never interrupt a load
+	}
+	resident := time.Since(*in.ReadyAt)
+	sw := g.Cfg.Swap
+	if resident < time.Duration(sw.MinResidency) {
+		return false
+	}
+	g.activeMu.Lock()
+	demand := g.active[id] + g.waiting[in.Name]
+	g.activeMu.Unlock()
+	demand += g.lim.queued()[in.Name]
+	return demand == 0 || resident >= time.Duration(sw.MaxResidency)
+}
+
+// awaitTurn blocks until starting model needs no eviction, or every instance it would
+// evict is swappable and the model is first in line among those waiting for a swap.
+// For Tenstorrent models it also waits out chips held by other jobs.
+func (g *Gateway) awaitTurn(ctx context.Context, model, engine string) error {
+	t, err := g.App.ResolveModel(model)
+	if err != nil {
+		return err
+	}
+	if ins, _ := runtime.List(); anyAlive(ins, model) {
+		return nil // loading or loaded: ensure waits for it
+	}
+	engineID, err := g.App.EngineFor(t, engine)
+	if err != nil {
+		return err
+	}
+	e, err := g.App.Engine(engineID)
+	if err != nil {
+		return err
+	}
+	chips := e.AcceleratorKind() == spec.AccelTenstorrent
+	opts := app.LaunchOpts{Engine: engine, Owner: "gateway", Activity: g.activity}
+	timeout := time.Duration(g.Cfg.Swap.WaitTimeout)
+	start := time.Now()
+	queued := false
+	defer func() {
+		if queued {
+			g.dequeueSwap(model)
+		}
+	}()
+	for {
+		victims, err := g.App.WouldEvict(t, opts)
+		blockedBy := ""
+		switch {
+		case err != nil && !(chips && errs.CodeOf(err) == errs.Capacity):
+			return err
+		case err != nil:
+			blockedBy = err.Error() // chips held by another job: wait for them
+		case len(victims) == 0:
+			return nil
+		default:
+			if !queued {
+				g.enqueueSwap(model)
+				queued = true
+			}
+			ready := g.headOfSwapQueue(model)
+			for _, v := range victims {
+				ready = ready && g.swappable(v)
+			}
+			if ready {
+				g.Log.Printf("swap: %s takes the devices of %s after waiting %s", model, strings.Join(victims, ", "),
+					time.Since(start).Round(time.Second))
+				return nil
+			}
+			blockedBy = "waiting to swap out " + strings.Join(victims, ", ")
+		}
+		if timeout > 0 && time.Since(start) > timeout {
+			return errs.New(errs.Timeout, "%s: not swapped in within %s (%s)", model, timeout, blockedBy)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// loadEstimate is how many seconds model last took to load (for Retry-After); 0 when unknown.
+func (g *Gateway) loadEstimate(model string) int {
+	db, err := g.App.DB()
+	if err != nil {
+		return 0
+	}
+	d, err := db.LastLoad(model)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return int(d.Seconds()) + 1
+}
+
+func anyAlive(ins []*runtime.Instance, model string) bool {
+	for _, in := range ins {
+		if in.Name == model && in.Alive() {
+			return true
+		}
+	}
+	return false
+}
+
+// The swap queue orders models waiting for devices: first come, first served.
+func (g *Gateway) enqueueSwap(model string) {
+	g.activeMu.Lock()
+	g.swapQueue = append(g.swapQueue, model)
+	g.activeMu.Unlock()
+}
+
+func (g *Gateway) dequeueSwap(model string) {
+	g.activeMu.Lock()
+	for i, m := range g.swapQueue {
+		if m == model {
+			g.swapQueue = append(g.swapQueue[:i], g.swapQueue[i+1:]...)
+			break
+		}
+	}
+	g.activeMu.Unlock()
+}
+
+func (g *Gateway) headOfSwapQueue(model string) bool {
+	g.activeMu.Lock()
+	defer g.activeMu.Unlock()
+	return len(g.swapQueue) > 0 && g.swapQueue[0] == model
 }
 
 func (g *Gateway) modelLock(model string) *sync.Mutex {
@@ -196,6 +346,7 @@ func (g *Gateway) evict(model string) app.Evictor {
 			}
 			g.waitIdle(id, 2*time.Minute)
 			g.Log.Printf("evicting %s to make room for %s", id, model)
+			g.metrics.evicted(in.Name, model)
 			if err := in.StopFor("evicted for " + model); err != nil {
 				return err
 			}

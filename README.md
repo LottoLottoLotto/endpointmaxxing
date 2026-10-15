@@ -141,6 +141,59 @@ Placement modes (`gateway.placement` or `serve --placement`):
 `substrate run <model> --dry-run` shows the decision, for example
 `placement: GPU 0, 9830 MiB each (0.40 of each GPU)`.
 
+### Tenstorrent
+
+Today's Tenstorrent runtimes require each chip to be owned by one process.
+So substrate treats chips as whole devices, and a model on a busy chip waits
+for its turn to swap in instead of sharing the chip:
+
+- **Chip assignment.** A Tenstorrent engine's definition declares
+  `accelerator: {kind: tenstorrent}`. Each instance gets whole chips: one by
+  default, or `model add --devices N`.
+  - Multi-chip models get neighboring chips, aligned to the chip count. On a
+    32-chip Galaxy, an 8-chip model gets a whole tray.
+  - The chosen chips go to the engine as `{devices}`, for example
+    `TT_VISIBLE_DEVICES`.
+- **Sharing the card with other jobs.** substrate uses the same per-chip
+  lock files as other jobs on the card (`tenstorrent.lock`, with per-chip
+  overrides in `tenstorrent.locks`). It also treats a chip as busy while
+  `/proc/driver/tenstorrent/<n>/pids` lists any process.
+  - Docker-based engines (`lock: substrate`) inherit the lock, so it lives
+    exactly as long as the engine.
+  - Engines that lock the chip themselves (`lock: engine`, such as Strata's
+    `tt-engine.sh`) are only checked before starting.
+- **Swapping.** When a model needs chips another model holds, its requests
+  wait. The resident model gives up its chips only when one of these is true:
+  - it has been loaded for at least `gateway.swap.min_residency` (default
+    30s) and has no requests in flight or queued;
+  - it has held the chips for `gateway.swap.max_residency` (default 10m)
+    while other models wait.
+
+  Waiting models swap in first come, first served. A request that waits
+  longer than `gateway.swap.wait_timeout` (default 15m) gets a 504 with
+  `Retry-After` set to the model's last measured load time. Chips held by
+  another team's job are waited for in the same way.
+- **Cleanup.** After a forced stop or a crash, substrate removes the container
+  (`launch.cleanup`) and resets the chips (`tt-smi -r`).
+- **Models.** The builtin `tt-vllm` engine runs one tt-metal vLLM image per
+  model:
+
+```sh
+substrate model add lfm2.5-24b /var/tmp/lfm25/quant/ckpt --engine tt-vllm \
+  --var image=lfm25-p150:dev-m12 --var cache=/var/tmp/lfm25/cache --ctx 32768 \
+  --pre-arg -e --pre-arg LFM_FAST_DECODE=1 -- --block-size 64 --enable-prefix-caching ...
+```
+
+  - `--var` sets the engine's placeholders: `image` (required), `cache`
+    (tensor cache, which must be specific to the checkpoint), `kernel_cache`,
+    and `mesh` (`MESH_DEVICE`, for example `P150x4` for multi-chip models).
+  - `--pre-arg` adds docker options before the image name.
+  - Arguments after `--` go to vLLM.
+
+`substrate doctor` lists each chip with its lock file, who holds it, and
+which processes have it open. The device column of `substrate ps` shows
+`tt:<chips>`.
+
 ### Management API
 
 For agents that only speak HTTP, the gateway also offers a management API
@@ -348,6 +401,10 @@ gateway:
   upstream_idle_timeout: 5m
   metrics_public: false
   stream_usage: true
+  swap:
+    min_residency: 30s       # a model keeps its chips at least this long once ready
+    max_residency: 10m       # ...and yields after this long when others wait, even with its own demand
+    wait_timeout: 15m        # longest a request waits to be swapped in
 logging:
   enabled: true
   bodies: false          # true stores prompts and outputs
@@ -357,8 +414,12 @@ logging:
 prefer:
   gguf: [buun-llama-cpp, llama.cpp]
 engines:
-  strata:                    # a Strata build that runs on a Tenstorrent P150, not the NVIDIA GPU
-    memory: {mode: none}
+  strata:                    # a Strata build that runs on a Tenstorrent P150
+    accelerator: {kind: tenstorrent, devices: 1, lock: engine}
+tenstorrent:
+  lock: /var/tmp/tenstorrent/chip-{n}.lock   # every job on the card must use the same file
+  locks: {0: /var/tmp/gemma4-12b/device.lock} # per-chip overrides, to match existing scripts
+  tt_smi: tt-smi
 ```
 
 ## Builtin engines
@@ -369,4 +430,5 @@ engines:
 | `buun-llama-cpp` | gguf, safetensors | VBR/TurboQuant/TCQ KV cache; `--kv-cache vbr` is passed through |
 | `vllm` | safetensors (gguf at low priority) | the venv's `bin/` is put on PATH (ninja for JIT kernels) |
 | `sglang` | safetensors (gguf at low priority) | entry point is a python that can import sglang |
-| `strata` | strata-config | the model is the `strata-<model>.json` that Strata's setup writes |
+| `strata` | strata-config | the model is the `strata-<model>.json` that Strata's setup writes; a Tenstorrent build sets `engines.strata.accelerator: {kind: tenstorrent, lock: engine}` |
+| `tt-vllm` | safetensors (opt-in with `--engine tt-vllm`) | tt-metal vLLM in docker, one image per model (`--var image=...`), whole Tenstorrent chips |

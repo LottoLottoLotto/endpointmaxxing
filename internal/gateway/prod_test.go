@@ -18,6 +18,7 @@ import (
 	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/runtime"
+	"github.com/lotto/substrate/internal/spec"
 )
 
 // instance records an instance id serving model at url, alive as this test process.
@@ -149,6 +150,49 @@ func TestFailoverToAnotherReplica(t *testing.T) {
 		if got := call(t, "POST", srv.URL+"/v1/chat/completions", "", `{"model":"m"}`); got != 200 {
 			t.Fatalf("status %d, want failover to the live replica", got)
 		}
+	}
+}
+
+func TestSwapPolicy(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	backend := okBackend()
+	defer backend.Close()
+	instance(t, "a.fake", "a", backend.URL)
+	g, _ := newGateway(t)
+	g.Cfg.Swap.MinResidency = spec.Duration(30 * time.Second)
+	g.Cfg.Swap.MaxResidency = spec.Duration(10 * time.Minute)
+	setReady := func(ago time.Duration) {
+		in, _ := runtime.Get("a.fake")
+		at := time.Now().Add(-ago)
+		in.ReadyAt = &at
+		data, _ := json.Marshal(in)
+		os.WriteFile(filepath.Join(paths.State(), "instances", "a.fake.json"), data, 0o600)
+	}
+	setReady(10 * time.Second)
+	if g.swappable("a.fake") {
+		t.Fatal("swapped out before min_residency")
+	}
+	setReady(time.Minute)
+	if !g.swappable("a.fake") {
+		t.Fatal("idle model past min_residency kept its devices")
+	}
+	g.addWaiting("a", 1) // its own request is waiting
+	if g.swappable("a.fake") {
+		t.Fatal("swapped out with its own demand before max_residency")
+	}
+	setReady(11 * time.Minute)
+	if !g.swappable("a.fake") {
+		t.Fatal("kept its devices past max_residency while others wait")
+	}
+	g.addWaiting("a", -1)
+	g.acquire("a.fake") // a request in flight
+	setReady(time.Minute)
+	if g.swappable("a.fake") {
+		t.Fatal("swapped out with a request in flight")
+	}
+	g.release("a.fake")
+	if !g.swappable("missing.fake") {
+		t.Fatal("a vanished instance blocks a swap")
 	}
 }
 

@@ -15,7 +15,9 @@ import (
 	"github.com/lotto/substrate/internal/placement"
 	"github.com/lotto/substrate/internal/route"
 	"github.com/lotto/substrate/internal/runtime"
+	"github.com/lotto/substrate/internal/spec"
 	"github.com/lotto/substrate/internal/store"
+	"github.com/lotto/substrate/internal/tenstorrent"
 )
 
 // Evictor stops the instances placement chose to make room.
@@ -28,6 +30,24 @@ type placed struct {
 	gpus    []int
 	perGPU  int64
 	explain string
+	evicted []string
+}
+
+// WouldEvict reports which instances launching t through the gateway would stop
+// (empty when it fits as things are). Errors are capacity problems eviction cannot fix.
+func (a *App) WouldEvict(t *Target, o LaunchOpts) ([]string, error) {
+	o.Evict = func([]string) error { return nil }
+	o.dryRun = true
+	flags := map[string]string{}
+	for k, v := range o.Flags {
+		flags[k] = v
+	}
+	o.Flags = flags
+	p, err := a.place(t, &o)
+	if err != nil || p == nil {
+		return nil, err
+	}
+	return p.evicted, nil
 }
 
 func (p *placed) apply(plan *runtime.Plan) {
@@ -158,15 +178,9 @@ func (a *App) peak(model, engine string) int64 {
 	return p
 }
 
-// place decides GPUs for t and evicts when allowed; it sets the gpus flag on o.
+// place decides devices for t and evicts when allowed: NVIDIA GPUs by memory (it sets
+// the gpus flag on o), Tenstorrent chips as whole devices (it sets o.devices).
 func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
-	if o.Force || a.Cfg.Gateway.Placement == config.PlacementOff {
-		return nil, nil
-	}
-	gpus, err := gpu.List()
-	if err != nil || len(gpus) == 0 {
-		return nil, nil // no NVIDIA GPUs visible: nothing to place
-	}
 	engineID, err := a.EngineFor(t, o.Engine)
 	if err != nil {
 		return nil, err
@@ -175,8 +189,17 @@ func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
 	if err != nil {
 		return nil, err
 	}
-	if e.MemoryMode() == "none" {
+	if e.AcceleratorKind() == spec.AccelTenstorrent {
+		// Chips are always assigned (the engine needs TT_VISIBLE_DEVICES and the locks);
+		// --force and placement off only forbid evictions.
+		return a.placeChips(t, o, e, engineID)
+	}
+	if o.Force || a.Cfg.Gateway.Placement == config.PlacementOff || e.MemoryMode() == "none" {
 		return nil, nil
+	}
+	gpus, err := gpu.List()
+	if err != nil || len(gpus) == 0 {
+		return nil, nil // no NVIDIA GPUs visible: nothing to place
 	}
 	flags := map[string]string{}
 	for k, v := range t.Model.Flags {
@@ -251,7 +274,74 @@ func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
 		}
 		explain += "; " + verb + " " + strings.Join(d.Evict, ", ")
 	}
-	return &placed{gpus: d.GPUs, perGPU: d.PerGPU[d.GPUs[0]], explain: explain}, nil
+	return &placed{gpus: d.GPUs, perGPU: d.PerGPU[d.GPUs[0]], explain: explain, evicted: d.Evict}, nil
+}
+
+// placeChips assigns whole Tenstorrent chips to t, evicting evictable instances that hold them.
+func (a *App) placeChips(t *Target, o *LaunchOpts, e *runtime.Engine, engineID string) (*placed, error) {
+	chips := tenstorrent.Chips()
+	if len(chips) == 0 {
+		return nil, errs.New(errs.Unsupported, "%s runs on %s, which needs Tenstorrent chips; none are present (/dev/tenstorrent)", t.Model.Name, engineID)
+	}
+	count := t.Model.Devices
+	if count == 0 {
+		count = e.Accelerator.Devices
+	}
+	if count == 0 {
+		count = 1
+	}
+	name := o.Name
+	if name == "" {
+		name = t.Model.Name
+	}
+	ins, _ := runtime.List()
+	owned := map[int]bool{}
+	var holders []placement.Holder
+	for _, in := range ins {
+		if in.Accelerator != spec.AccelTenstorrent || len(in.Devices) == 0 || !in.Alive() {
+			continue
+		}
+		h := placement.Holder{ID: in.ID, MiB: map[int]int64{}, Idle: true, LastUsed: in.StartedAt,
+			Evictable: !o.Force && a.Cfg.Gateway.Placement != config.PlacementOff && in.Name != name &&
+				contains(a.Cfg.Gateway.EvictOwners, in.Owner) && in.ReadyAt != nil}
+		for _, d := range in.Devices {
+			h.MiB[d] = 1
+			owned[d] = true
+		}
+		if o.Activity != nil {
+			h.Idle, h.LastUsed = o.Activity(in.ID)
+		}
+		holders = append(holders, h)
+	}
+	external := map[int]bool{}
+	for _, c := range chips {
+		if !owned[c] && (runtime.TT.Held(c) || len(tenstorrent.Users(c)) > 0) {
+			external[c] = true
+		}
+	}
+	d, err := placement.DecideChips(chips, external, holders, count)
+	if err != nil {
+		return nil, errs.New(errs.Capacity, "%s on %s (%d chip(s)): %v", t.Model.Name, engineID, count, err)
+	}
+	if len(d.Evict) > 0 {
+		if o.Evict == nil {
+			return nil, errs.New(errs.Capacity, "%s on %s needs chips %s, held by %s (substrate stop ..., or launch through the gateway)",
+				t.Model.Name, engineID, tenstorrent.Join(d.GPUs), strings.Join(d.Evict, ", "))
+		}
+		if err := o.Evict(d.Evict); err != nil {
+			return nil, fmt.Errorf("evicting for %s: %w", t.Model.Name, err)
+		}
+	}
+	o.devices = d.GPUs
+	explain := fmt.Sprintf("Tenstorrent chip(s) %s", tenstorrent.Join(d.GPUs))
+	if len(d.Evict) > 0 {
+		verb := "evicted"
+		if o.dryRun {
+			verb = "would evict"
+		}
+		explain += "; " + verb + " " + strings.Join(d.Evict, ", ")
+	}
+	return &placed{explain: explain, evicted: d.Evict}, nil
 }
 
 func contains(xs []string, s string) bool {

@@ -1,0 +1,110 @@
+spec: substrate.engine/v1
+id: tt-vllm
+name: vLLM on Tenstorrent (docker)
+description: >-
+  tt-metal vLLM images (tt-inference-server builds and their derivatives) run as one container per model.
+  A model sets vars.image (its runtime image), and usually vars.cache (tensor and kernel caches,
+  which must be specific to the checkpoint) and vars.mesh (MESH_DEVICE: P150, P150x4, ...).
+homepage: https://github.com/tenstorrent/tt-inference-server
+
+binary:
+  env: DOCKER_BIN
+  candidates: [docker]
+  version: [version, --format, "{{.Client.Version}}"]
+
+vars:
+  image: ""                                        # required, per model: e.g. lfm25-p150:dev-m12
+  cache: "{data}/tt-cache/{name}"                  # TT_CACHE_PATH: tensor cache, MUST be specific to the checkpoint
+  kernel_cache: "{cache}/kernel"                   # compiled kernels (shareable between models of one image)
+  mesh: P150                                       # MESH_DEVICE
+  python: /home/container_app_user/tt-metal/python_env/bin/python
+
+launch:
+  command:
+    - "{bin}"
+    - run
+    - --rm
+    - --init
+    - --name
+    - "substrate-{instance}"
+    - --publish
+    - "127.0.0.1:{port}:8000"
+    - --device
+    - /dev/tenstorrent:/dev/tenstorrent
+    - -v
+    - /dev/hugepages:/dev/hugepages
+    - -v
+    - /dev/hugepages-1G:/dev/hugepages-1G
+    - -v
+    - "{model_path}:/model:ro"
+    - -v
+    - "{cache}:/cache"
+    - -v
+    - "{kernel_cache}:/home/container_app_user/.cache/tt-metal-cache"
+    - -e
+    - HF_MODEL=/model
+    - -e
+    - MODEL_WEIGHTS_DIR=/model
+    - -e
+    - TT_CACHE_PATH=/cache
+    - -e
+    - HF_HUB_OFFLINE=1
+    - -e
+    - TRANSFORMERS_OFFLINE=1
+    - -e
+    - VLLM_TARGET_DEVICE=tt
+    - -e
+    - TORCHDYNAMO_DISABLE=1
+    - -e
+    - "MESH_DEVICE={mesh}"
+    - -e
+    - "TT_VISIBLE_DEVICES={devices}"
+    - "{pre_args}"
+    - --entrypoint
+    - "{python}"
+    - "{image}"
+    - -m
+    - vllm.entrypoints.openai.api_server
+    - --model
+    - /model
+    - --served-model-name
+    - "{name}"
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8000"
+  # The docker client forwards SIGTERM to the container (tini -> python closes the device).
+  stop_signal: SIGTERM
+  stop_timeout: 60s
+  # If the client died first, the container would keep the chips: remove it by name.
+  cleanup:
+    - ["{bin}", rm, -f, "substrate-{instance}"]
+  # docker would create missing mount sources as root; the container user must own the caches.
+  prepare:
+    - [mkdir, -p, "{cache}", "{kernel_cache}"]
+
+health:
+  path: /health
+  # Weight conversion, kernel compilation and trace capture on a cold cache take minutes.
+  timeout: 45m
+
+accelerator:
+  kind: tenstorrent
+  devices: 1
+  lock: substrate
+  reset_on_kill: true
+
+flags:
+  ctx: [--max-model-len, "{value}"]
+  parallel: [--max-num-seqs, "{value}"]
+  api_key: [--api-key, "{value}"]
+
+capabilities:
+  formats: [safetensors]
+  quantizations: ["*"]
+  apis: [chat, completions, responses, messages]
+  features: [tenstorrent, docker, trace-capture, prefix-cache]
+
+routing:
+  # Never chosen automatically for a checkpoint: a model opts in with --engine tt-vllm.
+  priority: {safetensors: 0}

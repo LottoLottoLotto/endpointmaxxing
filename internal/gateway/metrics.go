@@ -20,8 +20,9 @@ type metrics struct {
 	tokens    map[[3]string]int64 // model, engine, kind
 	ttft      map[string]*histogram
 	duration  map[string]*histogram
-	failovers map[string]int64 // instance
-	restarts  map[string]int64 // model
+	failovers map[string]int64    // instance
+	restarts  map[string]int64    // model
+	evictions map[[2]string]int64 // evicted model, for model
 	gpus      []gpu.GPU
 	instances []store.InstanceSample
 }
@@ -50,7 +51,8 @@ func (h *histogram) observe(v float64) {
 
 func newMetrics() *metrics {
 	return &metrics{requests: map[[4]string]int64{}, tokens: map[[3]string]int64{}, ttft: map[string]*histogram{},
-		duration: map[string]*histogram{}, failovers: map[string]int64{}, restarts: map[string]int64{}}
+		duration: map[string]*histogram{}, failovers: map[string]int64{}, restarts: map[string]int64{},
+		evictions: map[[2]string]int64{}}
 }
 
 func (m *metrics) observe(r *store.Request) {
@@ -84,6 +86,12 @@ func (m *metrics) observe(r *store.Request) {
 func (m *metrics) failover(in *runtime.Instance) {
 	m.mu.Lock()
 	m.failovers[in.ID]++
+	m.mu.Unlock()
+}
+
+func (m *metrics) evicted(model, forModel string) {
+	m.mu.Lock()
+	m.evictions[[2]string{model, forModel}]++
 	m.mu.Unlock()
 }
 
@@ -231,6 +239,25 @@ func (g *Gateway) serveMetrics(w http.ResponseWriter, r *http.Request) {
 		p.sample("substrate_instance_up", l, up)
 		p.sample("substrate_instance_inflight_requests", []string{"instance", in.ID, "model", in.Name}, float64(active[in.ID]))
 	}
+	g.activeMu.Lock()
+	waitingFor := map[string]int{}
+	for k, v := range g.waiting {
+		waitingFor[k] = v
+	}
+	queueLen := len(g.swapQueue)
+	g.activeMu.Unlock()
+	p.head("substrate_model_waiting_requests", "gauge", "Requests waiting for their model to be started or swapped in.")
+	for model, n := range waitingFor {
+		p.sample("substrate_model_waiting_requests", []string{"model", model}, float64(n))
+	}
+	p.head("substrate_swap_queue_length", "gauge", "Starts waiting for devices other models hold.")
+	p.sample("substrate_swap_queue_length", nil, float64(queueLen))
+	m.mu.Lock()
+	p.head("substrate_evictions_total", "counter", "Instances stopped to make room for another model.")
+	for k, n := range m.evictions {
+		p.sample("substrate_evictions_total", []string{"model", k[0], "for", k[1]}, float64(n))
+	}
+	m.mu.Unlock()
 	p.head("substrate_queue_waiting", "gauge", "Requests waiting for a concurrency slot per model.")
 	for model, n := range g.lim.queued() {
 		p.sample("substrate_queue_waiting", []string{"model", model}, float64(n))
