@@ -236,9 +236,13 @@ under `/substrate/v1/`:
 | GET | `/substrate/v1/instances` | | instances with status, in-flight requests, idle state, last use |
 | POST | `/substrate/v1/ensure` | `{"model", "engine"?, "timeout"?}` | a ready instance (placed, evicting if needed) |
 | POST | `/substrate/v1/stop` | `{"id"}` (instance id or model name) | waits for in-flight requests, then stops |
-| GET | `/substrate/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client` | aggregates |
+| GET | `/substrate/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client`, `category`, `error_kind`, `errors`, `flagged`, `min_severity`, `rule` | aggregates |
 | GET | `/substrate/v1/requests` | same filters, plus `limit` | request records |
 | GET | `/substrate/v1/events` | same filters, plus `limit` | lifecycle events |
+| GET | `/substrate/v1/flags` | same filters | policy matches by rule and detector |
+| GET | `/substrate/v1/errors` | same filters | failed requests by error kind |
+| GET | `/substrate/v1/report` | same filters (`since` defaults to `24h`) | totals, models, clients, categories, flags, errors |
+| POST | `/substrate/v1/policy/test` | `{"text"}` or `{"body"}`, optionally `model`, `client`, `api` | category and flags, nothing sent to a model |
 
 ### Keys and access
 
@@ -255,7 +259,7 @@ substrate key rm alice
   `Authorization: Bearer` or `x-api-key`.
 - **`user` keys:** inference and `/v1/models`, limited to their model globs,
   plus `/substrate/v1/usage` and `/requests` filtered to their own records.
-- **`admin` keys:** everything, including the management API, `/events` and
+- **`admin` keys:** everything, including the management API, `/events`, `/flags`, `/errors`, `/report` and
   `/metrics`. The master key from `--api-key` or `$SUBSTRATE_API_KEY` is an
   admin key.
 - **Quotas:** going over `rpm` or `tokens-per-day` returns 429. Usage is
@@ -276,7 +280,9 @@ Prometheus text:
 - histograms of TTFT and request duration;
 - instance status, in-flight requests and queue depth;
 - GPU memory and utilization, and per-instance GPU memory and RSS;
-- failovers, restarts, and dropped usage records.
+- failovers, restarts, and dropped usage records;
+- policy matches per rule (`substrate_policy_flags_total`), requests per prompt category
+  (`substrate_requests_by_category_total`) and failures per error kind (`substrate_errors_total`).
 
 ```sh
 substrate service install --enable -- --port 7777   # systemd user unit; PATH captured from this shell
@@ -297,8 +303,8 @@ database in WAL mode. You can query it directly with any SQLite client.
 
 | Table | One row per | Contents |
 | --- | --- | --- |
-| `requests` | gateway request, or `substrate chat` request | model, instance, engine, API, stream, status, error, client, user agent, remote address, prompt/completion/cached/reasoning tokens, usage source, finish reason, autostart, queue ms (wait for a ready instance, including autostart), TTFT ms, duration ms, bytes in and out |
-| `bodies` | request, when `logging.bodies` is on | request and response bodies (capped at `body_max_bytes`) |
+| `requests` | gateway request, `substrate chat` request, or refused API key | model, instance, engine, API, stream, status, error, error kind, client, user agent, remote address, prompt/completion/cached/reasoning tokens, usage source, finish reason, autostart, queue ms (wait for a ready instance, including autostart), TTFT ms, duration ms, bytes in and out, prompt category, policy flags (JSON) and their highest severity |
+| `bodies` | request, when `logging.bodies` is on (or `logging.flagged_bodies` and the request was flagged) | request and response bodies (capped at `body_max_bytes`) |
 | `events` | lifecycle change | `start` (redacted argv), `ready` (load time), `start_failed`, `stop` (uptime), `exited` (crash, with the log tail and the number of orphaned workers killed) |
 | `gpu_samples` | GPU per sample | memory used/total, utilization, power |
 | `instance_samples` | instance per sample | GPU memory and RSS summed over the engine's whole process session, process count |
@@ -328,9 +334,13 @@ usage.
 ### Commands
 
 ```sh
-substrate usage --by model|engine|instance|client|api|day|hour|total --since 24h
+substrate usage --by model|engine|instance|client|api|category|error_kind|flag_severity|status|day|hour|total --since 24h
 substrate requests --since 1h --model qwen3-0.6b       # recent requests
+substrate requests --flagged --min-severity high       # flagged requests (also --rule, --category, --errors, --error-kind)
 substrate requests --id req_...                          # one request, with bodies if captured
+substrate report --since 7d                              # totals, models, clients, categories, flags, errors
+substrate flagged --since 7d                             # policy matches by rule and detector
+substrate errors --since 7d                              # failures by kind (`--kinds` lists them)
 substrate events --since 7d                              # starts, load times, crashes
 substrate samples [--gpu] --since 1h                     # memory over time
 substrate prune --older-than 90d
@@ -343,6 +353,74 @@ time (total time minus TTFT), over metered streams.
 Only traffic that passes through `substrate serve` or `substrate chat` is
 metered. A client that calls an engine's port directly bypasses the meter.
 GPU and memory samples are taken only while the gateway runs.
+
+### Prompt policy, classification and errors
+
+Every request the gateway proxies is inspected before it reaches an engine.
+The inspection is local and rule-based: no prompt leaves the machine, and no
+model is involved.
+
+- **Policy flags.** `policy.rules` match the prompt (system, user, assistant
+  and tool text, from any API) against built-in detectors, keywords (whole
+  words, case-insensitive) or RE2 patterns. Each match is recorded on the
+  request with its rule, detector, severity, count and a redacted sample
+  (`AK****************LE`); the matched text itself is never stored, unless
+  `logging.flagged_bodies` keeps flagged bodies for review.
+- **Blocking.** A rule with `action: block` refuses the request with 400 and
+  `error_kind` `policy_blocked`. The error names the rule, not the matched
+  text, and the engine never sees the request.
+- **Categories.** The last user turn is labelled with a task category
+  (`coding`, `math`, `translation`, `summarization`, `data_analysis`,
+  `writing`, `extraction`, `reasoning`, `question_answering`, else
+  `general`) by keyword and pattern scores. `classify.categories` replaces
+  the built-in set.
+- **Error kinds.** Every failure gets an `error_kind`: `auth_failed`,
+  `forbidden`, `rate_limited`, `policy_blocked`, `bad_request`,
+  `model_not_found`, `no_capacity`, `engine_start_failed`,
+  `engine_unreachable`, `upstream_timeout`, `engine_error`,
+  `engine_rejected` or `client_disconnected` (`substrate errors --kinds`).
+  Refused API keys are recorded too, with the caller's address.
+- **Audit log.** `logging.audit_file` appends one JSON line per request and
+  refused key (`type` `request` or `access_denied`; no bodies) for a SIEM or
+  log shipper. It is reopened when rotated, so logrotate needs no
+  `copytruncate`.
+
+The defaults flag credentials (`secrets`, high), card, IBAN and social
+security numbers (`financial`, high), e-mail addresses and phone numbers
+(`contact_info`, low) and prompt-injection phrasing (`prompt_injection`,
+medium), and block nothing. Rules and categories are read when the gateway
+starts.
+
+```yaml
+policy:
+    enabled: true
+    scan_max_bytes: 1048576          # prompt text scanned per request
+    rules:
+        - name: secrets
+          severity: high              # low, medium, high, critical
+          detectors: [api_key, aws_access_key, private_key, jwt, password_assignment]
+        - name: codenames
+          action: block               # flag (default) or block
+          severity: critical
+          keywords: ["Project Falcon"]
+          patterns: ['\bFALCON-\d{4}\b']
+          models: [qwen3.8-27b-tt]    # optional scope: models, clients, apis (exact names)
+classify:
+    enabled: true
+    default: general
+    categories:                       # optional; replaces the built-in set
+        - name: legal
+          keywords: [contract, liability, NDA]
+logging:
+    flagged_bodies: false
+    audit_file: audit.jsonl           # relative to ~/.local/state/substrate
+```
+
+`substrate policy show` lists the rules, categories and detectors.
+`substrate policy test "text"` (or `--file`, `--body request.json`) shows
+what a prompt would be labelled and flagged with, without sending it.
+Requests recorded before this feature have no category or flags, and their
+failures are reported as `unclassified`.
 
 ## Agents
 
@@ -410,6 +488,7 @@ GPU and memory samples are taken only while the gateway runs.
 | `~/.local/state/substrate/instances/` | one JSON record per instance |
 | `~/.local/state/substrate/logs/` | engine logs (kept after stop) |
 | `~/.local/state/substrate/usage.db` | usage database |
+| `~/.local/state/substrate/audit.jsonl` | audit log, when `logging.audit_file` is set |
 | `~/.local/share/substrate/` | engines installed by `substrate engine install` |
 
 Set `SUBSTRATE_HOME` to keep all of these under one directory.

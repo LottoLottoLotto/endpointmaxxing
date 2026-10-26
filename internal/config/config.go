@@ -18,6 +18,7 @@ import (
 
 	"github.com/lotto/substrate/internal/lock"
 	"github.com/lotto/substrate/internal/paths"
+	"github.com/lotto/substrate/internal/policy"
 	"github.com/lotto/substrate/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -32,6 +33,10 @@ type Config struct {
 	Engines map[string]EngineOverride `yaml:"engines,omitempty" json:"engines,omitempty"`
 	// Tenstorrent configures chip locks and recovery.
 	Tenstorrent Tenstorrent `yaml:"tenstorrent" json:"tenstorrent"`
+	// Policy flags (or blocks) prompts matching rules; matches are recorded per request.
+	Policy policy.Config `yaml:"policy" json:"policy"`
+	// Classify labels each request's last user turn with a task category.
+	Classify policy.ClassifyConfig `yaml:"classify" json:"classify"`
 }
 
 // Tenstorrent configures how substrate shares Tenstorrent chips with other jobs.
@@ -105,12 +110,18 @@ type Logging struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// Bodies also stores request and response bodies (prompts and outputs).
 	Bodies bool `yaml:"bodies" json:"bodies"`
+	// FlaggedBodies stores the bodies of requests the policy flagged, for review, even when Bodies is off.
+	// They hold whatever was flagged (credentials, personal data): restrict access to the state directory.
+	FlaggedBodies bool `yaml:"flagged_bodies" json:"flagged_bodies"`
 	// BodyMaxBytes truncates each stored body.
 	BodyMaxBytes int `yaml:"body_max_bytes" json:"body_max_bytes"`
 	// SampleInterval is how often the gateway samples GPU and instance memory (0 disables).
 	SampleInterval spec.Duration `yaml:"sample_interval" json:"sample_interval"`
 	// RetentionDays prunes records older than this once a day while the gateway runs (0 keeps everything).
 	RetentionDays int `yaml:"retention_days" json:"retention_days"`
+	// AuditFile appends one JSON line per request (no bodies) and per refused API key, for shipping
+	// to a SIEM or log pipeline; relative paths are under the state directory. Empty disables it.
+	AuditFile string `yaml:"audit_file,omitempty" json:"audit_file,omitempty"`
 }
 
 // EngineOverride is a user's local adjustment to a manifest.
@@ -139,7 +150,17 @@ func Default() *Config {
 				WaitTimeout: spec.Duration(15 * time.Minute)}},
 		Tenstorrent: Tenstorrent{Lock: "/var/tmp/tenstorrent/chip-{n}.lock", TTSmi: "tt-smi"},
 		Logging:     Logging{Enabled: true, BodyMaxBytes: 1 << 20, SampleInterval: spec.Duration(30 * time.Second)},
+		Policy:      policy.Config{Enabled: true, Rules: DefaultPolicyRules},
+		Classify:    policy.ClassifyConfig{Enabled: true, Default: "general"},
 	}
+}
+
+// DefaultPolicyRules flag (never block) credentials, personal data and prompt-injection phrasing.
+var DefaultPolicyRules = []policy.Rule{
+	{Name: "secrets", Severity: "high", Detectors: []string{"api_key", "aws_access_key", "private_key", "jwt", "password_assignment"}},
+	{Name: "financial", Severity: "high", Detectors: []string{"credit_card", "iban", "us_ssn"}},
+	{Name: "contact_info", Severity: "low", Detectors: []string{"email", "phone"}},
+	{Name: "prompt_injection", Severity: "medium", Detectors: []string{"prompt_injection"}},
 }
 
 func ConfigPath() string { return filepath.Join(paths.Config(), "config.yaml") }
@@ -198,6 +219,12 @@ func (c *Config) validate() error {
 	}
 	if c.Logging.RetentionDays < 0 {
 		return fmt.Errorf("%s: logging.retention_days must be >= 0", ConfigPath())
+	}
+	if err := c.Policy.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", ConfigPath(), err)
+	}
+	if _, err := policy.CompileClassifier(&c.Classify); err != nil {
+		return fmt.Errorf("%s: %w", ConfigPath(), err)
 	}
 	return nil
 }

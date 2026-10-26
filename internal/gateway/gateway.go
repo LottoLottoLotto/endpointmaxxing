@@ -68,6 +68,8 @@ type Gateway struct {
 	auth     authState
 	metrics  *metrics
 	restarts restartBudget
+	inspect  *Inspector
+	audit    *auditLog
 
 	recMu   sync.RWMutex // guards rec against sends after Close
 	rec     chan *store.Request
@@ -95,6 +97,11 @@ func New(a *app.App, logger *log.Logger) *Gateway {
 		startLocks: map[string]*sync.Mutex{}, active: map[string]int{}, lastUsed: map[string]time.Time{},
 		rr: map[string]int{}, waiting: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics()}
 	g.idle = sync.NewCond(&g.activeMu)
+	var err error
+	if g.inspect, err = NewInspector(a); err != nil { // config.Load validated it: unreachable short of a bug
+		logger.Printf("policy/classify disabled: %v", err)
+	}
+	g.audit = newAuditLog(a.Cfg.Logging.AuditFile, logger.Printf)
 	g.lim.byModel = map[string]*limiter{}
 	if a.Cfg.Logging.Enabled {
 		g.auth.dbFunc = a.DB
@@ -131,6 +138,7 @@ func (g *Gateway) writer(rec <-chan *store.Request) {
 func (g *Gateway) logRequest(r *store.Request) {
 	g.metrics.observe(r)
 	g.auth.charge(r)
+	g.audit.write(r)
 	g.recMu.RLock()
 	defer g.recMu.RUnlock()
 	if g.rec == nil {
@@ -159,6 +167,7 @@ func (g *Gateway) Close() {
 		close(rec)
 		<-g.recDone
 	}
+	g.audit.close()
 }
 
 // Handler returns the gateway's routes.
@@ -179,6 +188,10 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /substrate/v1/usage", g.authed(roleAny, g.mgmtUsage))
 	mux.HandleFunc("GET /substrate/v1/requests", g.authed(roleAny, g.mgmtRequests))
 	mux.HandleFunc("GET /substrate/v1/events", g.authed(roleAdmin, g.mgmtEvents))
+	mux.HandleFunc("GET /substrate/v1/flags", g.authed(roleAdmin, g.mgmtFlags))
+	mux.HandleFunc("GET /substrate/v1/errors", g.authed(roleAdmin, g.mgmtErrors))
+	mux.HandleFunc("GET /substrate/v1/report", g.authed(roleAdmin, g.mgmtReport))
+	mux.HandleFunc("POST /substrate/v1/policy/test", g.authed(roleAdmin, g.mgmtPolicyTest))
 	return mux
 }
 
@@ -332,6 +345,9 @@ func clientIP(r *http.Request) string {
 // maxAttempts bounds failover: the first replica plus one retry on another.
 const maxAttempts = 2
 
+// errUpstreamIdle marks a response aborted by upstream_idle_timeout.
+var errUpstreamIdle = errors.New("upstream_idle_timeout")
+
 func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	api, _ := apiForPath(r.URL.Path)
@@ -345,7 +361,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	logging := g.App.Cfg.Logging
 	fail := func(status int, err error) {
 		apiError(w, status, errType(status, err), err.Error())
-		rec.Status, rec.Error = status, err.Error()
+		rec.Status, rec.Error, rec.ErrorKind = status, err.Error(), gatewayErrorKind(status, err)
 		d := time.Since(start).Milliseconds()
 		rec.DurationMS = &d
 		g.logRequest(rec)
@@ -374,11 +390,17 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if rec.Client == "" {
 		rec.Client = req.User
 	}
-	if logging.Bodies {
+	blocked := g.inspect.Inspect(rec, body)
+	keepBodies := logging.Bodies || (logging.FlaggedBodies && len(rec.Flags) > 0)
+	if keepBodies {
 		rec.RequestBody, rec.BodyTruncated = capBytes(body, logging.BodyMaxBytes)
 	}
 	if req.Model != "" && !p.allows(req.Model) {
 		fail(http.StatusForbidden, errs.New(errs.Forbidden, "key %s may not use model %q", p.name, req.Model))
+		return
+	}
+	if blocked {
+		fail(http.StatusBadRequest, errPolicyBlocked{rules: blockingRules(rec.Flags)})
 		return
 	}
 	if err := g.auth.admit(p); err != nil {
@@ -416,7 +438,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		body, _ = injectStreamUsage(body)
 	}
 
-	mw := &meteredWriter{ResponseWriter: w, start: start, maxBody: logging.BodyMaxBytes, keepBody: logging.Bodies}
+	mw := &meteredWriter{ResponseWriter: w, start: start, maxBody: logging.BodyMaxBytes, keepBody: keepBodies}
 	var lastErr error
 	var in *runtime.Instance
 	// Logging runs even when the client aborts mid-stream (ReverseProxy panics with ErrAbortHandler).
@@ -504,7 +526,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 	}
 	rp.ServeHTTP(mw, r.WithContext(ctx))
 	if idledOut.Load() {
-		return fmt.Errorf("engine sent nothing for %s (upstream_idle_timeout)", idleTimeout)
+		return fmt.Errorf("engine sent nothing for %s (%w)", idleTimeout, errUpstreamIdle)
 	}
 	return proxyErr
 }
@@ -518,17 +540,22 @@ func (g *Gateway) finish(rec *store.Request, mw *meteredWriter, in *runtime.Inst
 	rec.Status = mw.status
 	switch {
 	case aborted || (proxyErr != nil && errors.Is(proxyErr, context.Canceled)):
-		rec.Error, rec.Status = "client disconnected", 499
+		rec.Error, rec.Status, rec.ErrorKind = "client disconnected", 499, "client_disconnected"
 	case proxyErr != nil:
-		rec.Error = proxyErr.Error()
+		rec.Error, rec.ErrorKind = proxyErr.Error(), "engine_unreachable"
+		if errors.Is(proxyErr, errUpstreamIdle) {
+			rec.ErrorKind = "upstream_timeout"
+		}
 		if rec.Status == 0 || rec.Status < 400 {
 			rec.Status = http.StatusBadGateway
 		}
+	case mw.status >= 500:
+		rec.Error, rec.ErrorKind = upstreamError(mw.body.Bytes()), "engine_error"
 	case mw.status >= 400:
-		rec.Error = upstreamError(mw.body.Bytes())
+		rec.Error, rec.ErrorKind = upstreamError(mw.body.Bytes()), "engine_rejected"
 	}
 	if rec.Status == 0 {
-		rec.Status = http.StatusBadGateway
+		rec.Status, rec.ErrorKind = http.StatusBadGateway, "engine_unreachable"
 	}
 	rec.PromptTokens, rec.CompletionTokens, rec.CachedTokens, rec.ReasoningTokens = u.Prompt, u.Completion, u.Cached, u.Reasoning
 	rec.UsageSource, rec.FinishReason = u.Source, u.Finish
@@ -538,7 +565,7 @@ func (g *Gateway) finish(rec *store.Request, mw *meteredWriter, in *runtime.Inst
 	}
 	d := time.Since(start).Milliseconds()
 	rec.DurationMS, rec.RespBytes = &d, mw.n
-	if g.App.Cfg.Logging.Bodies {
+	if mw.keepBody {
 		rec.ResponseBody = mw.body.Bytes()
 		rec.BodyTruncated = rec.BodyTruncated || mw.truncated
 	}

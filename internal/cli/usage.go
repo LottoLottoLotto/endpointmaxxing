@@ -5,12 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/gateway"
+	"github.com/lotto/substrate/internal/policy"
 	"github.com/lotto/substrate/internal/store"
 )
 
@@ -18,6 +20,9 @@ import (
 type filterFlags struct {
 	since, until, model, engine, instance, client *string
 	limit                                         *int
+	// request-only filters (nil unless addRequestFilters registered them)
+	category, errorKind, minSeverity, rule *string
+	errors, flagged                        *bool
 }
 
 func addFilterFlags(fs *flag.FlagSet, defSince string, defLimit int) *filterFlags {
@@ -32,6 +37,17 @@ func addFilterFlags(fs *flag.FlagSet, defSince string, defLimit int) *filterFlag
 	if defLimit >= 0 {
 		f.limit = fs.Int("limit", defLimit, "max rows (0 = all)")
 	}
+	return f
+}
+
+// addRequestFilters registers the filters that apply to recorded requests (usage, requests, flags, errors, report).
+func (f *filterFlags) addRequestFilters(fs *flag.FlagSet) *filterFlags {
+	f.category = fs.String("category", "", "only this prompt category")
+	f.errorKind = fs.String("error-kind", "", "only this error kind (see `substrate errors --kinds`)")
+	f.errors = fs.Bool("errors", false, "only failed requests")
+	f.flagged = fs.Bool("flagged", false, "only requests that matched a policy rule")
+	f.minSeverity = fs.String("min-severity", "", "only flagged requests at or above this severity: "+strings.Join(policy.Severities, ", "))
+	f.rule = fs.String("rule", "", "only requests flagged by this policy rule")
 	return f
 }
 
@@ -50,6 +66,13 @@ func (f *filterFlags) filter() (store.Filter, error) {
 	}
 	if f.limit != nil {
 		out.Limit = *f.limit
+	}
+	if f.category != nil {
+		out.Category, out.ErrorKind, out.Rule = *f.category, *f.errorKind, *f.rule
+		out.Errors, out.Flagged, out.MinSeverity = *f.errors, *f.flagged, *f.minSeverity
+		if out.MinSeverity != "" && !slices.Contains(policy.Severities, out.MinSeverity) {
+			return out, errs.New(errs.Usage, "--min-severity %q: want %s", out.MinSeverity, strings.Join(policy.Severities, ", "))
+		}
 	}
 	return out, nil
 }
@@ -99,11 +122,11 @@ func cmdUsage() *command {
 		groups = append(groups, g)
 	}
 	sort.Strings(groups)
-	return &command{name: "usage", synopsis: "[--by model|engine|instance|client|api|day|hour] [--since 24h] [filters]",
+	return &command{name: "usage", synopsis: "[--by model|client|category|error_kind|day|...] [--since 24h] [filters]",
 		summary: "token and request totals from the usage database", tool: true,
 		build: func(fs *flag.FlagSet) action {
 			by := fs.String("by", "model", "group by: "+strings.Join(groups, ", ")+", or total")
-			ff := addFilterFlags(fs, "24h", -1)
+			ff := addFilterFlags(fs, "24h", -1).addRequestFilters(fs)
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("usage", pos, 0, 0); err != nil {
 					return err
@@ -140,11 +163,11 @@ func cmdUsage() *command {
 						if key == "" {
 							key = "(none)"
 						}
-						t[i] = []string{key, fmt.Sprint(r.Requests), fmt.Sprint(r.Errors), fmt.Sprint(r.PromptTokens),
+						t[i] = []string{key, fmt.Sprint(r.Requests), fmt.Sprint(r.Errors), fmt.Sprint(r.Flagged), fmt.Sprint(r.PromptTokens),
 							fmt.Sprint(r.CompletionTokens), fmt.Sprint(r.CachedTokens), fmt.Sprint(r.UnmeteredReqs),
 							optf(r.AvgTTFTMS, "ms"), optf(r.AvgDurationMS, "ms"), optf(r.DecodeTokPerSec, "")}
 					}
-					e.table(strings.ToUpper(*by)+"\tREQS\tERRS\tPROMPT\tCOMPLETION\tCACHED\tUNMETERED\tAVG TTFT\tAVG TIME\tDECODE TOK/S", t)
+					e.table(strings.ToUpper(*by)+"\tREQS\tERRS\tFLAGGED\tPROMPT\tCOMPLETION\tCACHED\tUNMETERED\tAVG TTFT\tAVG TIME\tDECODE TOK/S", t)
 				})
 			}
 		}}
@@ -155,7 +178,7 @@ func cmdRequests() *command {
 		summary: "list recorded requests (or show one, with bodies when captured)", tool: true,
 		build: func(fs *flag.FlagSet) action {
 			id := fs.String("id", "", "show one request, with its bodies when captured")
-			ff := addFilterFlags(fs, "", 50)
+			ff := addFilterFlags(fs, "", 50).addRequestFilters(fs)
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("requests", pos, 0, 0); err != nil {
 					return err
@@ -182,12 +205,27 @@ func cmdRequests() *command {
 					t := make([][]string, len(rows))
 					for i, r := range rows {
 						t[i] = []string{ts(r.TS), r.ID, r.Model, dash(r.Engine), r.API, fmt.Sprint(r.Status), opti(r.PromptTokens),
-							opti(r.CompletionTokens), ms(r.TTFTMS), ms(r.DurationMS), dash(r.Client), dash(oneLine(r.Error, 70))}
+							opti(r.CompletionTokens), ms(r.TTFTMS), ms(r.DurationMS), dash(r.Client), dash(r.Category), dash(flagSummary(r)),
+							dash(oneLine(r.Error, 70))}
 					}
-					e.table("TIME\tID\tMODEL\tENGINE\tAPI\tSTATUS\tPROMPT\tCOMPL\tTTFT\tTIME\tCLIENT\tERROR", t)
+					e.table("TIME\tID\tMODEL\tENGINE\tAPI\tSTATUS\tPROMPT\tCOMPL\tTTFT\tTIME\tCLIENT\tCATEGORY\tFLAGS\tERROR", t)
 				})
 			}
 		}}
+}
+
+// flagSummary is "<severity>:<rule>,<rule>" for a flagged request.
+func flagSummary(r store.Request) string {
+	if len(r.Flags) == 0 {
+		return ""
+	}
+	var rules []string
+	for _, f := range r.Flags {
+		if !slices.Contains(rules, f.Rule) {
+			rules = append(rules, f.Rule)
+		}
+	}
+	return r.FlagSeverity + ":" + strings.Join(rules, ",")
 }
 
 func showRequest(e *env, db *store.DB, id string) error {

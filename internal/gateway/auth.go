@@ -142,14 +142,34 @@ func (g *Gateway) authed(level int, h http.HandlerFunc) http.HandlerFunc {
 				status = http.StatusInternalServerError
 			}
 			apiError(w, status, errType(status, err), err.Error())
+			g.logDenied(r, status, err.Error())
 			return
 		}
 		if (level == roleAdmin || level == roleMetrics) && p.role != keys.RoleAdmin {
-			apiError(w, http.StatusForbidden, "permission_error", fmt.Sprintf("key %s (role %s) may not use %s", p.name, p.role, r.URL.Path))
+			msg := fmt.Sprintf("key %s (role %s) may not use %s", p.name, p.role, r.URL.Path)
+			apiError(w, http.StatusForbidden, "permission_error", msg)
+			g.logDenied(r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)), http.StatusForbidden, msg)
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	}
+}
+
+// logDenied records a request refused before reaching its handler (bad key, or a role too low for the route).
+func (g *Gateway) logDenied(r *http.Request, status int, msg string) {
+	now := time.Now()
+	api, _ := apiForPath(r.URL.Path)
+	rec := &store.Request{ID: newID(), TS: now.UnixMilli(), API: api, Path: r.URL.Path, UserAgent: r.UserAgent(),
+		Remote: clientIP(r), Status: status, Error: msg, ErrorKind: gatewayErrorKind(status, nil)}
+	if p, ok := r.Context().Value(ctxKey{}).(*principal); ok {
+		rec.Client = p.name
+	}
+	if status == http.StatusInternalServerError {
+		rec.ErrorKind = "gateway_error"
+	}
+	d := int64(0)
+	rec.DurationMS = &d
+	g.logRequest(rec)
 }
 
 func today() (string, time.Time) {

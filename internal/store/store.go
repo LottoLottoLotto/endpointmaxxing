@@ -5,6 +5,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lotto/substrate/internal/paths"
+	"github.com/lotto/substrate/internal/policy"
 	_ "modernc.org/sqlite"
 )
 
@@ -92,6 +94,14 @@ var migrations = []string{
 	CREATE INDEX instance_samples_ts ON instance_samples(ts);`,
 	// 2: token quotas sum a client's day.
 	`CREATE INDEX requests_client ON requests(client, ts);`,
+	// 3: prompt policy, classification and error kinds.
+	`ALTER TABLE requests ADD COLUMN category TEXT NOT NULL DEFAULT '';
+	ALTER TABLE requests ADD COLUMN flags TEXT NOT NULL DEFAULT '';         -- JSON array of policy.Flag
+	ALTER TABLE requests ADD COLUMN flag_severity TEXT NOT NULL DEFAULT ''; -- highest flag severity
+	ALTER TABLE requests ADD COLUMN error_kind TEXT NOT NULL DEFAULT '';
+	CREATE INDEX requests_category ON requests(category, ts);
+	CREATE INDEX requests_flag_severity ON requests(flag_severity, ts) WHERE flag_severity != '';
+	CREATE INDEX requests_error_kind ON requests(error_kind, ts) WHERE error_kind != '';`,
 }
 
 // DB is an open usage database.
@@ -165,6 +175,13 @@ type Request struct {
 	DurationMS       *int64 `json:"duration_ms"`
 	ReqBytes         int64  `json:"req_bytes"`
 	RespBytes        int64  `json:"resp_bytes"`
+	// Category is the task class of the last user turn ("" when classification is off or there was no text).
+	Category string `json:"category,omitempty"`
+	// Flags are the policy rules the prompt matched; FlagSeverity is the highest of them.
+	Flags        []policy.Flag `json:"flags,omitempty"`
+	FlagSeverity string        `json:"flag_severity,omitempty"`
+	// ErrorKind classifies failures (see ErrorKinds); "" for successful requests.
+	ErrorKind string `json:"error_kind,omitempty"`
 
 	// Bodies, when captured, are stored in the bodies table.
 	RequestBody   []byte `json:"-"`
@@ -172,9 +189,27 @@ type Request struct {
 	BodyTruncated bool   `json:"-"`
 }
 
+// ErrorKinds describes the error_kind values the gateway records.
+var ErrorKinds = map[string]string{
+	"auth_failed":         "missing or invalid API key (401)",
+	"forbidden":           "the key lacks the role or model access (403)",
+	"rate_limited":        "requests-per-minute, daily token quota or queue limit (429)",
+	"policy_blocked":      "the prompt matched a blocking policy rule (400)",
+	"bad_request":         "unreadable, oversized or non-JSON body (400/413)",
+	"model_not_found":     "no registered model or running instance by that name (404)",
+	"no_capacity":         "the model could not be placed or started in time (503)",
+	"engine_start_failed": "the engine process failed to start (502)",
+	"engine_unreachable":  "the engine could not be reached or dropped the connection (502)",
+	"upstream_timeout":    "the engine sent nothing for upstream_idle_timeout (502)",
+	"engine_error":        "the engine answered with a 5xx",
+	"engine_rejected":     "the engine answered with a 4xx (bad parameters, context too long, ...)",
+	"client_disconnected": "the client went away before the response finished (499)",
+	"gateway_error":       "any other gateway failure",
+}
+
 const requestCols = `id, ts, model, instance, engine, api, path, stream, status, error, client, user_agent, remote,
 	prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, usage_source, finish_reason, autostarted,
-	queue_ms, ttft_ms, duration_ms, req_bytes, resp_bytes`
+	queue_ms, ttft_ms, duration_ms, req_bytes, resp_bytes, category, flags, flag_severity, error_kind`
 
 // InsertRequest records r (and its bodies when present).
 func (db *DB) InsertRequest(r *Request) error {
@@ -183,10 +218,18 @@ func (db *DB) InsertRequest(r *Request) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO requests (`+requestCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	flags := ""
+	if len(r.Flags) > 0 {
+		data, err := json.Marshal(r.Flags)
+		if err != nil {
+			return err
+		}
+		flags = string(data)
+	}
+	_, err = tx.Exec(`INSERT INTO requests (`+requestCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.TS, r.Model, r.Instance, r.Engine, r.API, r.Path, r.Stream, r.Status, r.Error, r.Client, r.UserAgent, r.Remote,
 		r.PromptTokens, r.CompletionTokens, r.CachedTokens, r.ReasoningTokens, r.UsageSource, r.FinishReason, r.Autostarted,
-		r.QueueMS, r.TTFTMS, r.DurationMS, r.ReqBytes, r.RespBytes)
+		r.QueueMS, r.TTFTMS, r.DurationMS, r.ReqBytes, r.RespBytes, r.Category, flags, r.FlagSeverity, r.ErrorKind)
 	if err != nil {
 		return err
 	}
@@ -304,7 +347,21 @@ type Filter struct {
 	Client   string
 	ID       string // requests only
 	Limit    int
+
+	// Requests only:
+	Category  string
+	ErrorKind string
+	// Errors keeps failed requests (status >= 400 or an error).
+	Errors bool
+	// Flagged keeps requests whose highest flag severity is at least MinSeverity (any flag when empty).
+	Flagged     bool
+	MinSeverity string
+	// Rule keeps requests flagged by this policy rule.
+	Rule string
 }
+
+// requestExtras are the Filter fields that apply to the requests table.
+var requestExtras = []string{"model", "engine", "instance", "client", "id", "category", "error_kind", "errors", "flagged", "rule"}
 
 func (f Filter) where(tsCol string, extra ...string) (string, []any) {
 	var conds []string
@@ -332,6 +389,32 @@ func (f Filter) where(tsCol string, extra ...string) (string, []any) {
 			add("client", f.Client)
 		case "id":
 			add("id", f.ID)
+		case "category":
+			add("category", f.Category)
+		case "error_kind":
+			add("error_kind", f.ErrorKind)
+		case "errors":
+			if f.Errors {
+				conds = append(conds, "(status >= 400 OR error != '')")
+			}
+		case "flagged":
+			if f.Flagged || f.MinSeverity != "" {
+				sev := policy.Severities
+				for i, s := range sev {
+					if s == f.MinSeverity {
+						sev = sev[i:]
+					}
+				}
+				conds = append(conds, "flag_severity IN ("+strings.TrimSuffix(strings.Repeat("?,", len(sev)), ",")+")")
+				for _, s := range sev {
+					args = append(args, s)
+				}
+			}
+		case "rule":
+			if f.Rule != "" {
+				conds = append(conds, "flags != '' AND EXISTS (SELECT 1 FROM json_each(requests.flags) WHERE json_extract(value, '$.rule') = ?)")
+				args = append(args, f.Rule)
+			}
 		}
 	}
 	if len(conds) == 0 {
@@ -349,7 +432,7 @@ func limit(n int) string {
 
 // Requests lists requests, newest first.
 func (db *DB) Requests(f Filter) ([]Request, error) {
-	w, args := f.where("ts", "model", "engine", "instance", "client", "id")
+	w, args := f.where("ts", requestExtras...)
 	rows, err := db.Query(`SELECT `+requestCols+` FROM requests`+w+` ORDER BY ts DESC`+limit(f.Limit), args...)
 	if err != nil {
 		return nil, err
@@ -358,10 +441,17 @@ func (db *DB) Requests(f Filter) ([]Request, error) {
 	var out []Request
 	for rows.Next() {
 		var r Request
+		var flags string
 		if err := rows.Scan(&r.ID, &r.TS, &r.Model, &r.Instance, &r.Engine, &r.API, &r.Path, &r.Stream, &r.Status, &r.Error,
 			&r.Client, &r.UserAgent, &r.Remote, &r.PromptTokens, &r.CompletionTokens, &r.CachedTokens, &r.ReasoningTokens,
-			&r.UsageSource, &r.FinishReason, &r.Autostarted, &r.QueueMS, &r.TTFTMS, &r.DurationMS, &r.ReqBytes, &r.RespBytes); err != nil {
+			&r.UsageSource, &r.FinishReason, &r.Autostarted, &r.QueueMS, &r.TTFTMS, &r.DurationMS, &r.ReqBytes, &r.RespBytes,
+			&r.Category, &flags, &r.FlagSeverity, &r.ErrorKind); err != nil {
 			return nil, err
+		}
+		if flags != "" {
+			if err := json.Unmarshal([]byte(flags), &r.Flags); err != nil {
+				return nil, fmt.Errorf("request %s: flags: %w", r.ID, err)
+			}
 		}
 		out = append(out, r)
 	}
@@ -404,8 +494,12 @@ var Groups = map[string]string{
 	"instance": "instance",
 	"client":   "client",
 	"api":      "api",
-	"day":      "strftime('%Y-%m-%d', ts/1000, 'unixepoch', 'localtime')",
-	"hour":     "strftime('%Y-%m-%d %H:00', ts/1000, 'unixepoch', 'localtime')",
+	"category":      "category",
+	"error_kind":    "error_kind",
+	"flag_severity": "flag_severity",
+	"status":        "CAST(status AS TEXT)",
+	"day":           "strftime('%Y-%m-%d', ts/1000, 'unixepoch', 'localtime')",
+	"hour":          "strftime('%Y-%m-%d %H:00', ts/1000, 'unixepoch', 'localtime')",
 }
 
 // UsageRow is one aggregated group.
@@ -413,6 +507,10 @@ type UsageRow struct {
 	Key              string   `json:"key"`
 	Requests         int64    `json:"requests"`
 	Errors           int64    `json:"errors"`
+	Flagged          int64    `json:"flagged"` // requests matching any policy rule
+	Blocked          int64    `json:"blocked"` // refused by a blocking rule
+	Models           int64    `json:"models"`  // distinct models used
+	Clients          int64    `json:"clients"` // distinct clients
 	PromptTokens     int64    `json:"prompt_tokens"`
 	CompletionTokens int64    `json:"completion_tokens"`
 	CachedTokens     int64    `json:"cached_tokens"`
@@ -433,9 +531,11 @@ func (db *DB) Usage(group string, f Filter) ([]UsageRow, error) {
 			return nil, fmt.Errorf("unknown group %q", group)
 		}
 	}
-	w, args := f.where("ts", "model", "engine", "instance", "client")
+	w, args := f.where("ts", requestExtras...)
 	q := `SELECT ` + key + ` AS k, COUNT(*),
 		SUM(CASE WHEN status >= 400 OR error != '' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN flag_severity != '' THEN 1 ELSE 0 END), SUM(CASE WHEN error_kind = 'policy_blocked' THEN 1 ELSE 0 END),
+		COUNT(DISTINCT NULLIF(model, '')), COUNT(DISTINCT NULLIF(client, '')),
 		COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
 		COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
 		SUM(CASE WHEN status < 400 AND completion_tokens IS NULL THEN 1 ELSE 0 END),
@@ -451,11 +551,93 @@ func (db *DB) Usage(group string, f Filter) ([]UsageRow, error) {
 	var out []UsageRow
 	for rows.Next() {
 		var u UsageRow
-		if err := rows.Scan(&u.Key, &u.Requests, &u.Errors, &u.PromptTokens, &u.CompletionTokens, &u.CachedTokens,
-			&u.ReasoningTokens, &u.UnmeteredReqs, &u.AvgTTFTMS, &u.AvgDurationMS, &u.DecodeTokPerSec); err != nil {
+		if err := rows.Scan(&u.Key, &u.Requests, &u.Errors, &u.Flagged, &u.Blocked, &u.Models, &u.Clients, &u.PromptTokens,
+			&u.CompletionTokens, &u.CachedTokens, &u.ReasoningTokens, &u.UnmeteredReqs, &u.AvgTTFTMS, &u.AvgDurationMS, &u.DecodeTokPerSec); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// FlagRow aggregates policy matches of one rule and detector.
+type FlagRow struct {
+	Rule     string `json:"rule"`
+	Detector string `json:"detector"`
+	Severity string `json:"severity"`
+	Action   string `json:"action"`
+	Requests int64  `json:"requests"` // requests with at least one match
+	Matches  int64  `json:"matches"`
+	Clients  int64  `json:"clients"` // distinct clients that sent them
+	LastTS   int64  `json:"last_ts"`
+}
+
+// FlagStats aggregates the flags of requests matching f, most frequent first.
+func (db *DB) FlagStats(f Filter) ([]FlagRow, error) {
+	w, args := f.where("ts", requestExtras...)
+	if w == "" {
+		w = " WHERE flags != ''"
+	} else {
+		w += " AND flags != ''"
+	}
+	rows, err := db.Query(`SELECT json_extract(j.value, '$.rule'), json_extract(j.value, '$.detector'),
+		json_extract(j.value, '$.severity'), json_extract(j.value, '$.action'),
+		COUNT(DISTINCT requests.id), SUM(json_extract(j.value, '$.count')), COUNT(DISTINCT NULLIF(client, '')), MAX(ts)
+		FROM requests, json_each(requests.flags) AS j`+w+`
+		GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC, 1, 2`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FlagRow
+	for rows.Next() {
+		var r FlagRow
+		if err := rows.Scan(&r.Rule, &r.Detector, &r.Severity, &r.Action, &r.Requests, &r.Matches, &r.Clients, &r.LastTS); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ErrorRow aggregates failed requests of one kind.
+type ErrorRow struct {
+	Kind        string `json:"kind"`
+	Count       int64  `json:"count"`
+	Models      int64  `json:"models"`
+	Clients     int64  `json:"clients"`
+	LastTS      int64  `json:"last_ts"`
+	LastError   string `json:"last_error"`
+	LastModel   string `json:"last_model"`
+	LastRequest string `json:"last_request"`
+}
+
+// ErrorStats aggregates failed requests matching f by error kind, most frequent first. Requests recorded
+// before error kinds existed count as "unclassified".
+func (db *DB) ErrorStats(f Filter) ([]ErrorRow, error) {
+	f.Errors = true
+	w, args := f.where("ts", requestExtras...)
+	rows, err := db.Query(`SELECT k, n, models, clients, last_ts,
+			(SELECT error FROM requests r2 WHERE r2.ts = last_ts AND COALESCE(NULLIF(r2.error_kind, ''), 'unclassified') = k AND (r2.status >= 400 OR r2.error != '') LIMIT 1),
+			(SELECT model FROM requests r2 WHERE r2.ts = last_ts AND COALESCE(NULLIF(r2.error_kind, ''), 'unclassified') = k AND (r2.status >= 400 OR r2.error != '') LIMIT 1),
+			(SELECT id FROM requests r2 WHERE r2.ts = last_ts AND COALESCE(NULLIF(r2.error_kind, ''), 'unclassified') = k AND (r2.status >= 400 OR r2.error != '') LIMIT 1)
+		FROM (SELECT COALESCE(NULLIF(error_kind, ''), 'unclassified') AS k, COUNT(*) AS n,
+			COUNT(DISTINCT NULLIF(model, '')) AS models, COUNT(DISTINCT NULLIF(client, '')) AS clients, MAX(ts) AS last_ts
+			FROM requests`+w+` GROUP BY k)
+		ORDER BY n DESC, k`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ErrorRow
+	for rows.Next() {
+		var r ErrorRow
+		var lastErr, lastModel, lastID sql.NullString
+		if err := rows.Scan(&r.Kind, &r.Count, &r.Models, &r.Clients, &r.LastTS, &lastErr, &lastModel, &lastID); err != nil {
+			return nil, err
+		}
+		r.LastError, r.LastModel, r.LastRequest = lastErr.String, lastModel.String, lastID.String
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

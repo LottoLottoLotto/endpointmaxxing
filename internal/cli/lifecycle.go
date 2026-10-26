@@ -16,6 +16,7 @@ import (
 
 	"github.com/lotto/substrate/internal/app"
 	"github.com/lotto/substrate/internal/errs"
+	"github.com/lotto/substrate/internal/gateway"
 	"github.com/lotto/substrate/internal/meter"
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/store"
@@ -589,10 +590,17 @@ func logDirect(a *app.App, e *env, in *runtime.Instance, reqBody, respBody []byt
 		Client: "substrate-" + e.owner, PromptTokens: u.Prompt, CompletionTokens: u.Completion, CachedTokens: u.Cached,
 		ReasoningTokens: u.Reasoning, UsageSource: u.Source, FinishReason: u.Finish, QueueMS: &q, DurationMS: &d,
 		ReqBytes: int64(len(reqBody)), RespBytes: int64(len(respBody))}
-	if status >= 400 {
-		r.Error = strings.TrimSpace(string(respBody))
+	switch {
+	case status >= 500:
+		r.Error, r.ErrorKind = strings.TrimSpace(string(respBody)), "engine_error"
+	case status >= 400:
+		r.Error, r.ErrorKind = strings.TrimSpace(string(respBody)), "engine_rejected"
 	}
-	if a.Cfg.Logging.Bodies {
+	// Direct requests are labelled like gateway traffic; they are never blocked (the operator sent them).
+	if insp, err := gateway.NewInspector(a); err == nil {
+		insp.Inspect(r, reqBody)
+	}
+	if a.Cfg.Logging.Bodies || (a.Cfg.Logging.FlaggedBodies && len(r.Flags) > 0) {
 		max := a.Cfg.Logging.BodyMaxBytes
 		r.RequestBody, r.ResponseBody = clip(reqBody, max), clip(respBody, max)
 		r.BodyTruncated = len(reqBody) > max || len(respBody) > max

@@ -23,6 +23,9 @@ type metrics struct {
 	failovers map[string]int64    // instance
 	restarts  map[string]int64    // model
 	evictions map[[2]string]int64 // evicted model, for model
+	flags     map[[3]string]int64 // rule, severity, action
+	category  map[[2]string]int64 // model, category
+	errorKind map[[2]string]int64 // model, error kind
 	gpus      []gpu.GPU
 	instances []store.InstanceSample
 }
@@ -52,13 +55,23 @@ func (h *histogram) observe(v float64) {
 func newMetrics() *metrics {
 	return &metrics{requests: map[[4]string]int64{}, tokens: map[[3]string]int64{}, ttft: map[string]*histogram{},
 		duration: map[string]*histogram{}, failovers: map[string]int64{}, restarts: map[string]int64{},
-		evictions: map[[2]string]int64{}}
+		evictions: map[[2]string]int64{}, flags: map[[3]string]int64{}, category: map[[2]string]int64{},
+		errorKind: map[[2]string]int64{}}
 }
 
 func (m *metrics) observe(r *store.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.requests[[4]string{r.Model, r.Engine, r.API, fmt.Sprint(r.Status)}]++
+	for _, f := range r.Flags {
+		m.flags[[3]string{f.Rule, f.Severity, f.Action}]++
+	}
+	if r.Category != "" {
+		m.category[[2]string{r.Model, r.Category}]++
+	}
+	if r.ErrorKind != "" {
+		m.errorKind[[2]string{r.Model, r.ErrorKind}]++
+	}
 	add := func(kind string, v *int64) {
 		if v != nil {
 			m.tokens[[3]string{r.Model, r.Engine, kind}] += *v
@@ -139,6 +152,24 @@ func (p *promWriter) sample(name string, labels []string, v float64) {
 	fmt.Fprintf(&p.b, " %g\n", v)
 }
 
+func sortedKeys2(m map[[2]string]int64) [][2]string {
+	out := make([][2]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] || out[i][0] == out[j][0] && out[i][1] < out[j][1] })
+	return out
+}
+
+func sortedKeys3(m map[[3]string]int64) [][3]string {
+	out := make([][3]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.Join(out[i][:], "\x00") < strings.Join(out[j][:], "\x00") })
+	return out
+}
+
 func sortedHist(hs map[string]*histogram) []string {
 	ks := make([]string, 0, len(hs))
 	for k := range hs {
@@ -170,6 +201,18 @@ func (g *Gateway) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	p.head("substrate_tokens_total", "counter", "Tokens reported by engines (kind: prompt, completion, cached, reasoning).")
 	for _, k := range tokKeys {
 		p.sample("substrate_tokens_total", []string{"model", k[0], "engine", k[1], "kind", k[2]}, float64(m.tokens[k]))
+	}
+	p.head("substrate_policy_flags_total", "counter", "Policy rule matches (one per rule and detector per request).")
+	for _, k := range sortedKeys3(m.flags) {
+		p.sample("substrate_policy_flags_total", []string{"rule", k[0], "severity", k[1], "action", k[2]}, float64(m.flags[k]))
+	}
+	p.head("substrate_requests_by_category_total", "counter", "Requests by prompt category.")
+	for _, k := range sortedKeys2(m.category) {
+		p.sample("substrate_requests_by_category_total", []string{"model", k[0], "category", k[1]}, float64(m.category[k]))
+	}
+	p.head("substrate_errors_total", "counter", "Failed requests by error kind.")
+	for _, k := range sortedKeys2(m.errorKind) {
+		p.sample("substrate_errors_total", []string{"model", k[0], "kind", k[1]}, float64(m.errorKind[k]))
 	}
 	for _, h := range []struct {
 		name, help string
