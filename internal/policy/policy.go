@@ -30,20 +30,37 @@ type Config struct {
 	ScanMaxBytes int `yaml:"scan_max_bytes" json:"scan_max_bytes"`
 	// Rules are evaluated in order; every matching rule is recorded.
 	Rules []Rule `yaml:"rules,omitempty" json:"rules,omitempty"`
+	// Allow lists matched values every rule ignores (e.g. the company's own e-mail domain).
+	Allow Terms `yaml:"allow,omitempty" json:"allow,omitempty"`
+}
+
+// Terms are keywords (case-insensitive, whole words) and RE2 patterns.
+type Terms struct {
+	Keywords []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
+	Patterns []string `yaml:"patterns,omitempty" json:"patterns,omitempty"`
 }
 
 // Rule matches prompt text by built-in detectors, keywords (case-insensitive, whole words) or regular
-// expressions (RE2 syntax). Models, Clients and APIs narrow where it applies (empty = everywhere).
+// expressions (RE2 syntax). Models, Clients and APIs narrow where it applies (empty = everywhere);
+// ExceptModels and ExceptClients exempt some. Allow drops individual matches; Unless skips the whole
+// rule for prompts that contain one of its terms.
 type Rule struct {
-	Name      string   `yaml:"name" json:"name"`
-	Detectors []string `yaml:"detectors,omitempty" json:"detectors,omitempty"`
-	Keywords  []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
-	Patterns  []string `yaml:"patterns,omitempty" json:"patterns,omitempty"`
-	Severity  string   `yaml:"severity,omitempty" json:"severity,omitempty"` // default medium
-	Action    string   `yaml:"action,omitempty" json:"action,omitempty"`     // flag (default) or block
-	Models    []string `yaml:"models,omitempty" json:"models,omitempty"`
-	Clients   []string `yaml:"clients,omitempty" json:"clients,omitempty"`
-	APIs      []string `yaml:"apis,omitempty" json:"apis,omitempty"`
+	Name          string   `yaml:"name" json:"name"`
+	Detectors     []string `yaml:"detectors,omitempty" json:"detectors,omitempty"`
+	Keywords      []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
+	Patterns      []string `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+	Severity      string   `yaml:"severity,omitempty" json:"severity,omitempty"` // default medium
+	Action        string   `yaml:"action,omitempty" json:"action,omitempty"`     // flag (default) or block
+	Models        []string `yaml:"models,omitempty" json:"models,omitempty"`
+	Clients       []string `yaml:"clients,omitempty" json:"clients,omitempty"`
+	APIs          []string `yaml:"apis,omitempty" json:"apis,omitempty"`
+	ExceptModels  []string `yaml:"except_models,omitempty" json:"except_models,omitempty"`
+	ExceptClients []string `yaml:"except_clients,omitempty" json:"except_clients,omitempty"`
+	// Allow: a match containing one of these keywords, or matching one of these patterns, is ignored.
+	Allow Terms `yaml:"allow,omitempty" json:"allow,omitempty"`
+	// Unless: the rule does not apply to a prompt containing one of these. Whoever writes the prompt
+	// controls this, so it suits avoiding false positives, not exempting users from a block.
+	Unless Terms `yaml:"unless,omitempty" json:"unless,omitempty"`
 }
 
 // Flag is one rule's matches in one prompt. Sample is a redacted example of the
@@ -138,6 +155,33 @@ type matcher struct {
 type compiledRule struct {
 	Rule
 	matchers []matcher
+	allow    []*regexp.Regexp // rule and global allow terms
+	unless   []*regexp.Regexp
+}
+
+// compileTerms turns t into regexps: one for all keywords, one per pattern.
+func compileTerms(t Terms, where string) ([]*regexp.Regexp, error) {
+	var out []*regexp.Regexp
+	if re := keywordRegexp(t.Keywords); re != nil {
+		out = append(out, re)
+	}
+	for _, pat := range t.Patterns {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			return nil, fmt.Errorf("%s pattern %q: %w", where, pat, err)
+		}
+		out = append(out, re)
+	}
+	return out, nil
+}
+
+func anyMatch(res []*regexp.Regexp, s string) bool {
+	for _, re := range res {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultScanMaxBytes bounds the scanned prompt text when ScanMaxBytes is 0.
@@ -148,6 +192,10 @@ func Compile(c *Config) (*Policy, error) {
 	p := &Policy{maxBytes: c.ScanMaxBytes}
 	if p.maxBytes == 0 {
 		p.maxBytes = DefaultScanMaxBytes
+	}
+	globalAllow, err := compileTerms(c.Allow, "policy.allow:")
+	if err != nil {
+		return nil, err
 	}
 	seen := map[string]bool{}
 	for i, r := range c.Rules {
@@ -173,6 +221,13 @@ func Compile(c *Config) (*Policy, error) {
 			return nil, fmt.Errorf("%s: action %q (want flag or block)", where, r.Action)
 		}
 		cr := compiledRule{Rule: r}
+		if cr.allow, err = compileTerms(r.Allow, where+": allow"); err != nil {
+			return nil, err
+		}
+		cr.allow = append(cr.allow, globalAllow...)
+		if cr.unless, err = compileTerms(r.Unless, where+": unless"); err != nil {
+			return nil, err
+		}
 		for _, d := range r.Detectors {
 			det, ok := detectors[d]
 			if !ok {
@@ -206,7 +261,8 @@ type Scope struct {
 func (r *compiledRule) applies(s Scope) bool {
 	return (len(r.Models) == 0 || contains(r.Models, s.Model)) &&
 		(len(r.Clients) == 0 || contains(r.Clients, s.Client)) &&
-		(len(r.APIs) == 0 || contains(r.APIs, s.API))
+		(len(r.APIs) == 0 || contains(r.APIs, s.API)) &&
+		!contains(r.ExceptModels, s.Model) && !contains(r.ExceptClients, s.Client)
 }
 
 // maxSampleMatches bounds how many matches per matcher are counted (the count saturates there).
@@ -225,14 +281,14 @@ func (p *Policy) Scan(text string, s Scope) (flags []Flag, blocked bool) {
 	}
 	for i := range p.rules {
 		r := &p.rules[i]
-		if !r.applies(s) {
+		if !r.applies(s) || anyMatch(r.unless, text) {
 			continue
 		}
 		for _, m := range r.matchers {
 			n, sample := 0, ""
 			for _, loc := range m.re.FindAllStringIndex(text, maxSampleMatches) {
 				hit := text[loc[0]:loc[1]]
-				if m.ok != nil && !m.ok(hit) {
+				if (m.ok != nil && !m.ok(hit)) || anyMatch(r.allow, hit) {
 					continue
 				}
 				if n == 0 {

@@ -369,6 +369,13 @@ model is involved.
 - **Blocking.** A rule with `action: block` refuses the request with 400 and
   `error_kind` `policy_blocked`. The error names the rule, not the matched
   text, and the engine never sees the request.
+- **Exceptions.** `allow` (per rule, or `policy.allow` for every rule)
+  ignores individual matches that contain an allowed keyword or match an
+  allowed pattern: test card numbers, the company's own e-mail domain.
+  `except_models` and `except_clients` exempt models or API keys from a rule.
+  `unless` skips a rule for prompts containing a term; whoever writes the
+  prompt controls that, so use it against false positives, never to exempt
+  users from a block (use `except_clients` for that).
 - **Categories.** The last user turn is labelled with a task category
   (`coding`, `math`, `translation`, `summarization`, `data_analysis`,
   `writing`, `extraction`, `reasoning`, `question_answering`, else
@@ -395,6 +402,8 @@ starts.
 policy:
     enabled: true
     scan_max_bytes: 1048576          # prompt text scanned per request
+    allow:                           # matches every rule ignores
+        patterns: ['@mycorp\.com$']
     rules:
         - name: secrets
           severity: high              # low, medium, high, critical
@@ -405,6 +414,13 @@ policy:
           keywords: ["Project Falcon"]
           patterns: ['\bFALCON-\d{4}\b']
           models: [qwen3.8-27b-tt]    # optional scope: models, clients, apis (exact names)
+          except_clients: [legal-team]
+        - name: financial
+          detectors: [credit_card, iban]
+          allow:
+              keywords: ["4111 1111 1111 1111"]   # test card
+          unless:
+              keywords: ["PCI training"]
 classify:
     enabled: true
     default: general

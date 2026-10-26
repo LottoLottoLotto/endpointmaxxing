@@ -80,6 +80,8 @@ func TestCompileRejectsBadRules(t *testing.T) {
 		{Name: "x", Patterns: []string{"("}},
 		{Name: "x", Detectors: []string{"email"}, Severity: "urgent"},
 		{Name: "x", Detectors: []string{"email"}, Action: "drop"},
+		{Name: "x", Detectors: []string{"email"}, Allow: Terms{Patterns: []string{"["}}},
+		{Name: "x", Detectors: []string{"email"}, Unless: Terms{Patterns: []string{"["}}},
 	} {
 		if _, err := Compile(&Config{Rules: []Rule{r}}); err == nil {
 			t.Errorf("rule %+v compiled", r)
@@ -88,6 +90,45 @@ func TestCompileRejectsBadRules(t *testing.T) {
 	if _, err := Compile(&Config{Rules: []Rule{{Name: "a", Detectors: []string{"email"}}, {Name: "a", Detectors: []string{"ipv4"}}}}); err == nil {
 		t.Error("duplicate rule names compiled")
 	}
+}
+
+func TestExceptions(t *testing.T) {
+	cfg := &Config{
+		Allow: Terms{Patterns: []string{`@mycorp\.com$`}},
+		Rules: []Rule{
+			{Name: "contact", Detectors: []string{"email"}},
+			{Name: "cards", Action: ActionBlock, Detectors: []string{"credit_card"},
+				Allow: Terms{Keywords: []string{"4111 1111 1111 1111"}}, ExceptClients: []string{"payments-team"}},
+			{Name: "hr", Action: ActionBlock, Keywords: []string{"layoffs"}, Unless: Terms{Keywords: []string{"public press release"}},
+				ExceptModels: []string{"hr-model"}},
+		},
+	}
+	p, err := Compile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(name, text string, s Scope, wantRules []string, wantBlocked bool) {
+		t.Helper()
+		flags, blocked := p.Scan(text, s)
+		var got []string
+		for _, f := range flags {
+			got = append(got, f.Rule)
+		}
+		if strings.Join(got, ",") != strings.Join(wantRules, ",") || blocked != wantBlocked {
+			t.Errorf("%s: rules %v blocked %v, want %v blocked %v", name, got, blocked, wantRules, wantBlocked)
+		}
+	}
+	check("global allow drops only the allowed match", "cc jane@mycorp.com and bob@gmail.com", Scope{}, []string{"contact"}, false)
+	if flags, _ := p.Scan("cc jane@mycorp.com and bob@gmail.com", Scope{}); flags[0].Count != 1 {
+		t.Errorf("allowed match still counted: %+v", flags)
+	}
+	check("global allow: nothing left", "cc jane@mycorp.com", Scope{}, nil, false)
+	check("rule allow: test card", "charge 4111 1111 1111 1111", Scope{}, nil, false)
+	check("rule allow keeps real cards", "charge 4111 1111 1111 1111 and 5500 0000 0000 0004", Scope{}, []string{"cards"}, true)
+	check("except_clients", "charge 5500 0000 0000 0004", Scope{Client: "payments-team"}, nil, false)
+	check("unless", "summarize the public press release about layoffs", Scope{}, nil, false)
+	check("unless absent", "draft the layoffs memo", Scope{}, []string{"hr"}, true)
+	check("except_models", "draft the layoffs memo", Scope{Model: "hr-model"}, nil, false)
 }
 
 func TestExtractPromptAcrossAPIs(t *testing.T) {

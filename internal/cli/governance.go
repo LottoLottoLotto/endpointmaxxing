@@ -223,15 +223,19 @@ func policyShowCmd() *command {
 						for _, s := range []struct {
 							k  string
 							vs []string
-						}{{"models", r.Models}, {"clients", r.Clients}, {"apis", r.APIs}} {
+						}{{"models", r.Models}, {"clients", r.Clients}, {"apis", r.APIs},
+							{"not models", r.ExceptModels}, {"not clients", r.ExceptClients}} {
 							if len(s.vs) > 0 {
 								scope = append(scope, s.k+"="+strings.Join(s.vs, ","))
 							}
 						}
 						t[i] = []string{r.Name, orDefault(r.Severity, "medium"), orDefault(r.Action, policy.ActionFlag),
-							strings.Join(what, ", "), dash(strings.Join(scope, " "))}
+							strings.Join(what, ", "), dash(strings.Join(scope, " ")), dash(termsSummary(r.Allow, r.Unless))}
 					}
-					e.table("RULE\tSEVERITY\tACTION\tMATCHES\tSCOPE", t)
+					e.table("RULE\tSEVERITY\tACTION\tMATCHES\tSCOPE\tEXCEPTIONS", t)
+					if s := termsSummary(a.Cfg.Policy.Allow, policy.Terms{}); s != "" {
+						fmt.Fprintf(w, "every rule: %s\n", s)
+					}
 					fmt.Fprintf(w, "\nclassify: %s (default category %q)\n", onOff(a.Cfg.Classify.Enabled), orDefault(a.Cfg.Classify.Default, "general"))
 					names := make([]string, len(cats))
 					for i, c := range cats {
@@ -338,4 +342,25 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// termsSummary is "allow 2 keyword(s), 1 pattern(s); unless 1 keyword(s)".
+func termsSummary(allow, unless policy.Terms) string {
+	var parts []string
+	for _, x := range []struct {
+		label string
+		t     policy.Terms
+	}{{"allow", allow}, {"unless", unless}} {
+		var n []string
+		if k := len(x.t.Keywords); k > 0 {
+			n = append(n, fmt.Sprintf("%d keyword(s)", k))
+		}
+		if p := len(x.t.Patterns); p > 0 {
+			n = append(n, fmt.Sprintf("%d pattern(s)", p))
+		}
+		if len(n) > 0 {
+			parts = append(parts, x.label+" "+strings.Join(n, ", "))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
