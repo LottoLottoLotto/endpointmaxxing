@@ -70,6 +70,9 @@ type Gateway struct {
 	restarts restartBudget
 	reload   reloadState
 
+	expiryMu      sync.Mutex
+	expiryAlerted map[string]string // key -> day of its last key_expiring alert
+
 	recMu   sync.RWMutex // guards rec against sends after Close
 	rec     chan *store.Request
 	recDone chan struct{}
@@ -94,7 +97,8 @@ func New(a *app.App, logger *log.Logger) *Gateway {
 	c := a.Config().Gateway
 	g := &Gateway{App: a, Log: logger,
 		startLocks: map[string]*sync.Mutex{}, active: map[string]int{}, lastUsed: map[string]time.Time{},
-		rr: map[string]int{}, waiting: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics()}
+		rr: map[string]int{}, waiting: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics(),
+		expiryAlerted: map[string]string{}}
 	g.idle = sync.NewCond(&g.activeMu)
 	g.live()
 	g.lim.byModel = map[string]*limiter{}
@@ -297,6 +301,13 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 			e.Substrate["engine"] = m.Engine
 		}
 	}
+	for alias, target := range g.App.Config().Aliases {
+		if !p.allows(target, g.App.Config()) {
+			continue
+		}
+		e := entry(alias, 0)
+		e.Substrate["alias_for"] = target
+	}
 	names := make([]string, 0, len(byName))
 	for n := range byName {
 		names = append(names, n)
@@ -397,6 +408,11 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, fmt.Errorf("body is not JSON: %w", err))
 		return
 	}
+	if target, ok := lv.cfg.Alias(req.Model); ok {
+		w.Header().Set("X-Substrate-Alias", req.Model)
+		body = setJSONField(body, "model", target)
+		req.Model = target
+	}
 	rec.Model, rec.Stream = req.Model, req.Stream
 	if rec.Client == "" {
 		rec.Client = req.User
@@ -414,15 +430,21 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, errPolicyBlocked{rules: blockingRules(rec.Flags)})
 		return
 	}
-	if err := g.auth.admit(p); err != nil {
-		w.Header().Set("Retry-After", "60")
+	q, wait, err := g.auth.admit(p)
+	if err != nil {
+		setRateLimitHeaders(w.Header(), q)
+		w.Header().Set("Retry-After", retryAfterSeconds(wait))
 		fail(http.StatusTooManyRequests, err)
 		return
 	}
-	if err := g.auth.admitTeam(p.team(lv.cfg), lv.cfg.Pricing.CurrencyOrDefault()); err != nil {
+	team := p.team(lv.cfg)
+	if wait, err := g.auth.admitTeam(team, lv.cfg.Pricing.CurrencyOrDefault()); err != nil {
+		w.Header().Set("Retry-After", retryAfterSeconds(wait))
 		fail(http.StatusTooManyRequests, err)
 		return
 	}
+	g.auth.teamTokenQuota(team, &q)
+	setRateLimitHeaders(w.Header(), q)
 
 	cands, started, err := g.pick(r.Context(), req.Model, api)
 	rec.Autostarted = started
@@ -452,6 +474,16 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if g.gw().StreamUsage && req.Stream && (api == "chat" || api == "completions") {
 		body, _ = injectStreamUsage(body)
 	}
+	keyCap := 0
+	if p.key != nil {
+		keyCap = p.key.MaxOutputTokens
+	}
+	if limit := outputCap(lv.cfg.Gateway.MaxOutputTokens, keyCap); limit > 0 {
+		var capped bool
+		if body, capped = capOutputTokens(body, api, limit); capped {
+			w.Header().Set("X-Substrate-Max-Output-Tokens", fmt.Sprint(limit))
+		}
+	}
 
 	mw := &meteredWriter{ResponseWriter: w, start: start, maxBody: logging.BodyMaxBytes, keepBody: keepBodies}
 	var lastErr error
@@ -466,7 +498,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}()
 	for attempt := 0; attempt < maxAttempts && attempt < len(cands); attempt++ {
 		in = cands[attempt]
-		lastErr = g.forward(mw, r, in, api, body)
+		lastErr = g.forward(mw, r, in, api, body, rec.ID)
 		if lastErr == nil || mw.status != 0 || r.Context().Err() != nil {
 			break
 		}
@@ -481,8 +513,9 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // forward proxies one attempt to in; it writes nothing to the client when the
-// engine could not be reached, so the caller may fail over.
-func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instance, api string, body []byte) error {
+// engine could not be reached, so the caller may fail over. The engine sees the gateway's request id as
+// X-Request-Id, so its logs can be matched to the usage record.
+func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instance, api string, body []byte, reqID string) error {
 	g.acquire(in.ID)
 	defer g.release(in.ID)
 	target, _ := url.Parse(in.BaseURL)
@@ -520,6 +553,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 			pr.Out.Header.Del("x-api-key")
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del("X-Substrate-Client")
+			pr.Out.Header.Set("X-Request-Id", reqID)
 			// The body parsed as JSON; strict engines (vLLM) reject other declared types.
 			pr.Out.Header.Set("Content-Type", "application/json")
 			if in.APIKey != "" {

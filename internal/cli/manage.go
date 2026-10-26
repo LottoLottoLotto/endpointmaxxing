@@ -156,6 +156,7 @@ func modelAddCmd() *command {
 				if perr != nil {
 					e.warn("%s registered, but: %v", name, perr)
 				}
+				e.recordAdmin(fmt.Sprintf("model add %s (source %s, engine %s)", m.Name, m.Source, dash(pick)))
 				return e.out(map[string]any{"model": m, "engine": pick, "route": cands}, func(w io.Writer) {
 					fmt.Fprintf(w, "added %s (%s %s %s)", name, m.Format, dash(m.Arch), dash(m.Quant))
 					if pick != "" {
@@ -185,6 +186,7 @@ func modelRmCmd() *command {
 				if err != nil {
 					return err
 				}
+				e.recordAdmin("model rm " + strings.Join(pos, ", "))
 				return e.out(map[string]any{"removed": pos}, func(w io.Writer) { fmt.Fprintf(w, "removed %s\n", strings.Join(pos, ", ")) })
 			}
 		}}
@@ -593,6 +595,7 @@ func engineSetCmd() *command {
 				if err != nil {
 					return err
 				}
+				e.recordAdmin(fmt.Sprintf("engine set %s (bin %s)", id, dash(re.Bin)))
 				return e.out(map[string]any{"engine": id, "override": ov, "installed": re.Installed(), "bin": re.Bin}, func(w io.Writer) {
 					fmt.Fprintf(w, "%s: installed=%s %s\n", id, yesno(re.Installed()), re.Bin)
 				})
@@ -658,7 +661,7 @@ func cmdFlags() *command {
 // ---- doctor ----
 
 func cmdDoctor() *command {
-	return &command{name: "doctor", summary: "check engines, GPUs, config and the usage database", tool: true,
+	return &command{name: "doctor", summary: "check engines, GPUs, config, the usage database and security settings", tool: true,
 		build: func(fs *flag.FlagSet) action {
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("doctor", pos, 0, 0); err != nil {
@@ -705,6 +708,8 @@ func cmdDoctor() *command {
 					chips = append(chips, chip{Index: n, Lock: runtime.TT.LockPath(n), Held: runtime.TT.Held(n), Users: tenstorrent.Users(n)})
 				}
 				res["tenstorrent"] = chips
+				findings := securityFindings(a)
+				res["security"] = findings
 				if gerr != nil {
 					res["gpu_error"] = gerr.Error()
 				}
@@ -740,6 +745,7 @@ func cmdDoctor() *command {
 						fmt.Fprintf(w, "\nmanifest error: %s\n", m)
 					}
 					fmt.Fprintf(w, "\n%d registered model(s)\n", len(a.RegisteredModels()))
+					printFindings(w, findings)
 				})
 			}
 		}}

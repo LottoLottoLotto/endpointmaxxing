@@ -81,23 +81,36 @@ func teamLimits(t *config.Team, u *teamUse) []budgetLimit {
 	return out
 }
 
-// admitTeam refuses a request when the team has used up any of its limits.
-func (a *authState) admitTeam(t *config.Team, currency string) error {
+// admitTeam refuses a request when the team has used up any of its limits, returning the wait until the
+// latest-resetting exhausted limit renews.
+func (a *authState) admitTeam(t *config.Team, currency string) (time.Duration, error) {
 	if t == nil {
-		return nil
+		return 0, nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var wait time.Duration
+	var refusal error
 	for _, l := range teamLimits(t, a.teamUsage(t.Name)) {
-		if l.used >= l.max {
+		if l.used < l.max {
+			continue
+		}
+		reset := untilNextMonth()
+		if l.name == "tokens_per_day" {
+			reset = untilNextDay()
+		}
+		if reset > wait {
+			wait = reset
+		}
+		if refusal == nil {
 			used := fmt.Sprintf("%.0f of %.0f tokens", l.used, l.max)
 			if l.name == "budget_per_month" {
 				used = fmt.Sprintf("%.2f of %.2f %s", l.used, l.max, currency)
 			}
-			return errs.Wrap(errs.Capacity, fmt.Errorf("team %s: %s %s used (%s): %w", t.Name, used, periodWord(l.name), l.name, errBudget))
+			refusal = errs.Wrap(errs.Capacity, fmt.Errorf("team %s: %s %s used (%s): %w", t.Name, used, periodWord(l.name), l.name, errBudget))
 		}
 	}
-	return nil
+	return wait, refusal
 }
 
 func periodWord(limit string) string {

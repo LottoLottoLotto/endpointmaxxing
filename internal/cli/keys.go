@@ -66,6 +66,7 @@ func keyAddCmd() *command {
 			models := fs.String("models", "", "comma-separated model names or globs the key may use (default all)")
 			rpm := fs.Int("rpm", 0, "requests per minute (0 unlimited)")
 			tpd := fs.Int64("tokens-per-day", 0, "prompt+completion tokens per calendar day (0 unlimited)")
+			maxOut := fs.Int("max-output-tokens", 0, "cap (and default) for each request's output tokens (0: only gateway.max_output_tokens)")
 			expires := fs.String("expires", "", "when the key stops working: 90d, 720h, 2027-01-31 (default never)")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("key add", pos, 1, 1); err != nil {
@@ -75,7 +76,8 @@ func keyAddCmd() *command {
 				if err != nil {
 					return err
 				}
-				k := keys.Key{Name: pos[0], Role: *role, Team: *team, Models: splitList(*models), RPM: *rpm, TokensPerDay: *tpd, Expires: exp}
+				k := keys.Key{Name: pos[0], Role: *role, Team: *team, Models: splitList(*models), RPM: *rpm, TokensPerDay: *tpd,
+					MaxOutputTokens: *maxOut, Expires: exp}
 				if err := warnUnknownTeam(e, k.Team); err != nil {
 					return err
 				}
@@ -86,6 +88,7 @@ func keyAddCmd() *command {
 					}
 					return errs.Wrap(errs.Usage, err)
 				}
+				e.recordAdmin(fmt.Sprintf("key add %s (role %s, team %s, expires %s)", k.Name, k.Role, dash(k.Team), expiryText(k.Expires)))
 				return e.out(map[string]any{"name": k.Name, "role": k.Role, "team": k.Team, "key": secret, "models": k.Models, "rpm": k.RPM,
 					"tokens_per_day": k.TokensPerDay, "expires": k.Expires}, func(w io.Writer) {
 					fmt.Fprintf(w, "%s\n", secret)
@@ -154,7 +157,7 @@ func keyListCmd() *command {
 }
 
 func keySetCmd() *command {
-	return &command{name: "set", synopsis: "<name> [--role R] [--team T] [--models a,b*] [--rpm N] [--tokens-per-day N] [--expires 90d|never]",
+	return &command{name: "set", synopsis: "<name> [--role R] [--team T] [--models a,b*] [--rpm N] [--tokens-per-day N] [--max-output-tokens N] [--expires 90d|never]",
 		summary: "change a key's role, team, model access, limits or expiry (the secret stays)",
 		build: func(fs *flag.FlagSet) action {
 			role := fs.String("role", "", "user, auditor or admin")
@@ -162,6 +165,7 @@ func keySetCmd() *command {
 			models := fs.String("models", "", `comma-separated model globs ("-" for all)`)
 			rpm := fs.Int("rpm", -1, "requests per minute (0 unlimited)")
 			tpd := fs.Int64("tokens-per-day", -1, "tokens per calendar day (0 unlimited)")
+			maxOut := fs.Int("max-output-tokens", -1, "cap (and default) for each request's output tokens (0: only the gateway's)")
 			expires := fs.String("expires", "", "90d, 720h, 2027-01-31 or never")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("key set", pos, 1, 1); err != nil {
@@ -203,6 +207,9 @@ func keySetCmd() *command {
 					if *tpd >= 0 {
 						k.TokensPerDay = *tpd
 					}
+					if *maxOut >= 0 {
+						k.MaxOutputTokens = *maxOut
+					}
 					if *expires != "" {
 						k.Expires = exp
 					}
@@ -211,6 +218,8 @@ func keySetCmd() *command {
 				if err != nil {
 					return keyErr(err)
 				}
+				e.recordAdmin(fmt.Sprintf("key set %s (role %s, team %s, models %s, rpm %d, tokens/day %d, max output %d, expires %s)",
+					k.Name, k.Role, dash(k.Team), dash(strings.Join(k.Models, ",")), k.RPM, k.TokensPerDay, k.MaxOutputTokens, expiryText(k.Expires)))
 				return e.out(k, func(w io.Writer) { fmt.Fprintf(w, "updated key %s\n", k.Name) })
 			}
 		}}
@@ -239,6 +248,7 @@ func keyRotateCmd() *command {
 				if err != nil {
 					return keyErr(err)
 				}
+				e.recordAdmin(fmt.Sprintf("key rotate %s (old secret valid until %s)", k.Name, expiryText(k.PrevExpires)))
 				return e.out(map[string]any{"name": k.Name, "key": secret, "old_secret_valid_until": k.PrevExpires}, func(w io.Writer) {
 					fmt.Fprintf(w, "%s\n", secret)
 					if k.PrevExpires != nil {
@@ -267,6 +277,7 @@ func keyToggleCmd(name string, disable bool) *command {
 						return keyErr(err)
 					}
 				}
+				e.recordAdmin(fmt.Sprintf("key %s %s", name, strings.Join(pos, ", ")))
 				return e.out(map[string]any{name + "d": pos}, func(w io.Writer) { fmt.Fprintf(w, "%sd %s\n", name, strings.Join(pos, ", ")) })
 			}
 		}}
@@ -295,6 +306,7 @@ func keyRmCmd() *command {
 						return errs.New(errs.NotFound, "no key %q", n)
 					}
 				}
+				e.recordAdmin("key rm " + strings.Join(pos, ", "))
 				return e.out(map[string]any{"removed": pos}, func(w io.Writer) { fmt.Fprintf(w, "removed %s\n", strings.Join(pos, ", ")) })
 			}
 		}}

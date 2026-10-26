@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -24,8 +25,10 @@ var Version = "dev"
 
 // env is what every command receives.
 type env struct {
-	ctx    context.Context
-	json   bool
+	ctx  context.Context
+	json bool
+	// csv prints tables as CSV (header row, then one row per line) for spreadsheets and finance tools.
+	csv    bool
 	stdout io.Writer
 	stderr io.Writer
 	// stdin is nil when commands must not read it (MCP).
@@ -71,6 +74,12 @@ func (e *env) out(v any, human func(w io.Writer)) error {
 }
 
 func (e *env) table(header string, rows [][]string) {
+	if e.csv {
+		cw := csv.NewWriter(e.stdout)
+		cw.Write(strings.Split(header, "\t"))
+		cw.WriteAll(rows)
+		return
+	}
 	tw := tabwriter.NewWriter(e.stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, header)
 	for _, r := range rows {
@@ -114,7 +123,7 @@ func commands() []*command {
 		cmdRoute(), cmdModel(), aliasOf("models", "list registered models", modelListCmd()),
 		cmdEngine(), aliasOf("engines", "list engines", engineListCmd()),
 		cmdUsage(), cmdRequests(), cmdReport(), cmdFlagged(), cmdErrorStats(), cmdPolicy(), cmdEvents(), cmdSamples(), cmdPrune(),
-		cmdKey(), cmdTeam(), cmdPrice(), cmdReload(), cmdService(),
+		cmdKey(), cmdTeam(), cmdPrice(), cmdAlias(), cmdReload(), cmdBackup(), cmdService(),
 		cmdFlags(), cmdDoctor(), cmdVersion(), cmdCommands(),
 	}
 }
@@ -125,7 +134,7 @@ func aliasOf(name, summary string, target *command) *command {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintf(w, "substrate: one CLI and one endpoint for every inference engine.\n\nUsage: substrate [--json] <command> [args]\n\nCommands:\n")
+	fmt.Fprintf(w, "substrate: one CLI and one endpoint for every inference engine.\n\nUsage: substrate [--json | --csv] <command> [args]\n\nCommands:\n")
 	for _, c := range commands() {
 		fmt.Fprintf(w, "  %-9s %s\n", c.name, c.summary)
 		for _, s := range c.sub {
@@ -134,6 +143,7 @@ func usage(w io.Writer) {
 	}
 	fmt.Fprintf(w, `
 --json (anywhere before --) prints machine-readable output; errors become {"error","code"}.
+--csv prints tables as CSV (usage, requests, report, team list, key list, flagged, errors, ...).
 Exit codes: 0 ok, 1 error, 2 usage, 3 not_found, 4 timeout, 5 engine_failed, 6 conflict, 7 unsupported.
 'substrate commands --json' describes every command and flag; 'substrate mcp' serves them as MCP tools.
 `)
@@ -208,6 +218,10 @@ func Main(args []string) int {
 		}
 		if a == "--json" || a == "-json" {
 			e.json = true
+			continue
+		}
+		if a == "--csv" || a == "-csv" {
+			e.csv = true
 			continue
 		}
 		rest = append(rest, a)

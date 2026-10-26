@@ -44,6 +44,8 @@ type Key struct {
 	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
 	// RPM caps requests per minute (0 = unlimited).
 	RPM int `yaml:"rpm,omitempty" json:"rpm,omitempty"`
+	// MaxOutputTokens caps each request's output tokens (0 = only gateway.max_output_tokens applies).
+	MaxOutputTokens int `yaml:"max_output_tokens,omitempty" json:"max_output_tokens,omitempty"`
 	// TokensPerDay caps prompt+completion tokens per local calendar day (0 = unlimited).
 	TokensPerDay int64     `yaml:"tokens_per_day,omitempty" json:"tokens_per_day,omitempty"`
 	Created      time.Time `yaml:"created" json:"created"`
@@ -91,8 +93,8 @@ func (k *Key) Validate() error {
 	if k.Team != "" && !config.NameRe.MatchString(k.Team) {
 		return fmt.Errorf("team name %q must match %s", k.Team, config.NameRe)
 	}
-	if k.RPM < 0 || k.TokensPerDay < 0 {
-		return fmt.Errorf("rpm and tokens_per_day must be >= 0")
+	if k.RPM < 0 || k.TokensPerDay < 0 || k.MaxOutputTokens < 0 {
+		return fmt.Errorf("rpm, tokens_per_day and max_output_tokens must be >= 0")
 	}
 	for _, g := range k.Models {
 		if _, err := path.Match(g, ""); err != nil {

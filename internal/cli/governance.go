@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/lotto/substrate/internal/errs"
@@ -141,6 +142,10 @@ func cmdReport() *command {
 }
 
 func printReport(e *env, w io.Writer, r *gateway.Report, since string) {
+	if e.csv {
+		printReportCSV(e, r)
+		return
+	}
 	window := "all time"
 	if since != "" {
 		window = "last " + since
@@ -191,6 +196,28 @@ func printReport(e *env, w io.Writer, r *gateway.Report, since string) {
 		}
 		e.table("KIND\tCOUNT\tLAST MODEL\tLAST ERROR", tab)
 	}
+}
+
+// printReportCSV writes the report's usage sections as one table with raw numbers (one row per key).
+func printReportCSV(e *env, r *gateway.Report) {
+	var rows [][]string
+	add := func(section string, us []store.UsageRow) {
+		for _, u := range us {
+			cost := ""
+			if u.Cost != nil {
+				cost = strconv.FormatFloat(*u.Cost, 'f', -1, 64)
+			}
+			rows = append(rows, []string{section, u.Key, fmt.Sprint(u.Requests), fmt.Sprint(u.Errors), fmt.Sprint(u.Flagged),
+				fmt.Sprint(u.Blocked), fmt.Sprint(u.PromptTokens), fmt.Sprint(u.CompletionTokens), fmt.Sprint(u.CachedTokens),
+				fmt.Sprint(u.ReasoningTokens), cost, r.Currency})
+		}
+	}
+	add("total", []store.UsageRow{*r.Totals})
+	add("model", r.ByModel)
+	add("team", r.ByTeam)
+	add("client", r.ByClient)
+	add("category", r.ByCategory)
+	e.table("SECTION\tKEY\tREQUESTS\tERRORS\tFLAGGED\tBLOCKED\tPROMPT_TOKENS\tCOMPLETION_TOKENS\tCACHED_TOKENS\tREASONING_TOKENS\tCOST\tCURRENCY", rows)
 }
 
 func cmdPolicy() *command {

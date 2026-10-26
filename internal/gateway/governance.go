@@ -162,7 +162,23 @@ func (l *auditLog) write(r *store.Request) {
 	if r.ErrorKind == "auth_failed" || r.ErrorKind == "forbidden" {
 		typ = "access_denied"
 	}
-	line, err := json.Marshal(auditRecord{Type: typ, Time: time.UnixMilli(r.TS).UTC().Format(time.RFC3339Nano), Request: r})
+	l.writeJSON(auditRecord{Type: typ, Time: time.UnixMilli(r.TS).UTC().Format(time.RFC3339Nano), Request: r})
+}
+
+// auditEvent is an audit line for something other than a request: an administrative change or an alert.
+type auditEvent struct {
+	Type   string `json:"type"` // "admin" or an alert kind
+	Time   string `json:"time"`
+	Actor  string `json:"actor,omitempty"`
+	Detail string `json:"detail"`
+}
+
+// writeJSON appends v as one line.
+func (l *auditLog) writeJSON(v any) {
+	if l == nil {
+		return
+	}
+	line, err := json.Marshal(v)
 	if err != nil {
 		return
 	}

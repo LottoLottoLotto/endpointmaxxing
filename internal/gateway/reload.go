@@ -3,6 +3,8 @@ package gateway
 import (
 	"context"
 	"os"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,15 +95,29 @@ func (g *Gateway) Reload() error {
 		}
 		return err
 	}
-	if g.App.Config() != before {
+	if after := g.App.Config(); after != before {
 		g.live()
 		g.reload.mu.Lock()
 		g.reload.reloads++
 		g.reload.mu.Unlock()
-		g.Log.Printf("config reloaded")
-		g.recordEvent("config_reloaded", "")
+		changed := strings.Join(changedSections(before, after), ", ")
+		g.Log.Printf("config reloaded (changed: %s)", changed)
+		g.recordEvent("config_reloaded", "changed: "+changed)
 	}
 	return nil
+}
+
+// changedSections names the top-level config.yaml sections that differ between a and b.
+func changedSections(a, b *config.Config) []string {
+	va, vb := reflect.ValueOf(*a), reflect.ValueOf(*b)
+	var out []string
+	for i := 0; i < va.NumField(); i++ {
+		if !reflect.DeepEqual(va.Field(i).Interface(), vb.Field(i).Interface()) {
+			name, _, _ := strings.Cut(va.Type().Field(i).Tag.Get("yaml"), ",")
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // watchConfig reloads when config.yaml or models.yaml change on disk (checked every interval).
@@ -137,8 +153,14 @@ func (g *Gateway) watchConfig(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// recordEvent writes a gateway event (kind, detail) to the usage database when logging is on.
+// recordEvent writes a gateway event (kind, detail) to the usage database when logging is on, and sends
+// alert kinds (config.AlertKinds) to the webhooks and the audit log.
 func (g *Gateway) recordEvent(kind, detail string) {
+	for _, k := range config.AlertKinds {
+		if k == kind {
+			g.alert(kind, detail)
+		}
+	}
 	if !g.App.Config().Logging.Enabled {
 		return
 	}

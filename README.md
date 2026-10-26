@@ -254,7 +254,7 @@ substrate key add alice --team research --models 'qwen*' --rpm 60 --expires 90d 
 substrate key add ops --role admin
 substrate key add compliance --role auditor
 substrate key list                       # role, team, expiry, last use, status
-substrate key set alice --expires 2027-01-31 --tokens-per-day 2000000
+substrate key set alice --expires 2027-01-31 --tokens-per-day 2000000 --max-output-tokens 4096
 substrate key rotate alice --grace 24h   # new secret printed once; the old one works for 24h
 substrate key disable alice              # refused at once, history kept (key enable alice)
 substrate key rm alice
@@ -277,8 +277,19 @@ substrate key rm alice
   one keeps working until `--grace` ends. `key list` shows when each key was
   last used, from the usage database; Prometheus exports
   `substrate_key_expiry_seconds`.
-- **Quotas:** going over `rpm` or `tokens-per-day` returns 429. Usage is
+- **Quotas:** going over `rpm` or `tokens-per-day` (or a team limit) returns
+  429 with `Retry-After` set to when the limit frees up (the oldest request
+  leaving the minute window; local midnight or the first of the month for
+  budgets). Every inference response carries OpenAI-style
+  `x-ratelimit-limit-requests` / `-remaining-requests` / `-reset-requests`
+  and `x-ratelimit-limit-tokens` / `-remaining-tokens` / `-reset-tokens` for
+  the tightest key or team limit, so SDKs back off on their own. Usage is
   attributed to the key's name, which the client can't forge.
+- **Output caps:** `gateway.max_output_tokens` and a key's
+  `--max-output-tokens` cap each request's `max_tokens` /
+  `max_completion_tokens` (Anthropic `max_tokens`, Responses
+  `max_output_tokens`); the lower one wins, and a request without a limit gets
+  the cap. The response says `X-Substrate-Max-Output-Tokens` when it applied.
 - **Storage:** keys are stored only as SHA-256 hashes in
   `~/.config/substrate/keys.yaml` (mode 0600).
 - **Exposure:** binding to an address other than loopback requires at least
@@ -347,6 +358,64 @@ once; the listen address, TLS settings (certificates still renew),
 and the `tenstorrent` section apply at the next start. Keys (`keys.yaml`) apply
 on the next request, as they always have.
 
+### Model aliases
+
+```sh
+substrate alias set chat-default flash-next-iq3s   # clients ask for chat-default
+substrate alias list
+substrate alias rm chat-default
+```
+
+An alias (`aliases:` in `config.yaml`) is resolved before access checks,
+routing and metering: the engine receives the real model name, the usage
+record carries it, keys need access to the target, and `/v1/models` lists
+the alias with `alias_for`. Responses say `X-Substrate-Alias`. Switching the
+target takes effect within seconds through the config reload. An alias
+shadows a registered model of the same name; aliases cannot point at
+aliases.
+
+### Alerts and the admin trail
+
+```yaml
+alerts:
+    webhooks:
+        - url: https://hooks.slack.com/services/T000/B000/XXXX
+          format: text                     # {"text": ...}: Slack, Teams, Mattermost, Google Chat
+          kinds: [budget_alert, engine_exited, key_expiring]
+        - url: https://siem.example.com/ingest
+          headers: {Authorization: Bearer ...}
+          kinds: [admin]                   # json: {kind, detail, actor, time, host}
+```
+
+- **Kinds:** `budget_alert`, `config_reload_failed`, `key_expiring` (keys
+  expiring within 7 days or expired in the last 7, once a day per key),
+  `engine_exited`, `engine_start_failed` and `admin`; no `kinds` means all.
+  Deliveries time out after 5 seconds and are retried once; failures are
+  logged with the URL's path (its secret) removed.
+- **Admin trail:** every administrative change is recorded as an `admin`
+  event (`substrate events`), an audit-log line (`type` `admin`) and an
+  `admin` webhook, with who made it: `key add/set/rotate/disable/enable/rm`,
+  `team set/rm`, `price set/rm`, `alias set/rm`, `model add/rm`, `engine set`
+  (actor: `$SUBSTRATE_ACTOR`, else the OS user), and the management API's
+  `ensure`, `stop` and `reload` (actor: the API key). Edits to `config.yaml`
+  itself show up as `config_reloaded` events naming the changed sections.
+- **Request ids:** the engine receives the gateway's request id as
+  `X-Request-Id`, so engine logs can be matched to `substrate requests --id`.
+
+### Backup
+
+```sh
+substrate backup --out /backups/substrate-$(date +%F).tar.gz [--audit] [--no-db]
+```
+
+The archive (mode 0600) holds `config/` (`config.yaml`, `models.yaml`,
+`keys.yaml`, `engines/`) and `state/usage.db`, a consistent snapshot taken
+with SQLite `VACUUM INTO` while the gateway keeps running; `--audit` adds the
+audit log. To restore, stop the gateway and copy `config/` and `state/` back
+into `~/.config/substrate` and `~/.local/state/substrate`. Key secrets are
+only stored hashed, but the archive may hold prompts (`logging.bodies`):
+keep it as private as the state directory.
+
 ### Metrics and service
 
 `GET /metrics` (admin or auditor, or anyone with `metrics_public: true`) serves
@@ -383,7 +452,7 @@ database in WAL mode. You can query it directly with any SQLite client.
 | --- | --- | --- |
 | `requests` | gateway request, `substrate chat` request, or refused API key | model, instance, engine, API, stream, status, error, error kind, client, team, user agent, remote address, prompt/completion/cached/reasoning tokens, usage source, finish reason, autostart, queue ms (wait for a ready instance, including autostart), TTFT ms, duration ms, bytes in and out, prompt category, policy flags (JSON) and their highest severity, cost |
 | `bodies` | request, when `logging.bodies` is on (or `logging.flagged_bodies` and the request was flagged) | request and response bodies (capped at `body_max_bytes`) |
-| `events` | lifecycle change or gateway event | `start` (redacted argv), `ready` (load time), `start_failed`, `stop` (uptime), `exited` (crash, with the log tail and the number of orphaned workers killed), `budget_alert`, `config_reloaded`, `config_reload_failed` |
+| `events` | lifecycle change, gateway event or admin change | `start` (redacted argv), `ready` (load time), `start_failed`, `stop` (uptime), `exited` (crash, with the log tail and the number of orphaned workers killed), `budget_alert`, `key_expiring`, `config_reloaded` (changed sections), `config_reload_failed`, `admin` (who changed what) |
 | `gpu_samples` | GPU per sample | memory used/total, utilization, power |
 | `instance_samples` | instance per sample | GPU memory and RSS summed over the engine's whole process session, process count |
 
@@ -422,11 +491,18 @@ substrate errors --since 7d                              # failures by kind (`--
 substrate events --since 7d                              # starts, load times, crashes
 substrate samples [--gpu] --since 1h                     # memory over time
 substrate prune --older-than 90d
+substrate --csv report --since 30d > chargeback.csv       # any table as CSV (usage, requests, team list, ...)
+substrate doctor                                         # includes security findings
 ```
 
 `usage` also reports average TTFT, average duration, and decode speed in
 tokens per second. Decode speed is completion tokens divided by generation
-time (total time minus TTFT), over metered streams.
+time (total time minus TTFT), over metered streams. `--csv` prints any table
+as CSV; `report --csv` is one table with a `SECTION` column and raw numbers.
+`doctor` also checks the setup: plain HTTP on a public address, public
+metrics, prompt storage without retention, keys without expiry, expiring or
+unused for 90 days, keys in undefined teams, many admin keys, budgets
+without prices and aliases to unregistered models.
 
 Only traffic that passes through `substrate serve` or `substrate chat` is
 metered. A client that calls an engine's port directly bypasses the meter.
@@ -473,8 +549,8 @@ model is involved.
 The defaults flag credentials (`secrets`, high), card, IBAN and social
 security numbers (`financial`, high), e-mail addresses and phone numbers
 (`contact_info`, low) and prompt-injection phrasing (`prompt_injection`,
-medium), and block nothing. Rules and categories are read when the gateway
-starts.
+medium), and block nothing. Rule and category changes apply within seconds
+(see Configuration reload).
 
 ```yaml
 policy:
@@ -575,7 +651,7 @@ failures are reported as `unclassified`.
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/substrate/config.yaml` | `gateway`, `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`) |
+| `~/.config/substrate/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts` |
 | `~/.config/substrate/keys.yaml` | gateway API keys (hashes only, mode 0600) |
 | `~/.config/substrate/models.yaml` | model registry: source, format, pinned engine, default flags, engine args |
 | `~/.config/substrate/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |

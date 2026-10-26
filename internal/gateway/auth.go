@@ -234,10 +234,12 @@ func today() (string, time.Time) {
 // tokenRecheck bounds how stale the day's token total may be before re-reading the database.
 const tokenRecheck = 30 * time.Second
 
-// admit enforces the key's requests-per-minute and tokens-per-day limits.
-func (a *authState) admit(p *principal) error {
+// admit enforces the key's requests-per-minute and tokens-per-day limits. It returns what the key may
+// still use (for rate-limit headers) and, when it refuses, how long until the request could succeed.
+func (a *authState) admit(p *principal) (quota, time.Duration, error) {
+	q := quota{tokLimit: -1}
 	if p.key == nil {
-		return nil
+		return q, 0, nil
 	}
 	k := p.key
 	a.mu.Lock()
@@ -246,18 +248,23 @@ func (a *authState) admit(p *principal) error {
 		if a.minute == nil {
 			a.minute = map[string][]time.Time{}
 		}
-		cut := time.Now().Add(-time.Minute)
+		now := time.Now()
+		cut := now.Add(-time.Minute)
 		recent := a.minute[k.Name][:0]
 		for _, t := range a.minute[k.Name] {
 			if t.After(cut) {
 				recent = append(recent, t)
 			}
 		}
+		q.rpmLimit = k.RPM
 		if len(recent) >= k.RPM {
 			a.minute[k.Name] = recent
-			return errs.Wrap(errs.Capacity, fmt.Errorf("key %s: %d requests per minute: %w", k.Name, k.RPM, errQuota))
+			wait := recent[0].Add(time.Minute).Sub(now) // the oldest request in the window leaves it
+			return q, wait, errs.Wrap(errs.Capacity, fmt.Errorf("key %s: %d requests per minute: %w", k.Name, k.RPM, errQuota))
 		}
-		a.minute[k.Name] = append(recent, time.Now())
+		recent = append(recent, now)
+		a.minute[k.Name] = recent
+		q.rpmRemaining, q.rpmReset = k.RPM-len(recent), recent[0].Add(time.Minute).Sub(now)
 	}
 	if k.TokensPerDay > 0 {
 		if a.tokens == nil {
@@ -274,11 +281,12 @@ func (a *authState) admit(p *principal) error {
 			}
 			a.tokens[k.Name] = u
 		}
+		q.tighter(k.TokensPerDay, u.used, untilNextDay())
 		if u.used >= k.TokensPerDay {
-			return errs.Wrap(errs.Capacity, fmt.Errorf("key %s: %d of %d tokens used today: %w", k.Name, u.used, k.TokensPerDay, errQuota))
+			return q, untilNextDay(), errs.Wrap(errs.Capacity, fmt.Errorf("key %s: %d of %d tokens used today: %w", k.Name, u.used, k.TokensPerDay, errQuota))
 		}
 	}
-	return nil
+	return q, 0, nil
 }
 
 // charge adds a finished request's tokens to its key's day total and its team's totals, and returns

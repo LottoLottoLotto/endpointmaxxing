@@ -119,6 +119,8 @@ func teamSetCmd() *command {
 				if t.BudgetPerMonth > 0 && a.Config().Pricing.Default == nil && len(a.Config().Pricing.Models) == 0 {
 					e.warn("team %s has a cost budget but no model has a price, so nothing is charged against it (substrate price set ...)", t.Name)
 				}
+				e.recordAdmin(fmt.Sprintf("team set %s (tokens/day %d, tokens/month %d, budget/month %g, alert at %g, models %s)",
+					t.Name, t.TokensPerDay, t.TokensPerMonth, t.BudgetPerMonth, t.AlertFraction(), dash(strings.Join(t.Models, ","))))
 				return e.out(t, func(w io.Writer) { fmt.Fprintf(w, "team %s saved\n", t.Name) })
 			}
 		}}
@@ -138,6 +140,7 @@ func teamRmCmd() *command {
 				if !ok {
 					return errs.New(errs.NotFound, "no team %q", pos[0])
 				}
+				e.recordAdmin("team rm " + pos[0])
 				return e.out(map[string]any{"removed": pos[0]}, func(w io.Writer) { fmt.Fprintf(w, "removed team %s\n", pos[0]) })
 			}
 		}}
@@ -220,6 +223,8 @@ func priceSetCmd() *command {
 						return err
 					}
 				}
+				e.recordAdmin(fmt.Sprintf("price set %s (prompt %g, completion %g, cached %s per million tokens)", pos[0], p.Prompt, p.Completion,
+					cachedText(p.Cached)))
 				return e.out(map[string]any{"model": pos[0], "price": p}, func(w io.Writer) { fmt.Fprintf(w, "priced %s\n", pos[0]) })
 			}
 		}}
@@ -235,6 +240,7 @@ func priceRmCmd() *command {
 				if _, err := config.SetPrice(pos[0], nil); err != nil {
 					return err
 				}
+				e.recordAdmin("price rm " + pos[0])
 				return e.out(map[string]any{"removed": pos[0]}, func(w io.Writer) { fmt.Fprintf(w, "removed the price of %s\n", pos[0]) })
 			}
 		}}

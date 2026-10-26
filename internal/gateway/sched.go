@@ -18,8 +18,10 @@ import (
 )
 
 // Run starts the background loops until ctx ends: exit monitor (and crash
-// restarts), health checks, idle unload, resource sampling and retention.
+// restarts), health checks, idle unload, resource sampling, retention, config
+// watching and key-expiry alerts.
 func (g *Gateway) Run(ctx context.Context) {
+	g.watchEngines()
 	go g.every(ctx, 5*time.Second, g.monitor)
 	if iv := time.Duration(g.gw().HealthInterval); iv > 0 {
 		go g.every(ctx, iv, g.healthCheck)
@@ -47,6 +49,7 @@ func (g *Gateway) Run(ctx context.Context) {
 		})
 	}
 	go g.watchConfig(ctx, 2*time.Second)
+	go g.every(ctx, time.Hour, g.checkKeyExpiry)
 }
 
 func (g *Gateway) every(ctx context.Context, d time.Duration, fn func()) {

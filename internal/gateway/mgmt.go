@@ -64,6 +64,7 @@ func (g *Gateway) mgmtEnsure(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	g.admin(r, fmt.Sprintf("ensure %s: instance %s ready", req.Model, in.ID))
 	writeJSON(w, http.StatusOK, map[string]any{"instance": in.Redacted(), "api_url": in.BaseURL + "/v1", "status": runtime.StatusReady})
 }
 
@@ -86,6 +87,7 @@ func (g *Gateway) mgmtStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.setStatus(in.ID, runtime.StatusExited)
+	g.admin(r, fmt.Sprintf("stop %s", in.ID))
 	writeJSON(w, http.StatusOK, map[string]any{"stopped": in.ID})
 }
 
@@ -326,5 +328,6 @@ func (g *Gateway) mgmtReload(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "config not reloaded: "+err.Error())
 		return
 	}
+	g.admin(r, "reload configuration")
 	writeJSON(w, http.StatusOK, g.reloadStatus())
 }
