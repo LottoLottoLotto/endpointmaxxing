@@ -312,6 +312,38 @@ type Model struct {
 	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
 	// PreArgs are inserted at the manifest's {pre_args} element, per engine id (e.g. docker -e options).
 	PreArgs map[string][]string `yaml:"pre_args,omitempty" json:"pre_args,omitempty"`
+	// Bench describes the model for published benchmarks (LocalMaxxing); unset fields are detected.
+	Bench *BenchMeta `yaml:"bench,omitempty" json:"bench,omitempty"`
+}
+
+// BenchMeta is what a benchmark submission needs that the registry does not say on its own.
+type BenchMeta struct {
+	// HFID is the canonical Hugging Face repo of the weights (default: the source, when it is a repo id).
+	HFID     string `yaml:"hf_id,omitempty" json:"hf_id,omitempty"`
+	Revision string `yaml:"revision,omitempty" json:"revision,omitempty"`
+	// Quantization label (default: the registry's quant).
+	Quantization string `yaml:"quantization,omitempty" json:"quantization,omitempty"`
+	// EngineName as LocalMaxxing knows it (default: derived from the engine id).
+	EngineName       string `yaml:"engine_name,omitempty" json:"engine_name,omitempty"`
+	EngineVersion    string `yaml:"engine_version,omitempty" json:"engine_version,omitempty"`
+	EngineRepository string `yaml:"engine_repository,omitempty" json:"engine_repository,omitempty"`
+	EngineCommit     string `yaml:"engine_commit,omitempty" json:"engine_commit,omitempty"`
+	// Backend: cuda, rocm, tt-metal, cpu ... (default: from the instance's accelerator).
+	Backend       string `yaml:"backend,omitempty" json:"backend,omitempty"`
+	ContextLength int    `yaml:"context_length,omitempty" json:"context_length,omitempty"`
+	// Spec describes speculative decoding when the engine uses it.
+	Spec *BenchSpec `yaml:"spec,omitempty" json:"spec,omitempty"`
+	// Hardware is a JSON file replacing the detected hardware description.
+	Hardware string `yaml:"hardware,omitempty" json:"hardware,omitempty"`
+	// Notes are added to every submission of this model.
+	Notes string `yaml:"notes,omitempty" json:"notes,omitempty"`
+}
+
+// BenchSpec is a model's speculative decoding setup.
+type BenchSpec struct {
+	Method     string `yaml:"method" json:"method"` // MTP, EAGLE, DFlash, ngram, draft ...
+	NumTokens  int    `yaml:"num_tokens,omitempty" json:"num_tokens,omitempty"`
+	DraftModel string `yaml:"draft_model,omitempty" json:"draft_model,omitempty"`
 }
 
 // NameRe is what model and instance names must match (they become file names and API model ids).

@@ -106,6 +106,30 @@ var migrations = []string{
 	`ALTER TABLE requests ADD COLUMN team TEXT NOT NULL DEFAULT '';
 	ALTER TABLE requests ADD COLUMN cost REAL;                              -- in pricing.currency; NULL when unpriced
 	CREATE INDEX requests_team ON requests(team, ts) WHERE team != '';`,
+	// 5: benchmark runs (substrate bench).
+	`CREATE TABLE benchmarks (
+		id TEXT PRIMARY KEY,
+		ts INTEGER NOT NULL,            -- unix ms, run started
+		model TEXT NOT NULL,
+		engine TEXT NOT NULL DEFAULT '',
+		instance TEXT NOT NULL DEFAULT '',
+		via TEXT NOT NULL DEFAULT '',    -- direct or gateway
+		concurrency INTEGER NOT NULL DEFAULT 1,
+		prompt TEXT NOT NULL DEFAULT '', -- canonical prompt id, or file:<path>
+		tok_s_out REAL,
+		tok_s_prefill REAL,
+		tok_s_total REAL,
+		ttft_ms REAL,
+		prompt_tokens INTEGER,
+		output_tokens INTEGER,
+		payload TEXT NOT NULL DEFAULT '', -- path of the LocalMaxxing payload JSON
+		status TEXT NOT NULL,             -- measured, failed, validated, submitted
+		verified INTEGER,                 -- server verdict (dry-run or submit); NULL before validation
+		issues TEXT NOT NULL DEFAULT '',  -- verification issues, "; "-joined
+		submission_id TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX benchmarks_model ON benchmarks(model, ts);`,
 }
 
 // DB is an open usage database.
