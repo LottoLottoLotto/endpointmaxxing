@@ -29,7 +29,7 @@ type message struct {
 // Images and other non-text parts are skipped.
 func ExtractPrompt(body []byte) Prompt {
 	var req struct {
-		Messages []message      `json:"messages"`
+		Messages []message       `json:"messages"`
 		System   json.RawMessage `json:"system"`
 		Prompt   json.RawMessage `json:"prompt"`
 		Input    json.RawMessage `json:"input"`

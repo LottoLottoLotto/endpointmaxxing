@@ -39,9 +39,9 @@ const maxBody = 256 << 20
 
 // Gateway is the HTTP front door.
 type Gateway struct {
-	App       *app.App
-	Cfg       config.Gateway
-	Autostart bool
+	App *app.App
+	// NoAutostart overrides gateway.autostart (serve --no-autostart).
+	NoAutostart bool
 	// APIKey is the master (admin) key; per-client keys live in keys.yaml.
 	APIKey string
 	Log    *log.Logger
@@ -68,8 +68,7 @@ type Gateway struct {
 	auth     authState
 	metrics  *metrics
 	restarts restartBudget
-	inspect  *Inspector
-	audit    *auditLog
+	reload   reloadState
 
 	recMu   sync.RWMutex // guards rec against sends after Close
 	rec     chan *store.Request
@@ -90,20 +89,16 @@ const statusTTL = 2 * time.Second
 // statusUnhealthy marks a live instance that failed its health checks: never routed to.
 const statusUnhealthy = "unhealthy"
 
-// New returns a gateway over a, configured from a.Cfg.Gateway.
+// New returns a gateway over a, configured from a.Config(); Reload and the config watcher keep it current.
 func New(a *app.App, logger *log.Logger) *Gateway {
-	c := a.Cfg.Gateway
-	g := &Gateway{App: a, Cfg: c, Autostart: c.Autostart, Log: logger,
+	c := a.Config().Gateway
+	g := &Gateway{App: a, Log: logger,
 		startLocks: map[string]*sync.Mutex{}, active: map[string]int{}, lastUsed: map[string]time.Time{},
 		rr: map[string]int{}, waiting: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics()}
 	g.idle = sync.NewCond(&g.activeMu)
-	var err error
-	if g.inspect, err = NewInspector(a); err != nil { // config.Load validated it: unreachable short of a bug
-		logger.Printf("policy/classify disabled: %v", err)
-	}
-	g.audit = newAuditLog(a.Cfg.Logging.AuditFile, logger.Printf)
+	g.live()
 	g.lim.byModel = map[string]*limiter{}
-	if a.Cfg.Logging.Enabled {
+	if a.Config().Logging.Enabled {
 		g.auth.dbFunc = a.DB
 	}
 	g.transport = &http.Transport{
@@ -113,7 +108,7 @@ func New(a *app.App, logger *log.Logger) *Gateway {
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: time.Duration(c.UpstreamHeaderTimeout),
 	}
-	if a.Cfg.Logging.Enabled {
+	if a.Config().Logging.Enabled {
 		g.rec = make(chan *store.Request, 4096)
 		g.recDone = make(chan struct{})
 		go g.writer(g.rec)
@@ -136,9 +131,19 @@ func (g *Gateway) writer(rec <-chan *store.Request) {
 }
 
 func (g *Gateway) logRequest(r *store.Request) {
+	cfg := g.App.Config()
+	if r.Cost == nil {
+		if c, ok := cfg.Pricing.Cost(r.Model, r.PromptTokens, r.CompletionTokens, r.CachedTokens); ok {
+			r.Cost = &c
+		}
+	}
 	g.metrics.observe(r)
-	g.auth.charge(r)
-	g.audit.write(r)
+	var team *config.Team
+	if r.Team != "" {
+		team, _ = cfg.Team(r.Team)
+	}
+	g.raiseBudgetAlerts(g.auth.charge(r, team), cfg.Pricing.CurrencyOrDefault())
+	g.live().audit.write(r)
 	g.recMu.RLock()
 	defer g.recMu.RUnlock()
 	if g.rec == nil {
@@ -167,7 +172,7 @@ func (g *Gateway) Close() {
 		close(rec)
 		<-g.recDone
 	}
-	g.audit.close()
+	g.live().audit.close()
 }
 
 // Handler returns the gateway's routes.
@@ -179,19 +184,23 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", g.authed(roleMetrics, g.serveMetrics))
 	mux.HandleFunc("GET /v1/models", g.authed(roleAny, g.models))
 	for _, path := range spec.APIs {
-		mux.HandleFunc("POST "+path, g.authed(roleAny, g.proxy))
-		mux.HandleFunc("POST "+path+"/", g.authed(roleAny, g.proxy))
+		mux.HandleFunc("POST "+path, g.authed(roleInfer, g.proxy))
+		mux.HandleFunc("POST "+path+"/", g.authed(roleInfer, g.proxy))
 	}
-	mux.HandleFunc("GET /substrate/v1/instances", g.authed(roleAdmin, g.mgmtInstances))
+	mux.HandleFunc("GET /substrate/v1/instances", g.authed(roleRead, g.mgmtInstances))
 	mux.HandleFunc("POST /substrate/v1/ensure", g.authed(roleAdmin, g.mgmtEnsure))
 	mux.HandleFunc("POST /substrate/v1/stop", g.authed(roleAdmin, g.mgmtStop))
 	mux.HandleFunc("GET /substrate/v1/usage", g.authed(roleAny, g.mgmtUsage))
 	mux.HandleFunc("GET /substrate/v1/requests", g.authed(roleAny, g.mgmtRequests))
-	mux.HandleFunc("GET /substrate/v1/events", g.authed(roleAdmin, g.mgmtEvents))
-	mux.HandleFunc("GET /substrate/v1/flags", g.authed(roleAdmin, g.mgmtFlags))
-	mux.HandleFunc("GET /substrate/v1/errors", g.authed(roleAdmin, g.mgmtErrors))
-	mux.HandleFunc("GET /substrate/v1/report", g.authed(roleAdmin, g.mgmtReport))
-	mux.HandleFunc("POST /substrate/v1/policy/test", g.authed(roleAdmin, g.mgmtPolicyTest))
+	mux.HandleFunc("GET /substrate/v1/events", g.authed(roleRead, g.mgmtEvents))
+	mux.HandleFunc("GET /substrate/v1/flags", g.authed(roleRead, g.mgmtFlags))
+	mux.HandleFunc("GET /substrate/v1/errors", g.authed(roleRead, g.mgmtErrors))
+	mux.HandleFunc("GET /substrate/v1/report", g.authed(roleRead, g.mgmtReport))
+	mux.HandleFunc("GET /substrate/v1/keys", g.authed(roleRead, g.mgmtKeys))
+	mux.HandleFunc("GET /substrate/v1/teams", g.authed(roleRead, g.mgmtTeams))
+	mux.HandleFunc("POST /substrate/v1/policy/test", g.authed(roleRead, g.mgmtPolicyTest))
+	mux.HandleFunc("GET /substrate/v1/reload", g.authed(roleRead, g.mgmtReloadStatus))
+	mux.HandleFunc("POST /substrate/v1/reload", g.authed(roleAdmin, g.mgmtReload))
 	return mux
 }
 
@@ -268,7 +277,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 			names = g.hosted(r.Context(), in)
 		}
 		for _, n := range names {
-			if !p.allows(n) {
+			if !p.allows(n, g.App.Config()) {
 				continue
 			}
 			e := entry(n, in.StartedAt.Unix())
@@ -276,11 +285,9 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 				map[string]any{"id": in.ID, "engine": in.Engine, "status": g.instanceStatus(r.Context(), in), "apis": in.APIs, "gpus": in.GPUs})
 		}
 	}
-	if err := g.App.Refresh(); err != nil {
-		g.Log.Printf("refresh: %v", err)
-	}
+	g.Reload() // see models added since; an invalid config keeps the running one (logged)
 	for _, m := range g.App.RegisteredModels() {
-		if !p.allows(m.Name) {
+		if !p.allows(m.Name, g.App.Config()) {
 			continue
 		}
 		e := entry(m.Name, 0)
@@ -358,7 +365,11 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		rec.ID = newID()
 	}
 	w.Header().Set("X-Substrate-Request-Id", rec.ID)
-	logging := g.App.Cfg.Logging
+	lv := g.live() // this request keeps one config snapshot from here on
+	logging := lv.cfg.Logging
+	if p.key != nil {
+		rec.Team = p.key.Team
+	}
 	fail := func(status int, err error) {
 		apiError(w, status, errType(status, err), err.Error())
 		rec.Status, rec.Error, rec.ErrorKind = status, err.Error(), gatewayErrorKind(status, err)
@@ -390,12 +401,12 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if rec.Client == "" {
 		rec.Client = req.User
 	}
-	blocked := g.inspect.Inspect(rec, body)
+	blocked := lv.inspect.Inspect(rec, body)
 	keepBodies := logging.Bodies || (logging.FlaggedBodies && len(rec.Flags) > 0)
 	if keepBodies {
 		rec.RequestBody, rec.BodyTruncated = capBytes(body, logging.BodyMaxBytes)
 	}
-	if req.Model != "" && !p.allows(req.Model) {
+	if req.Model != "" && !p.allows(req.Model, lv.cfg) {
 		fail(http.StatusForbidden, errs.New(errs.Forbidden, "key %s may not use model %q", p.name, req.Model))
 		return
 	}
@@ -405,6 +416,10 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := g.auth.admit(p); err != nil {
 		w.Header().Set("Retry-After", "60")
+		fail(http.StatusTooManyRequests, err)
+		return
+	}
+	if err := g.auth.admitTeam(p.team(lv.cfg), lv.cfg.Pricing.CurrencyOrDefault()); err != nil {
 		fail(http.StatusTooManyRequests, err)
 		return
 	}
@@ -423,7 +438,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if rec.Model == "" {
 		rec.Model = cands[0].Name
 	}
-	release, err := g.lim.acquire(r.Context(), rec.Model, g.maxConcurrency(rec.Model), g.Cfg.MaxQueue, time.Duration(g.Cfg.QueueTimeout))
+	release, err := g.lim.acquire(r.Context(), rec.Model, g.maxConcurrency(rec.Model), g.gw().MaxQueue, time.Duration(g.gw().QueueTimeout))
 	queue := time.Since(start).Milliseconds()
 	rec.QueueMS = &queue
 	if err != nil {
@@ -434,7 +449,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	if g.Cfg.StreamUsage && req.Stream && (api == "chat" || api == "completions") {
+	if g.gw().StreamUsage && req.Stream && (api == "chat" || api == "completions") {
 		body, _ = injectStreamUsage(body)
 	}
 
@@ -475,7 +490,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	// The idle timer starts with the first byte: prefill is bounded by the header timeout instead.
-	idleTimeout := time.Duration(g.Cfg.UpstreamIdleTimeout)
+	idleTimeout := time.Duration(g.gw().UpstreamIdleTimeout)
 	var idle *time.Timer
 	var idledOut atomic.Bool
 	mw.onWrite = func() {

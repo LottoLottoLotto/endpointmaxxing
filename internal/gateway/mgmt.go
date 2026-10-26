@@ -99,9 +99,10 @@ func filterFrom(r *http.Request) (store.Filter, error) {
 	if f.MinSeverity != "" && !contains(policy.Severities, f.MinSeverity) {
 		return f, errs.New(errs.Usage, "min_severity %q: want %s", f.MinSeverity, strings.Join(policy.Severities, ", "))
 	}
-	if p := principalOf(r); p.role != keys.RoleAdmin {
+	if p := principalOf(r); p.role != keys.RoleAdmin && p.role != keys.RoleAuditor {
 		f.Client = p.name
 	}
+	f.Team = q.Get("team")
 	var err error
 	if s := q.Get("since"); s != "" {
 		if f.Since, err = ParseSince(s); err != nil {
@@ -242,8 +243,88 @@ func (g *Gateway) mgmtPolicyTest(w http.ResponseWriter, r *http.Request) {
 		req.API = "chat"
 	}
 	rec := &store.Request{Model: req.Model, Client: req.Client, API: req.API}
-	blocked := g.inspect.Inspect(rec, body)
+	insp := g.live().inspect
+	blocked := insp.Inspect(rec, body)
 	writeJSON(w, http.StatusOK, map[string]any{"category": rec.Category, "flags": rec.Flags, "flag_severity": rec.FlagSeverity,
-		"blocked": blocked, "policy_enabled": g.inspect != nil && g.inspect.policy != nil,
-		"classify_enabled": g.inspect != nil && g.inspect.classifier != nil})
+		"blocked": blocked, "policy_enabled": insp != nil && insp.policy != nil,
+		"classify_enabled": insp != nil && insp.classifier != nil})
+}
+
+// KeyInfo is an API key as reported to operators: no secret material, plus its status and last use.
+type KeyInfo struct {
+	keys.Key
+	Status   string     `json:"status"`
+	LastUsed *time.Time `json:"last_used"`
+}
+
+// KeyInfos lists keys.yaml with each key's status and last successful use (db may be nil).
+func KeyInfos(db *store.DB) ([]KeyInfo, error) {
+	f, err := keys.Load()
+	if err != nil {
+		return nil, err
+	}
+	last := map[string]int64{}
+	if db != nil {
+		if last, err = db.LastUsed(); err != nil {
+			return nil, err
+		}
+	}
+	now := time.Now()
+	out := make([]KeyInfo, 0, len(f.Keys))
+	for _, k := range f.Keys {
+		ki := KeyInfo{Key: k, Status: k.Status(now)}
+		if ts, ok := last[k.Name]; ok {
+			t := time.UnixMilli(ts)
+			ki.LastUsed = &t
+		}
+		out = append(out, ki)
+	}
+	return out, nil
+}
+
+func (g *Gateway) mgmtKeys(w http.ResponseWriter, r *http.Request) {
+	db, _ := g.App.DB() // without a usage database keys still list, without last use
+	out, err := KeyInfos(db)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// keysPerTeam counts keys.yaml keys by team.
+func keysPerTeam() map[string]int {
+	out := map[string]int{}
+	if f, err := keys.Load(); err == nil {
+		for _, k := range f.Keys {
+			if k.Team != "" {
+				out[k.Team]++
+			}
+		}
+	}
+	return out
+}
+
+func (g *Gateway) mgmtTeams(w http.ResponseWriter, r *http.Request) {
+	db, _ := g.App.DB()
+	out, err := TeamStatuses(g.App.Config(), db, keysPerTeam())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (g *Gateway) mgmtReloadStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, g.reloadStatus())
+}
+
+// mgmtReload re-reads config.yaml and models.yaml now; an invalid file is reported (400) and the running
+// configuration stays.
+func (g *Gateway) mgmtReload(w http.ResponseWriter, r *http.Request) {
+	if err := g.Reload(); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid_request_error", "config not reloaded: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, g.reloadStatus())
 }

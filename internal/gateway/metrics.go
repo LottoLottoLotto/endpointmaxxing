@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lotto/substrate/internal/gpu"
 	"github.com/lotto/substrate/internal/runtime"
@@ -20,12 +21,13 @@ type metrics struct {
 	tokens    map[[3]string]int64 // model, engine, kind
 	ttft      map[string]*histogram
 	duration  map[string]*histogram
-	failovers map[string]int64    // instance
-	restarts  map[string]int64    // model
-	evictions map[[2]string]int64 // evicted model, for model
-	flags     map[[3]string]int64 // rule, severity, action
-	category  map[[2]string]int64 // model, category
-	errorKind map[[2]string]int64 // model, error kind
+	failovers map[string]int64      // instance
+	restarts  map[string]int64      // model
+	evictions map[[2]string]int64   // evicted model, for model
+	flags     map[[3]string]int64   // rule, severity, action
+	category  map[[2]string]int64   // model, category
+	errorKind map[[2]string]int64   // model, error kind
+	cost      map[[2]string]float64 // model, team
 	gpus      []gpu.GPU
 	instances []store.InstanceSample
 }
@@ -56,7 +58,7 @@ func newMetrics() *metrics {
 	return &metrics{requests: map[[4]string]int64{}, tokens: map[[3]string]int64{}, ttft: map[string]*histogram{},
 		duration: map[string]*histogram{}, failovers: map[string]int64{}, restarts: map[string]int64{},
 		evictions: map[[2]string]int64{}, flags: map[[3]string]int64{}, category: map[[2]string]int64{},
-		errorKind: map[[2]string]int64{}}
+		errorKind: map[[2]string]int64{}, cost: map[[2]string]float64{}}
 }
 
 func (m *metrics) observe(r *store.Request) {
@@ -71,6 +73,9 @@ func (m *metrics) observe(r *store.Request) {
 	}
 	if r.ErrorKind != "" {
 		m.errorKind[[2]string{r.Model, r.ErrorKind}]++
+	}
+	if r.Cost != nil {
+		m.cost[[2]string{r.Model, r.Team}] += *r.Cost
 	}
 	add := func(kind string, v *int64) {
 		if v != nil {
@@ -214,6 +219,17 @@ func (g *Gateway) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	for _, k := range sortedKeys2(m.errorKind) {
 		p.sample("substrate_errors_total", []string{"model", k[0], "kind", k[1]}, float64(m.errorKind[k]))
 	}
+	p.head("substrate_cost_total", "counter", "Cost of metered requests in pricing.currency (team empty for keys without one).")
+	costKeys := make([][2]string, 0, len(m.cost))
+	for k := range m.cost {
+		costKeys = append(costKeys, k)
+	}
+	sort.Slice(costKeys, func(i, j int) bool {
+		return costKeys[i][0]+"\x00"+costKeys[i][1] < costKeys[j][0]+"\x00"+costKeys[j][1]
+	})
+	for _, k := range costKeys {
+		p.sample("substrate_cost_total", []string{"model", k[0], "team", k[1]}, m.cost[k])
+	}
 	for _, h := range []struct {
 		name, help string
 		hs         map[string]*histogram
@@ -307,6 +323,29 @@ func (g *Gateway) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	p.head("substrate_usage_log_dropped_total", "counter", "Usage records dropped because the writer fell behind.")
 	p.sample("substrate_usage_log_dropped_total", nil, float64(dropped))
+
+	db, _ := g.App.DB()
+	if teams, err := TeamStatuses(g.App.Config(), db, nil); err == nil {
+		p.head("substrate_team_budget_used_ratio", "gauge", "Share of a team limit used in its current period (1 = exhausted).")
+		for _, t := range teams {
+			for _, l := range t.Limits {
+				p.sample("substrate_team_budget_used_ratio", []string{"team", t.Name, "limit", l.Limit}, l.Ratio)
+			}
+		}
+	}
+	if infos, err := KeyInfos(nil); err == nil {
+		p.head("substrate_key_expiry_seconds", "gauge", "Seconds until an API key expires (negative once expired); keys without expiry are omitted.")
+		for _, k := range infos {
+			if k.Expires != nil {
+				p.sample("substrate_key_expiry_seconds", []string{"key", k.Name}, time.Until(*k.Expires).Seconds())
+			}
+		}
+	}
+	rs := g.reloadStatus()
+	p.head("substrate_config_reloads_total", "counter", "Configuration reloads applied.")
+	p.sample("substrate_config_reloads_total", nil, float64(rs["reloads"].(int64)))
+	p.head("substrate_config_reload_failures_total", "counter", "Reload attempts refused because config.yaml or models.yaml was invalid.")
+	p.sample("substrate_config_reload_failures_total", nil, float64(rs["failures"].(int64)))
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.Write([]byte(p.b.String()))

@@ -497,15 +497,16 @@ func chat(ctx context.Context, e *env, model string, body map[string]any, via st
 	if err != nil {
 		return nil, err
 	}
-	gw := a.Cfg.Gateway
-	gwBase := fmt.Sprintf("http://%s:%d", connectHost(gw.Host), gw.Port)
-	useGateway := via == "gateway" || (via == "auto" && gatewayUp(ctx, gwBase))
+	gw := a.Config().Gateway
+	gwBase, gwClient := gateway.Client(&gw)
+	useGateway := via == "gateway" || (via == "auto" && gatewayUp(ctx, gwBase, gwClient))
 	res := &chatResult{Model: model}
 	start := time.Now()
 	var url, key string
 	var in *runtime.Instance
+	client := chatClient
 	if useGateway {
-		res.Via, url, key = "gateway", gwBase+"/v1/chat/completions", os.Getenv("SUBSTRATE_API_KEY")
+		res.Via, url, key, client = "gateway", gwBase+"/v1/chat/completions", os.Getenv("SUBSTRATE_API_KEY"), gwClient
 	} else {
 		r, err := a.Ensure(ctx, model, app.LaunchOpts{Owner: e.owner}, 0)
 		if err != nil {
@@ -524,7 +525,7 @@ func chat(ctx context.Context, e *env, model string, body map[string]any, via st
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	sent := time.Now()
-	resp, err := chatClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, errs.Wrap(errs.EngineFailed, err)
 	}
@@ -577,7 +578,7 @@ func chat(ctx context.Context, e *env, model string, body map[string]any, via st
 
 // logDirect meters a request that bypassed the gateway, so usage stays complete.
 func logDirect(a *app.App, e *env, in *runtime.Instance, reqBody, respBody []byte, status int, start, sent time.Time) string {
-	if !a.Cfg.Logging.Enabled {
+	if !a.Config().Logging.Enabled {
 		return ""
 	}
 	m := meter.New(start, false, len(respBody)+1)
@@ -600,8 +601,11 @@ func logDirect(a *app.App, e *env, in *runtime.Instance, reqBody, respBody []byt
 	if insp, err := gateway.NewInspector(a); err == nil {
 		insp.Inspect(r, reqBody)
 	}
-	if a.Cfg.Logging.Bodies || (a.Cfg.Logging.FlaggedBodies && len(r.Flags) > 0) {
-		max := a.Cfg.Logging.BodyMaxBytes
+	if c, ok := a.Config().Pricing.Cost(r.Model, r.PromptTokens, r.CompletionTokens, r.CachedTokens); ok {
+		r.Cost = &c
+	}
+	if a.Config().Logging.Bodies || (a.Config().Logging.FlaggedBodies && len(r.Flags) > 0) {
+		max := a.Config().Logging.BodyMaxBytes
 		r.RequestBody, r.ResponseBody = clip(reqBody, max), clip(respBody, max)
 		r.BodyTruncated = len(reqBody) > max || len(respBody) > max
 	}
@@ -622,18 +626,11 @@ func clip(b []byte, max int) []byte {
 	return b
 }
 
-func connectHost(h string) string {
-	if h == "" || h == "0.0.0.0" || h == "::" {
-		return "127.0.0.1"
-	}
-	return h
-}
-
-func gatewayUp(ctx context.Context, base string) bool {
+func gatewayUp(ctx context.Context, base string, client *http.Client) bool {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/health", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}

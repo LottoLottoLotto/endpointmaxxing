@@ -37,6 +37,10 @@ type Config struct {
 	Policy policy.Config `yaml:"policy" json:"policy"`
 	// Classify labels each request's last user turn with a task category.
 	Classify policy.ClassifyConfig `yaml:"classify" json:"classify"`
+	// Pricing turns tokens into cost per model.
+	Pricing Pricing `yaml:"pricing,omitempty" json:"pricing,omitempty"`
+	// Teams group API keys under shared budgets.
+	Teams []Team `yaml:"teams,omitempty" json:"teams,omitempty"`
 }
 
 // Tenstorrent configures how substrate shares Tenstorrent chips with other jobs.
@@ -95,6 +99,8 @@ type Gateway struct {
 	StreamUsage bool `yaml:"stream_usage" json:"stream_usage"`
 	// Swap is the anti-thrash policy for evictions.
 	Swap Swap `yaml:"swap" json:"swap"`
+	// TLS serves HTTPS (read at start; certificate files are re-read when they change).
+	TLS TLS `yaml:"tls,omitempty" json:"tls,omitempty"`
 }
 
 // Placement modes.
@@ -219,6 +225,11 @@ func (c *Config) validate() error {
 	}
 	if c.Logging.RetentionDays < 0 {
 		return fmt.Errorf("%s: logging.retention_days must be >= 0", ConfigPath())
+	}
+	for _, check := range []func() error{c.Gateway.TLS.Validate, c.Pricing.validate, func() error { return validateTeams(c.Teams) }} {
+		if err := check(); err != nil {
+			return fmt.Errorf("%s: %w", ConfigPath(), err)
+		}
 	}
 	if err := c.Policy.Validate(); err != nil {
 		return fmt.Errorf("%s: %w", ConfigPath(), err)

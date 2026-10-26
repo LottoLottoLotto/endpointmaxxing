@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lotto/substrate/internal/config"
@@ -28,8 +29,12 @@ import (
 
 // App is one loaded view of the user's substrate setup.
 type App struct {
-	Cfg     *config.Config
 	Engines *spec.Registry
+
+	// cfg is replaced whole by Refresh (hot reload); readers keep the snapshot they loaded.
+	cfg atomic.Pointer[config.Config]
+	// overlay adjusts every loaded config (command-line overrides of `substrate serve`).
+	overlay func(*config.Config)
 
 	mu       sync.Mutex
 	models   *config.Models
@@ -41,6 +46,19 @@ type App struct {
 	dbErr     error
 	// Warn reports non-fatal problems (unwritable usage db, ...).
 	Warn func(format string, a ...any)
+}
+
+// Config is the current config.yaml. Treat it as read-only: a reload replaces it, never edits it.
+func (a *App) Config() *config.Config { return a.cfg.Load() }
+
+// SetOverlay applies fn to the current config and every config Refresh loads later.
+func (a *App) SetOverlay(fn func(*config.Config)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.overlay = fn
+	c := *a.cfg.Load()
+	fn(&c)
+	a.cfg.Store(&c)
 }
 
 // Open loads config, manifests and the model registry, and (when logging is
@@ -58,9 +76,10 @@ func Open() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{Cfg: cfg, Engines: reg, models: models, resolved: map[string]*runtime.Engine{},
+	a := &App{Engines: reg, models: models, resolved: map[string]*runtime.Engine{},
 		overrides: cfg.Engines, prefer: cfg.Prefer,
 		Warn: func(string, ...any) {}}
+	a.cfg.Store(cfg)
 	if cfg.Logging.Enabled {
 		runtime.Recorder = func(e store.Event) {
 			db, err := a.DB()
@@ -134,9 +153,10 @@ func (a *App) Installed(id string) bool {
 	return err == nil && e.Installed()
 }
 
-// Refresh re-reads models.yaml and config.yaml's engine overrides and routing
-// preferences, so a long-running gateway sees `model add` and `engine set`
-// without a restart. Gateway and logging settings apply at the next start.
+// Refresh re-reads models.yaml and config.yaml, so a long-running gateway sees `model add`, `engine set`
+// and config edits without a restart. An invalid file leaves everything as it was. The new config
+// replaces Config() only when it changed. Listen settings (host, port, TLS), logging.enabled and the
+// tenstorrent section apply at the next start.
 func (a *App) Refresh() error {
 	m, err := config.LoadModels()
 	if err != nil {
@@ -153,6 +173,12 @@ func (a *App) Refresh() error {
 		a.resolved = map[string]*runtime.Engine{}
 	}
 	a.overrides, a.prefer = c.Engines, c.Prefer
+	if a.overlay != nil {
+		a.overlay(c)
+	}
+	if !reflect.DeepEqual(c, a.cfg.Load()) {
+		a.cfg.Store(c)
+	}
 	return nil
 }
 

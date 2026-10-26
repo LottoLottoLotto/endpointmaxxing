@@ -159,8 +159,8 @@ func TestSwapPolicy(t *testing.T) {
 	defer backend.Close()
 	instance(t, "a.fake", "a", backend.URL)
 	g, _ := newGateway(t)
-	g.Cfg.Swap.MinResidency = spec.Duration(30 * time.Second)
-	g.Cfg.Swap.MaxResidency = spec.Duration(10 * time.Minute)
+	g.gw().Swap.MinResidency = spec.Duration(30 * time.Second)
+	g.gw().Swap.MaxResidency = spec.Duration(10 * time.Minute)
 	setReady := func(ago time.Duration) {
 		in, _ := runtime.Get("a.fake")
 		at := time.Now().Add(-ago)

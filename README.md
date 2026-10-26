@@ -236,20 +236,27 @@ under `/substrate/v1/`:
 | GET | `/substrate/v1/instances` | | instances with status, in-flight requests, idle state, last use |
 | POST | `/substrate/v1/ensure` | `{"model", "engine"?, "timeout"?}` | a ready instance (placed, evicting if needed) |
 | POST | `/substrate/v1/stop` | `{"id"}` (instance id or model name) | waits for in-flight requests, then stops |
-| GET | `/substrate/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client`, `category`, `error_kind`, `errors`, `flagged`, `min_severity`, `rule` | aggregates |
+| GET | `/substrate/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client`, `team`, `category`, `error_kind`, `errors`, `flagged`, `min_severity`, `rule` | aggregates (with cost) |
 | GET | `/substrate/v1/requests` | same filters, plus `limit` | request records |
-| GET | `/substrate/v1/events` | same filters, plus `limit` | lifecycle events |
+| GET | `/substrate/v1/events` | same filters, plus `limit` | lifecycle events, budget alerts, config reloads |
 | GET | `/substrate/v1/flags` | same filters | policy matches by rule and detector |
 | GET | `/substrate/v1/errors` | same filters | failed requests by error kind |
-| GET | `/substrate/v1/report` | same filters (`since` defaults to `24h`) | totals, models, clients, categories, flags, errors |
+| GET | `/substrate/v1/report` | same filters (`since` defaults to `24h`) | totals, cost, models, teams, clients, categories, flags, errors |
+| GET | `/substrate/v1/keys` | | keys with role, team, expiry, status and last use (no secrets) |
+| GET | `/substrate/v1/teams` | | team limits and their use this day and month |
 | POST | `/substrate/v1/policy/test` | `{"text"}` or `{"body"}`, optionally `model`, `client`, `api` | category and flags, nothing sent to a model |
+| GET / POST | `/substrate/v1/reload` | | last reload outcome / re-read the config now (400 with the error if it is invalid) |
 
 ### Keys and access
 
 ```sh
-substrate key add alice --models 'qwen*' --rpm 60 --tokens-per-day 2000000   # prints the key once
+substrate key add alice --team research --models 'qwen*' --rpm 60 --expires 90d   # prints the key once
 substrate key add ops --role admin
-substrate key list
+substrate key add compliance --role auditor
+substrate key list                       # role, team, expiry, last use, status
+substrate key set alice --expires 2027-01-31 --tokens-per-day 2000000
+substrate key rotate alice --grace 24h   # new secret printed once; the old one works for 24h
+substrate key disable alice              # refused at once, history kept (key enable alice)
 substrate key rm alice
 ```
 
@@ -257,23 +264,92 @@ substrate key rm alice
   only on loopback.
 - **Once any key exists,** every request needs one, sent as
   `Authorization: Bearer` or `x-api-key`.
-- **`user` keys:** inference and `/v1/models`, limited to their model globs,
-  plus `/substrate/v1/usage` and `/requests` filtered to their own records.
-- **`admin` keys:** everything, including the management API, `/events`, `/flags`, `/errors`, `/report` and
-  `/metrics`. The master key from `--api-key` or `$SUBSTRATE_API_KEY` is an
-  admin key.
+- **`user` keys:** inference and `/v1/models`, limited to their (and their
+  team's) model globs, plus `/substrate/v1/usage` and `/requests` filtered to
+  their own records.
+- **`auditor` keys:** read-only: every client's usage and requests, events,
+  flags, errors, reports, keys, teams, `/metrics` and `policy/test`. No
+  inference, and no starting, stopping or reloading.
+- **`admin` keys:** everything. The master key from `--api-key` or
+  `$SUBSTRATE_API_KEY` is an admin key.
+- **Lifecycle:** expired and disabled keys get 401, recorded under the key's
+  name (`error_kind` `auth_failed`). `key rotate` replaces the secret; the old
+  one keeps working until `--grace` ends. `key list` shows when each key was
+  last used, from the usage database; Prometheus exports
+  `substrate_key_expiry_seconds`.
 - **Quotas:** going over `rpm` or `tokens-per-day` returns 429. Usage is
   attributed to the key's name, which the client can't forge.
 - **Storage:** keys are stored only as SHA-256 hashes in
   `~/.config/substrate/keys.yaml` (mode 0600).
 - **Exposure:** binding to an address other than loopback requires at least
-  one key, or `--insecure`.
+  one key, or `--insecure`, and warns while the gateway serves plain HTTP.
 - **Engine keys:** the client's key is never forwarded. The engine receives
   its own key, set with `--api-key` at launch.
 
+### TLS
+
+```yaml
+gateway:
+    host: 0.0.0.0
+    tls:
+        cert: /etc/substrate/gateway.pem    # PEM chain
+        key: /etc/substrate/gateway-key.pem
+        client_ca: /etc/substrate/clients-ca.pem   # optional: require client certificates (mutual TLS)
+        min_version: "1.2"                   # or "1.3"
+```
+
+or `substrate serve --tls-cert F --tls-key F [--tls-client-ca F]`. The
+gateway then serves only HTTPS. Certificate and key files are re-read within
+seconds of changing on disk, so a renewal (certbot, cert-manager) needs no
+restart. `substrate chat` and `substrate reload` reach a TLS gateway by
+trusting the system roots plus the configured certificate; under mutual TLS
+they have no client certificate, and `chat` falls back to the engine.
+
+### Teams, prices and budgets
+
+```sh
+substrate price set 'qwen3.8-*' --prompt 0.40 --completion 1.20 --cached 0.10   # per million tokens
+substrate price set default --prompt 0.20 --completion 0.60 --currency EUR
+substrate team set research --tokens-per-month 500000000 --budget-per-month 2000 --alert-at 0.8 --models 'qwen*'
+substrate key set alice --team research
+substrate team list                       # each limit's use this day/month
+substrate usage --by team --since 30d     # tokens and cost per team
+```
+
+- **Prices** are per million tokens: an exact model name wins over the
+  longest matching glob, then `default`. Cached prompt tokens use `cached`
+  when set, else the prompt price. Local models have no invoice: the price
+  is whatever the operator charges back (hardware, power) or the hosted
+  equivalent. Every request records its `cost` (none when unpriced or
+  unmetered); `report` and `usage` sum it.
+- **Teams** group keys (`key add/set --team`). A team's `tokens_per_day`,
+  `tokens_per_month` and `budget_per_month` (cost) are checked before each
+  request: once used up, requests get 429 with `error_kind`
+  `budget_exceeded` until the next local day or month. Limits are checked
+  before a request and charged after it, so the request that crosses a limit
+  completes. A team's `models` globs narrow what its keys may use.
+- **Alerts:** crossing `alert_at` (default 80%) of any limit logs a line and
+  records a `budget_alert` event, once per limit and period; Prometheus
+  exports `substrate_team_budget_used_ratio` for alerting rules.
+
+### Configuration reload
+
+The gateway re-reads `config.yaml` and `models.yaml` within two seconds of a
+change, on SIGHUP (`systemctl --user reload substrate`), on `substrate
+reload`, or `POST /substrate/v1/reload`. Requests in flight finish under the
+configuration they started with. An invalid file is refused: the running
+configuration stays, the error is logged once and recorded as a
+`config_reload_failed` event, and `substrate_config_reload_failures_total`
+counts it. Policy, classification, prices, teams, limits, timeouts (except
+`upstream_header_timeout`), placement, swap and logging options apply at
+once; the listen address, TLS settings (certificates still renew),
+`logging.enabled`, `upstream_header_timeout`, the health and sample intervals
+and the `tenstorrent` section apply at the next start. Keys (`keys.yaml`) apply
+on the next request, as they always have.
+
 ### Metrics and service
 
-`GET /metrics` (admin, or anyone with `metrics_public: true`) serves
+`GET /metrics` (admin or auditor, or anyone with `metrics_public: true`) serves
 Prometheus text:
 
 - requests and tokens per model, engine and API;
@@ -282,7 +358,9 @@ Prometheus text:
 - GPU memory and utilization, and per-instance GPU memory and RSS;
 - failovers, restarts, and dropped usage records;
 - policy matches per rule (`substrate_policy_flags_total`), requests per prompt category
-  (`substrate_requests_by_category_total`) and failures per error kind (`substrate_errors_total`).
+  (`substrate_requests_by_category_total`) and failures per error kind (`substrate_errors_total`);
+- cost per model and team (`substrate_cost_total`), team budget use
+  (`substrate_team_budget_used_ratio`), key expiry (`substrate_key_expiry_seconds`) and config reloads.
 
 ```sh
 substrate service install --enable -- --port 7777   # systemd user unit; PATH captured from this shell
@@ -303,9 +381,9 @@ database in WAL mode. You can query it directly with any SQLite client.
 
 | Table | One row per | Contents |
 | --- | --- | --- |
-| `requests` | gateway request, `substrate chat` request, or refused API key | model, instance, engine, API, stream, status, error, error kind, client, user agent, remote address, prompt/completion/cached/reasoning tokens, usage source, finish reason, autostart, queue ms (wait for a ready instance, including autostart), TTFT ms, duration ms, bytes in and out, prompt category, policy flags (JSON) and their highest severity |
+| `requests` | gateway request, `substrate chat` request, or refused API key | model, instance, engine, API, stream, status, error, error kind, client, team, user agent, remote address, prompt/completion/cached/reasoning tokens, usage source, finish reason, autostart, queue ms (wait for a ready instance, including autostart), TTFT ms, duration ms, bytes in and out, prompt category, policy flags (JSON) and their highest severity, cost |
 | `bodies` | request, when `logging.bodies` is on (or `logging.flagged_bodies` and the request was flagged) | request and response bodies (capped at `body_max_bytes`) |
-| `events` | lifecycle change | `start` (redacted argv), `ready` (load time), `start_failed`, `stop` (uptime), `exited` (crash, with the log tail and the number of orphaned workers killed) |
+| `events` | lifecycle change or gateway event | `start` (redacted argv), `ready` (load time), `start_failed`, `stop` (uptime), `exited` (crash, with the log tail and the number of orphaned workers killed), `budget_alert`, `config_reloaded`, `config_reload_failed` |
 | `gpu_samples` | GPU per sample | memory used/total, utilization, power |
 | `instance_samples` | instance per sample | GPU memory and RSS summed over the engine's whole process session, process count |
 
@@ -334,7 +412,7 @@ usage.
 ### Commands
 
 ```sh
-substrate usage --by model|engine|instance|client|api|category|error_kind|flag_severity|status|day|hour|total --since 24h
+substrate usage --by model|engine|instance|client|team|api|category|error_kind|flag_severity|status|day|hour|total --since 24h
 substrate requests --since 1h --model qwen3-0.6b       # recent requests
 substrate requests --flagged --min-severity high       # flagged requests (also --rule, --category, --errors, --error-kind)
 substrate requests --id req_...                          # one request, with bodies if captured
@@ -382,7 +460,7 @@ model is involved.
   `general`) by keyword and pattern scores. `classify.categories` replaces
   the built-in set.
 - **Error kinds.** Every failure gets an `error_kind`: `auth_failed`,
-  `forbidden`, `rate_limited`, `policy_blocked`, `bad_request`,
+  `forbidden`, `rate_limited`, `budget_exceeded`, `policy_blocked`, `bad_request`,
   `model_not_found`, `no_capacity`, `engine_start_failed`,
   `engine_unreachable`, `upstream_timeout`, `engine_error`,
   `engine_rejected` or `client_disconnected` (`substrate errors --kinds`).

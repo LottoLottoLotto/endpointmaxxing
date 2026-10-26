@@ -150,6 +150,9 @@ func printReport(e *env, w io.Writer, r *gateway.Report, since string) {
 	fmt.Fprintf(w, "Requests: %d (%d failed, %d flagged, %d blocked) from %d clients\n", t.Requests, t.Errors, t.Flagged, t.Blocked, t.Clients)
 	fmt.Fprintf(w, "Tokens: %d prompt, %d completion (%d cached, %d reasoning); %d requests unmetered\n",
 		t.PromptTokens, t.CompletionTokens, t.CachedTokens, t.ReasoningTokens, t.UnmeteredReqs)
+	if t.Cost != nil {
+		fmt.Fprintf(w, "Cost: %.2f %s\n", *t.Cost, r.Currency)
+	}
 	fmt.Fprintf(w, "Models: %d registered, %d running (%d ready), %d used in the window\n",
 		r.Models.Registered, r.Models.Running, r.Models.Ready, r.Models.Used)
 	usage := func(title string, rows []store.UsageRow) {
@@ -159,12 +162,17 @@ func printReport(e *env, w io.Writer, r *gateway.Report, since string) {
 		fmt.Fprintf(w, "\n%s\n", title)
 		tab := make([][]string, len(rows))
 		for i, u := range rows {
+			cost := "-"
+			if u.Cost != nil {
+				cost = fmt.Sprintf("%.2f", *u.Cost)
+			}
 			tab[i] = []string{dash(u.Key), fmt.Sprint(u.Requests), fmt.Sprint(u.Errors), fmt.Sprint(u.Flagged),
-				fmt.Sprint(u.PromptTokens), fmt.Sprint(u.CompletionTokens), optf(u.AvgDurationMS, "ms"), optf(u.DecodeTokPerSec, "")}
+				fmt.Sprint(u.PromptTokens), fmt.Sprint(u.CompletionTokens), cost, optf(u.AvgDurationMS, "ms"), optf(u.DecodeTokPerSec, "")}
 		}
-		e.table("KEY\tREQS\tERRS\tFLAGGED\tPROMPT\tCOMPLETION\tAVG TIME\tDECODE TOK/S", tab)
+		e.table("KEY\tREQS\tERRS\tFLAGGED\tPROMPT\tCOMPLETION\tCOST "+r.Currency+"\tAVG TIME\tDECODE TOK/S", tab)
 	}
 	usage("By model", r.ByModel)
+	usage("By team", r.ByTeam)
 	usage("By client", r.ByClient)
 	usage("By prompt category", r.ByCategory)
 	if len(r.Flags) > 0 {
@@ -201,16 +209,16 @@ func policyShowCmd() *command {
 				if err != nil {
 					return err
 				}
-				cats := a.Cfg.Classify.Categories
+				cats := a.Config().Classify.Categories
 				if len(cats) == 0 {
 					cats = policy.DefaultCategories
 				}
-				out := map[string]any{"policy": a.Cfg.Policy, "classify": a.Cfg.Classify, "categories": cats,
+				out := map[string]any{"policy": a.Config().Policy, "classify": a.Config().Classify, "categories": cats,
 					"detectors": policy.Detectors()}
 				return e.out(out, func(w io.Writer) {
-					fmt.Fprintf(w, "policy: %s\n", onOff(a.Cfg.Policy.Enabled))
-					t := make([][]string, len(a.Cfg.Policy.Rules))
-					for i, r := range a.Cfg.Policy.Rules {
+					fmt.Fprintf(w, "policy: %s\n", onOff(a.Config().Policy.Enabled))
+					t := make([][]string, len(a.Config().Policy.Rules))
+					for i, r := range a.Config().Policy.Rules {
 						var what []string
 						what = append(what, r.Detectors...)
 						if len(r.Keywords) > 0 {
@@ -233,10 +241,10 @@ func policyShowCmd() *command {
 							strings.Join(what, ", "), dash(strings.Join(scope, " ")), dash(termsSummary(r.Allow, r.Unless))}
 					}
 					e.table("RULE\tSEVERITY\tACTION\tMATCHES\tSCOPE\tEXCEPTIONS", t)
-					if s := termsSummary(a.Cfg.Policy.Allow, policy.Terms{}); s != "" {
+					if s := termsSummary(a.Config().Policy.Allow, policy.Terms{}); s != "" {
 						fmt.Fprintf(w, "every rule: %s\n", s)
 					}
-					fmt.Fprintf(w, "\nclassify: %s (default category %q)\n", onOff(a.Cfg.Classify.Enabled), orDefault(a.Cfg.Classify.Default, "general"))
+					fmt.Fprintf(w, "\nclassify: %s (default category %q)\n", onOff(a.Config().Classify.Enabled), orDefault(a.Config().Classify.Default, "general"))
 					names := make([]string, len(cats))
 					for i, c := range cats {
 						names[i] = c.Name

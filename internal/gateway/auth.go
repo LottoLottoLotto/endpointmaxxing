@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/store"
@@ -26,7 +27,23 @@ type principal struct {
 	key  *keys.Key // nil for the master key and open mode
 }
 
-func (p *principal) allows(model string) bool { return p.key == nil || p.key.Allows(model) }
+// team is the key's team in cfg; nil without a key, without a team, or for a team not configured.
+func (p *principal) team(cfg *config.Config) *config.Team {
+	if p.key == nil || p.key.Team == "" {
+		return nil
+	}
+	t, _ := cfg.Team(p.key.Team)
+	return t
+}
+
+// allows reports whether the key, and its team, may use model.
+func (p *principal) allows(model string, cfg *config.Config) bool {
+	if p.key == nil {
+		return true
+	}
+	t := p.team(cfg)
+	return p.key.Allows(model) && (t == nil || t.Allows(model))
+}
 
 // client is the usage attribution: the key name, or the self-reported client in open/master mode.
 func (p *principal) client(r *http.Request) string {
@@ -48,9 +65,24 @@ func principalOf(r *http.Request) *principal {
 // Route access levels.
 const (
 	roleAny     = iota // any authenticated caller
+	roleInfer          // inference: user and admin keys (not auditors)
+	roleRead           // read-only observability: admin and auditor keys
 	roleAdmin          // admin keys only
-	roleMetrics        // admin, or anyone when metrics_public
+	roleMetrics        // admin or auditor, or anyone when metrics_public
 )
+
+// permits reports whether role may use a route of level.
+func permits(level int, role string) bool {
+	switch level {
+	case roleInfer:
+		return role == keys.RoleUser || role == keys.RoleAdmin
+	case roleRead, roleMetrics:
+		return role == keys.RoleAdmin || role == keys.RoleAuditor
+	case roleAdmin:
+		return role == keys.RoleAdmin
+	}
+	return true
+}
 
 // authState caches keys.yaml and tracks per-key rate and token use.
 type authState struct {
@@ -58,9 +90,10 @@ type authState struct {
 	file    *keys.File
 	mtime   time.Time
 	size    int64
-	byHash  map[string]*keys.Key
+	byHash  map[string]*keys.Key   // current and (during a rotation grace period) previous secret hashes
 	minute  map[string][]time.Time // request times in the last minute, per key
 	tokens  map[string]tokenUse    // tokens used today, per key
+	teams   map[string]*teamUse    // team totals for the day and month
 	dbFunc  func() (*store.DB, error)
 	loadErr error
 }
@@ -91,7 +124,11 @@ func (a *authState) reload() error {
 	a.file, a.mtime, a.size = f, st.ModTime(), st.Size()
 	a.byHash = map[string]*keys.Key{}
 	for i := range f.Keys {
-		a.byHash[f.Keys[i].Hash] = &f.Keys[i]
+		k := &f.Keys[i]
+		a.byHash[k.Hash] = k
+		if k.PrevHash != "" {
+			a.byHash[k.PrevHash] = k
+		}
 	}
 	return nil
 }
@@ -106,6 +143,11 @@ func secretOf(r *http.Request) string {
 	return ""
 }
 
+// errKeyRefused is a known key that may not be used now (expired, disabled, or an old secret past its grace).
+type errKeyRefused struct{ name, why string }
+
+func (e errKeyRefused) Error() string { return fmt.Sprintf("API key %s is %s", e.name, e.why) }
+
 // authenticate resolves the caller. With no master key and no keys.yaml entries the gateway is open.
 func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 	g.auth.mu.Lock()
@@ -119,7 +161,15 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 	if g.APIKey != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(g.APIKey)) == 1 {
 		return &principal{name: "admin", role: keys.RoleAdmin}, nil
 	}
-	if k := byHash[keys.Hash(secret)]; k != nil && secret != "" {
+	hash := keys.Hash(secret)
+	if k := byHash[hash]; k != nil && secret != "" {
+		now := time.Now()
+		switch {
+		case !k.Matches(hash, now):
+			return nil, errs.Wrap(errs.Forbidden, errKeyRefused{k.Name, "a rotated-out secret past its grace period"})
+		case k.Status(now) != "active":
+			return nil, errs.Wrap(errs.Forbidden, errKeyRefused{k.Name, k.Status(now)})
+		}
 		return &principal{name: k.Name, role: k.Role, key: k}, nil
 	}
 	if g.APIKey == "" && len(byHash) == 0 {
@@ -131,7 +181,7 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 // authed wraps h with authentication and a role check.
 func (g *Gateway) authed(level int, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if level == roleMetrics && g.Cfg.MetricsPublic {
+		if level == roleMetrics && g.gw().MetricsPublic {
 			h(w, r)
 			return
 		}
@@ -142,28 +192,31 @@ func (g *Gateway) authed(level int, h http.HandlerFunc) http.HandlerFunc {
 				status = http.StatusInternalServerError
 			}
 			apiError(w, status, errType(status, err), err.Error())
-			g.logDenied(r, status, err.Error())
+			var refused errKeyRefused
+			client := ""
+			if errors.As(err, &refused) {
+				client = refused.name
+			}
+			g.logDenied(r, client, status, err.Error())
 			return
 		}
-		if (level == roleAdmin || level == roleMetrics) && p.role != keys.RoleAdmin {
+		if !permits(level, p.role) {
 			msg := fmt.Sprintf("key %s (role %s) may not use %s", p.name, p.role, r.URL.Path)
 			apiError(w, http.StatusForbidden, "permission_error", msg)
-			g.logDenied(r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)), http.StatusForbidden, msg)
+			g.logDenied(r, p.name, http.StatusForbidden, msg)
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	}
 }
 
-// logDenied records a request refused before reaching its handler (bad key, or a role too low for the route).
-func (g *Gateway) logDenied(r *http.Request, status int, msg string) {
+// logDenied records a request refused before reaching its handler (bad, expired or disabled key, or a role
+// too low for the route); client is the key's name when it is known.
+func (g *Gateway) logDenied(r *http.Request, client string, status int, msg string) {
 	now := time.Now()
 	api, _ := apiForPath(r.URL.Path)
 	rec := &store.Request{ID: newID(), TS: now.UnixMilli(), API: api, Path: r.URL.Path, UserAgent: r.UserAgent(),
-		Remote: clientIP(r), Status: status, Error: msg, ErrorKind: gatewayErrorKind(status, nil)}
-	if p, ok := r.Context().Value(ctxKey{}).(*principal); ok {
-		rec.Client = p.name
-	}
+		Remote: clientIP(r), Client: client, Status: status, Error: msg, ErrorKind: gatewayErrorKind(status, nil)}
 	if status == http.StatusInternalServerError {
 		rec.ErrorKind = "gateway_error"
 	}
@@ -228,19 +281,19 @@ func (a *authState) admit(p *principal) error {
 	return nil
 }
 
-// charge adds a finished request's tokens to its key's running day total.
-func (a *authState) charge(r *store.Request) {
+// charge adds a finished request's tokens to its key's day total and its team's totals, and returns
+// the team budget alerts it crossed.
+func (a *authState) charge(r *store.Request, team *config.Team) []budgetAlert {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	u, ok := a.tokens[r.Client]
-	if !ok {
-		return
+	if u, ok := a.tokens[r.Client]; ok {
+		if r.PromptTokens != nil {
+			u.used += *r.PromptTokens
+		}
+		if r.CompletionTokens != nil {
+			u.used += *r.CompletionTokens
+		}
+		a.tokens[r.Client] = u
 	}
-	if r.PromptTokens != nil {
-		u.used += *r.PromptTokens
-	}
-	if r.CompletionTokens != nil {
-		u.used += *r.CompletionTokens
-	}
-	a.tokens[r.Client] = u
+	return a.chargeTeam(r, team)
 }

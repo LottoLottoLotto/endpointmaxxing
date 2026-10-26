@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lotto/substrate/internal/app"
+	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/policy"
@@ -26,16 +27,18 @@ type Inspector struct {
 }
 
 // NewInspector compiles a's policy and classify sections.
-func NewInspector(a *app.App) (*Inspector, error) {
+func NewInspector(a *app.App) (*Inspector, error) { return newInspectorFrom(a.Config()) }
+
+func newInspectorFrom(c *config.Config) (*Inspector, error) {
 	in := &Inspector{}
 	var err error
-	if a.Cfg.Policy.Enabled {
-		if in.policy, err = policy.Compile(&a.Cfg.Policy); err != nil {
+	if c.Policy.Enabled {
+		if in.policy, err = policy.Compile(&c.Policy); err != nil {
 			return nil, err
 		}
 	}
-	if a.Cfg.Classify.Enabled {
-		if in.classifier, err = policy.CompileClassifier(&a.Cfg.Classify); err != nil {
+	if c.Classify.Enabled {
+		if in.classifier, err = policy.CompileClassifier(&c.Classify); err != nil {
 			return nil, err
 		}
 	}
@@ -93,6 +96,8 @@ func gatewayErrorKind(status int, err error) string {
 	switch {
 	case errors.As(err, &blocked):
 		return "policy_blocked"
+	case errors.Is(err, errBudget):
+		return "budget_exceeded"
 	case status == http.StatusUnauthorized:
 		return "auth_failed"
 	case status == http.StatusForbidden:
@@ -131,10 +136,15 @@ func newAuditLog(path string, logf func(string, ...any)) *auditLog {
 	if path == "" {
 		return nil
 	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(paths.State(), path)
+	return &auditLog{path: auditPath(path), log: logf}
+}
+
+// auditPath resolves logging.audit_file: relative paths are under the state directory; "" stays "".
+func auditPath(p string) string {
+	if p != "" && !filepath.IsAbs(p) {
+		return filepath.Join(paths.State(), p)
 	}
-	return &auditLog{path: path, log: logf}
+	return p
 }
 
 // auditRecord is one audit line: a request record (bodies never included) with its kind and an RFC 3339 time.
@@ -202,8 +212,10 @@ func (l *auditLog) close() {
 type Report struct {
 	Since      *time.Time        `json:"since,omitempty"`
 	Until      *time.Time        `json:"until,omitempty"`
+	Currency   string            `json:"currency"`
 	Totals     *store.UsageRow   `json:"totals"`
 	ByModel    []store.UsageRow  `json:"by_model"`
+	ByTeam     []store.UsageRow  `json:"by_team"`
 	ByClient   []store.UsageRow  `json:"by_client"`
 	ByCategory []store.UsageRow  `json:"by_category"`
 	Flags      []store.FlagRow   `json:"flags"`
@@ -222,7 +234,7 @@ type ReportModelCounts struct {
 
 // BuildReport aggregates usage, flags and errors for f, plus the current model fleet.
 func BuildReport(a *app.App, db *store.DB, f store.Filter) (*Report, error) {
-	r := &Report{}
+	r := &Report{Currency: a.Config().Pricing.CurrencyOrDefault()}
 	if !f.Since.IsZero() {
 		r.Since = &f.Since
 	}
@@ -242,7 +254,7 @@ func BuildReport(a *app.App, db *store.DB, f store.Filter) (*Report, error) {
 	for _, g := range []struct {
 		by  string
 		out *[]store.UsageRow
-	}{{"model", &r.ByModel}, {"client", &r.ByClient}, {"category", &r.ByCategory}} {
+	}{{"model", &r.ByModel}, {"team", &r.ByTeam}, {"client", &r.ByClient}, {"category", &r.ByCategory}} {
 		if *g.out, err = db.Usage(g.by, f); err != nil {
 			return nil, err
 		}

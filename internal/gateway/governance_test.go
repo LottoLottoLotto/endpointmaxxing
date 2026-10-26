@@ -49,13 +49,13 @@ func TestPolicyClassificationErrorsAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.Cfg.Policy = policy.Config{Enabled: true, Rules: []policy.Rule{
+	a.Config().Policy = policy.Config{Enabled: true, Rules: []policy.Rule{
 		{Name: "secrets", Severity: "high", Detectors: []string{"api_key"}},
 		{Name: "codenames", Severity: "critical", Action: policy.ActionBlock, Keywords: []string{"Project Falcon"}},
 	}}
-	a.Cfg.Classify = policy.ClassifyConfig{Enabled: true}
-	a.Cfg.Logging.FlaggedBodies = true
-	a.Cfg.Logging.AuditFile = "audit.jsonl"
+	a.Config().Classify = policy.ClassifyConfig{Enabled: true}
+	a.Config().Logging.FlaggedBodies = true
+	a.Config().Logging.AuditFile = "audit.jsonl"
 	g := New(a, log.New(io.Discard, "", 0))
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()

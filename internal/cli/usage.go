@@ -21,8 +21,8 @@ type filterFlags struct {
 	since, until, model, engine, instance, client *string
 	limit                                         *int
 	// request-only filters (nil unless addRequestFilters registered them)
-	category, errorKind, minSeverity, rule *string
-	errors, flagged                        *bool
+	category, errorKind, minSeverity, rule, team *string
+	errors, flagged                              *bool
 }
 
 func addFilterFlags(fs *flag.FlagSet, defSince string, defLimit int) *filterFlags {
@@ -43,6 +43,7 @@ func addFilterFlags(fs *flag.FlagSet, defSince string, defLimit int) *filterFlag
 // addRequestFilters registers the filters that apply to recorded requests (usage, requests, flags, errors, report).
 func (f *filterFlags) addRequestFilters(fs *flag.FlagSet) *filterFlags {
 	f.category = fs.String("category", "", "only this prompt category")
+	f.team = fs.String("team", "", "only this team's keys")
 	f.errorKind = fs.String("error-kind", "", "only this error kind (see `substrate errors --kinds`)")
 	f.errors = fs.Bool("errors", false, "only failed requests")
 	f.flagged = fs.Bool("flagged", false, "only requests that matched a policy rule")
@@ -68,7 +69,7 @@ func (f *filterFlags) filter() (store.Filter, error) {
 		out.Limit = *f.limit
 	}
 	if f.category != nil {
-		out.Category, out.ErrorKind, out.Rule = *f.category, *f.errorKind, *f.rule
+		out.Category, out.ErrorKind, out.Rule, out.Team = *f.category, *f.errorKind, *f.rule, *f.team
 		out.Errors, out.Flagged, out.MinSeverity = *f.errors, *f.flagged, *f.minSeverity
 		if out.MinSeverity != "" && !slices.Contains(policy.Severities, out.MinSeverity) {
 			return out, errs.New(errs.Usage, "--min-severity %q: want %s", out.MinSeverity, strings.Join(policy.Severities, ", "))

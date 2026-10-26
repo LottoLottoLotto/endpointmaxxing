@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -679,7 +680,7 @@ func cmdDoctor() *command {
 					manifestErrs = append(manifestErrs, err.Error())
 				}
 				dbStatus := "disabled"
-				if a.Cfg.Logging.Enabled {
+				if a.Config().Logging.Enabled {
 					if _, err := a.DB(); err != nil {
 						dbStatus = "error: " + err.Error()
 					} else {
@@ -691,7 +692,7 @@ func cmdDoctor() *command {
 					"paths": map[string]string{"config": config.ConfigPath(), "models": config.ModelsPath(), "engines": config.EnginesDir(),
 						"state": paths.State(), "data": paths.Data(), "usage_db": store.Path()},
 					"gpus": gs, "engines": engines, "manifest_errors": manifestErrs, "models": len(a.RegisteredModels()),
-					"usage_db": dbStatus, "logging": a.Cfg.Logging,
+					"usage_db": dbStatus, "logging": a.Config().Logging,
 				}
 				type chip struct {
 					Index int    `json:"index"`
@@ -755,7 +756,7 @@ func isLoopback(host string) bool {
 }
 
 func cmdServe() *command {
-	return &command{name: "serve", synopsis: "[--host H] [--port P] [--placement memory|exclusive|off] [--no-autostart] [--api-key K]",
+	return &command{name: "serve", synopsis: "[--host H] [--port P] [--tls-cert F --tls-key F [--tls-client-ca F]] [--placement memory|exclusive|off] [--no-autostart] [--api-key K]",
 		summary: "run the unified OpenAI/Anthropic-compatible gateway (placement, limits, keys, metering, /metrics)",
 		build: func(fs *flag.FlagSet) action {
 			host := fs.String("host", "", "listen address (default: config gateway.host)")
@@ -764,6 +765,9 @@ func cmdServe() *command {
 			placementMode := fs.String("placement", "", "memory, exclusive or off (default: config gateway.placement)")
 			key := fs.String("api-key", "", "master (admin) key (default $SUBSTRATE_API_KEY); per-client keys: substrate key add")
 			insecure := fs.Bool("insecure", false, "allow a non-loopback address without any API key")
+			tlsCert := fs.String("tls-cert", "", "serve HTTPS with this PEM certificate (default: config gateway.tls.cert)")
+			tlsKey := fs.String("tls-key", "", "PEM private key for --tls-cert (default: config gateway.tls.key)")
+			tlsCA := fs.String("tls-client-ca", "", "require client certificates signed by these PEM CAs (mutual TLS)")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("serve", pos, 0, 0); err != nil {
 					return err
@@ -772,7 +776,24 @@ func cmdServe() *command {
 				if err != nil {
 					return err
 				}
-				g := a.Cfg.Gateway
+				switch *placementMode {
+				case "", config.PlacementMemory, config.PlacementExclusive, config.PlacementOff:
+				default:
+					return errs.New(errs.Usage, "serve: --placement %q (want memory, exclusive or off)", *placementMode)
+				}
+				// Command-line settings win over config.yaml, including after a hot reload.
+				a.SetOverlay(func(c *config.Config) {
+					if *placementMode != "" {
+						c.Gateway.Placement = *placementMode
+					}
+					if *tlsCert != "" || *tlsKey != "" {
+						c.Gateway.TLS.Cert, c.Gateway.TLS.Key = *tlsCert, *tlsKey
+					}
+					if *tlsCA != "" {
+						c.Gateway.TLS.ClientCA = *tlsCA
+					}
+				})
+				g := a.Config().Gateway
 				if *host == "" {
 					*host = g.Host
 				}
@@ -789,29 +810,55 @@ func cmdServe() *command {
 				if !isLoopback(*host) && *key == "" && len(ks.Keys) == 0 && !*insecure {
 					return errs.New(errs.Usage, "serve: %s is reachable from other machines; create keys (substrate key add) or set --api-key, or pass --insecure", *host)
 				}
-				switch *placementMode {
-				case "":
-				case config.PlacementMemory, config.PlacementExclusive, config.PlacementOff:
-					a.Cfg.Gateway.Placement = *placementMode
-				default:
-					return errs.New(errs.Usage, "serve: --placement %q (want memory, exclusive or off)", *placementMode)
-				}
 				logger := log.New(e.stderr, "substrate: ", log.LstdFlags)
 				a.Warn = logger.Printf
+				var tlsConf *tls.Config
+				if g.TLS.Enabled() {
+					if err := g.TLS.Validate(); err != nil {
+						return errs.Wrap(errs.Usage, err)
+					}
+					if tlsConf, err = gateway.TLSConfig(g.TLS, logger.Printf); err != nil {
+						return errs.Wrap(errs.Usage, err)
+					}
+				} else if !isLoopback(*host) {
+					logger.Printf("warning: serving plain HTTP on %s: prompts and API keys cross the network unencrypted (set gateway.tls or --tls-cert/--tls-key)", *host)
+				}
 				gw := gateway.New(a, logger)
 				defer gw.Close()
-				gw.Autostart, gw.APIKey = g.Autostart && !*noAuto, *key
+				gw.NoAutostart, gw.APIKey = *noAuto, *key
 
 				ln, err := net.Listen("tcp", net.JoinHostPort(*host, fmt.Sprint(*port)))
 				if err != nil {
 					return errs.Wrap(errs.Conflict, err)
 				}
+				scheme := "http"
+				if tlsConf != nil {
+					ln, scheme = tls.NewListener(ln, tlsConf), "https"
+				}
 				srv := &http.Server{Handler: gw.Handler(), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 5 * time.Minute}
 				ctx, stop := signal.NotifyContext(e.ctx, os.Interrupt, syscall.SIGTERM)
 				defer stop()
+				hup := make(chan os.Signal, 1)
+				signal.Notify(hup, syscall.SIGHUP)
+				defer signal.Stop(hup)
+				go func() {
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-hup:
+							gw.Reload()
+						}
+					}
+				}()
 				gw.Run(ctx)
-				logger.Printf("gateway on http://%s/v1 (placement=%s autostart=%v keys=%d logging=%v bodies=%v)", ln.Addr(),
-					a.Cfg.Gateway.Placement, gw.Autostart, len(ks.Keys), a.Cfg.Logging.Enabled, a.Cfg.Logging.Bodies)
+				mtls := ""
+				if g.TLS.ClientCA != "" {
+					mtls = " mtls=on"
+				}
+				logger.Printf("gateway on %s://%s/v1 (placement=%s autostart=%v keys=%d logging=%v bodies=%v%s; config reloads on change or SIGHUP)",
+					scheme, ln.Addr(), a.Config().Gateway.Placement, g.Autostart && !*noAuto, len(ks.Keys), a.Config().Logging.Enabled,
+					a.Config().Logging.Bodies, mtls)
 				drained := make(chan struct{})
 				go func() {
 					defer close(drained)

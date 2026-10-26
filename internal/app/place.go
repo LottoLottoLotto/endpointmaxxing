@@ -122,7 +122,7 @@ func (a *App) Estimate(t *Target, engineID string, flags map[string]string) (pla
 		n.PerGPU, n.Source = func(int64) int64 { return per }, src
 	}
 	switch mode := e.MemoryMode(); {
-	case a.Cfg.Gateway.Placement == config.PlacementExclusive || mode == "exclusive":
+	case a.Config().Gateway.Placement == config.PlacementExclusive || mode == "exclusive":
 		n.Exclusive, n.Source = true, "exclusive"
 		n.PerGPU = func(total int64) int64 { return total }
 	case t.Model.VRAMMiB > 0:
@@ -169,7 +169,7 @@ func (a *App) Estimate(t *Target, engineID string, flags map[string]string) (pla
 
 // peak is the largest footprint measured for model on engine (0 without logging or samples).
 func (a *App) peak(model, engine string) int64 {
-	if !a.Cfg.Logging.Enabled {
+	if !a.Config().Logging.Enabled {
 		return 0
 	}
 	db, err := a.DB()
@@ -199,7 +199,7 @@ func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
 		// --force and placement off only forbid evictions.
 		return a.placeChips(t, o, e, engineID)
 	}
-	if o.Force || a.Cfg.Gateway.Placement == config.PlacementOff || e.MemoryMode() == "none" {
+	if o.Force || a.Config().Gateway.Placement == config.PlacementOff || e.MemoryMode() == "none" {
 		return nil, nil
 	}
 	gpus, err := gpu.List()
@@ -242,7 +242,7 @@ func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
 			}
 		}
 		h := placement.Holder{ID: in.ID, MiB: held, Idle: true, LastUsed: in.StartedAt,
-			Evictable: in.Name != name && contains(a.Cfg.Gateway.EvictOwners, in.Owner) && in.ReadyAt != nil}
+			Evictable: in.Name != name && contains(a.Config().Gateway.EvictOwners, in.Owner) && in.ReadyAt != nil}
 		if o.Activity != nil {
 			h.Idle, h.LastUsed = o.Activity(in.ID)
 		}
@@ -307,8 +307,8 @@ func (a *App) placeChips(t *Target, o *LaunchOpts, e *runtime.Engine, engineID s
 			continue
 		}
 		h := placement.Holder{ID: in.ID, MiB: map[int]int64{}, Idle: true, LastUsed: in.StartedAt,
-			Evictable: !o.Force && a.Cfg.Gateway.Placement != config.PlacementOff && in.Name != name &&
-				contains(a.Cfg.Gateway.EvictOwners, in.Owner) && in.ReadyAt != nil}
+			Evictable: !o.Force && a.Config().Gateway.Placement != config.PlacementOff && in.Name != name &&
+				contains(a.Config().Gateway.EvictOwners, in.Owner) && in.ReadyAt != nil}
 		for _, d := range in.Devices {
 			h.MiB[d] = 1
 			owned[d] = true
@@ -370,7 +370,7 @@ func (a *App) AwaitReady(ctx context.Context, in *runtime.Instance, timeout time
 
 // RecordFootprint samples an instance's GPU memory and RSS into the usage database.
 func (a *App) RecordFootprint(in *runtime.Instance) {
-	if !a.Cfg.Logging.Enabled {
+	if !a.Config().Logging.Enabled {
 		return
 	}
 	gpus, err := gpu.List()

@@ -21,15 +21,19 @@ import (
 // restarts), health checks, idle unload, resource sampling and retention.
 func (g *Gateway) Run(ctx context.Context) {
 	go g.every(ctx, 5*time.Second, g.monitor)
-	if iv := time.Duration(g.Cfg.HealthInterval); iv > 0 {
+	if iv := time.Duration(g.gw().HealthInterval); iv > 0 {
 		go g.every(ctx, iv, g.healthCheck)
 	}
 	go g.every(ctx, 15*time.Second, g.idleUnload)
-	if iv := time.Duration(g.App.Cfg.Logging.SampleInterval); g.App.Cfg.Logging.Enabled && iv > 0 {
+	if iv := time.Duration(g.App.Config().Logging.SampleInterval); g.App.Config().Logging.Enabled && iv > 0 {
 		go g.every(ctx, iv, g.sample)
 	}
-	if days := g.App.Cfg.Logging.RetentionDays; g.App.Cfg.Logging.Enabled && days > 0 {
+	if g.App.Config().Logging.Enabled {
 		go g.every(ctx, 24*time.Hour, func() {
+			days := g.App.Config().Logging.RetentionDays // reloadable
+			if days <= 0 {
+				return
+			}
 			db, err := g.App.DB()
 			if err != nil {
 				return
@@ -42,6 +46,7 @@ func (g *Gateway) Run(ctx context.Context) {
 			g.Log.Printf("retention: pruned %v", n)
 		})
 	}
+	go g.watchConfig(ctx, 2*time.Second)
 }
 
 func (g *Gateway) every(ctx context.Context, d time.Duration, fn func()) {
@@ -69,12 +74,10 @@ func (g *Gateway) pick(ctx context.Context, model, api string) ([]*runtime.Insta
 	if model == "" {
 		return nil, false, errs.New(errs.Usage, "request has no model, and not exactly one instance is ready")
 	}
-	if !g.Autostart {
+	if !g.autostart() {
 		return nil, false, errs.New(errs.NotFound, "no ready instance serves %q (autostart is off)", model)
 	}
-	if err := g.App.Refresh(); err != nil {
-		return nil, false, err
-	}
+	g.Reload() // see a model added since; an invalid config keeps the running one (logged)
 	if _, ok := g.App.RegisteredModel(model); !ok {
 		return nil, false, errs.New(errs.NotFound, "model %q is neither running nor registered (see `substrate model add`)", model)
 	}
@@ -113,7 +116,7 @@ func (g *Gateway) swappable(id string) bool {
 		return false // still loading: never interrupt a load
 	}
 	resident := time.Since(*in.ReadyAt)
-	sw := g.Cfg.Swap
+	sw := g.gw().Swap
 	if resident < time.Duration(sw.MinResidency) {
 		return false
 	}
@@ -145,7 +148,7 @@ func (g *Gateway) awaitTurn(ctx context.Context, model, engine string) error {
 	}
 	chips := e.AcceleratorKind() == spec.AccelTenstorrent
 	opts := app.LaunchOpts{Engine: engine, Owner: "gateway", Activity: g.activity}
-	timeout := time.Duration(g.Cfg.Swap.WaitTimeout)
+	timeout := time.Duration(g.gw().Swap.WaitTimeout)
 	start := time.Now()
 	queued := false
 	defer func() {
@@ -442,14 +445,14 @@ func (g *Gateway) idleTTL(model string) time.Duration {
 	if m, ok := g.App.RegisteredModel(model); ok && m.IdleUnload > 0 {
 		return time.Duration(m.IdleUnload)
 	}
-	return time.Duration(g.Cfg.IdleUnload)
+	return time.Duration(g.gw().IdleUnload)
 }
 
 // idleUnload stops evictable instances nobody used for their idle TTL.
 func (g *Gateway) idleUnload() {
 	ins, _ := runtime.List()
 	for _, in := range ins {
-		if !contains(g.Cfg.EvictOwners, in.Owner) || in.ReadyAt == nil || !in.Alive() {
+		if !contains(g.gw().EvictOwners, in.Owner) || in.ReadyAt == nil || !in.Alive() {
 			continue
 		}
 		ttl := g.idleTTL(in.Name)
@@ -503,7 +506,7 @@ func (b *restartBudget) take(model string) bool {
 
 // restart relaunches a registered model the gateway was serving, within budget.
 func (g *Gateway) restart(in *runtime.Instance, why string) {
-	if !g.Cfg.RestartCrashed || in.Owner != "gateway" {
+	if !g.gw().RestartCrashed || in.Owner != "gateway" {
 		return
 	}
 	if _, ok := g.App.RegisteredModel(in.Name); !ok {
@@ -575,7 +578,7 @@ func (g *Gateway) healthCheck() {
 		case becameUnhealthy:
 			g.Log.Printf("%s failed %d health checks: no longer routed", in.ID, unhealthyAfter)
 			runtime.RecordEvent("unhealthy", in, fmt.Sprintf("%d consecutive failed health checks", unhealthyAfter))
-			if g.Cfg.RestartCrashed && in.Owner == "gateway" {
+			if g.gw().RestartCrashed && in.Owner == "gateway" {
 				g.waitIdle(in.ID, 30*time.Second)
 				if err := in.StopFor("unhealthy"); err != nil {
 					g.Log.Printf("stopping %s: %v", in.ID, err)
@@ -606,7 +609,7 @@ func (g *Gateway) maxConcurrency(model string) int {
 	if m, ok := g.App.RegisteredModel(model); ok && m.MaxConcurrency > 0 {
 		return m.MaxConcurrency
 	}
-	return g.Cfg.MaxConcurrency
+	return g.gw().MaxConcurrency
 }
 
 // acquire takes one of max slots for model, queueing up to maxQueue waiters for at most timeout.

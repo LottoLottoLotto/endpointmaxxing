@@ -102,6 +102,10 @@ var migrations = []string{
 	CREATE INDEX requests_category ON requests(category, ts);
 	CREATE INDEX requests_flag_severity ON requests(flag_severity, ts) WHERE flag_severity != '';
 	CREATE INDEX requests_error_kind ON requests(error_kind, ts) WHERE error_kind != '';`,
+	// 4: teams and cost.
+	`ALTER TABLE requests ADD COLUMN team TEXT NOT NULL DEFAULT '';
+	ALTER TABLE requests ADD COLUMN cost REAL;                              -- in pricing.currency; NULL when unpriced
+	CREATE INDEX requests_team ON requests(team, ts) WHERE team != '';`,
 }
 
 // DB is an open usage database.
@@ -182,6 +186,9 @@ type Request struct {
 	FlagSeverity string        `json:"flag_severity,omitempty"`
 	// ErrorKind classifies failures (see ErrorKinds); "" for successful requests.
 	ErrorKind string `json:"error_kind,omitempty"`
+	// Team is the API key's team when the request was made; Cost prices its tokens (nil when unpriced).
+	Team string   `json:"team,omitempty"`
+	Cost *float64 `json:"cost"`
 
 	// Bodies, when captured, are stored in the bodies table.
 	RequestBody   []byte `json:"-"`
@@ -194,6 +201,7 @@ var ErrorKinds = map[string]string{
 	"auth_failed":         "missing or invalid API key (401)",
 	"forbidden":           "the key lacks the role or model access (403)",
 	"rate_limited":        "requests-per-minute, daily token quota or queue limit (429)",
+	"budget_exceeded":     "the key's team used up a token or cost budget (429)",
 	"policy_blocked":      "the prompt matched a blocking policy rule (400)",
 	"bad_request":         "unreadable, oversized or non-JSON body (400/413)",
 	"model_not_found":     "no registered model or running instance by that name (404)",
@@ -209,7 +217,7 @@ var ErrorKinds = map[string]string{
 
 const requestCols = `id, ts, model, instance, engine, api, path, stream, status, error, client, user_agent, remote,
 	prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, usage_source, finish_reason, autostarted,
-	queue_ms, ttft_ms, duration_ms, req_bytes, resp_bytes, category, flags, flag_severity, error_kind`
+	queue_ms, ttft_ms, duration_ms, req_bytes, resp_bytes, category, flags, flag_severity, error_kind, team, cost`
 
 // InsertRequest records r (and its bodies when present).
 func (db *DB) InsertRequest(r *Request) error {
@@ -226,10 +234,10 @@ func (db *DB) InsertRequest(r *Request) error {
 		}
 		flags = string(data)
 	}
-	_, err = tx.Exec(`INSERT INTO requests (`+requestCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = tx.Exec(`INSERT INTO requests (`+requestCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.TS, r.Model, r.Instance, r.Engine, r.API, r.Path, r.Stream, r.Status, r.Error, r.Client, r.UserAgent, r.Remote,
 		r.PromptTokens, r.CompletionTokens, r.CachedTokens, r.ReasoningTokens, r.UsageSource, r.FinishReason, r.Autostarted,
-		r.QueueMS, r.TTFTMS, r.DurationMS, r.ReqBytes, r.RespBytes, r.Category, flags, r.FlagSeverity, r.ErrorKind)
+		r.QueueMS, r.TTFTMS, r.DurationMS, r.ReqBytes, r.RespBytes, r.Category, flags, r.FlagSeverity, r.ErrorKind, r.Team, r.Cost)
 	if err != nil {
 		return err
 	}
@@ -345,6 +353,7 @@ type Filter struct {
 	Engine   string
 	Instance string
 	Client   string
+	Team     string
 	ID       string // requests only
 	Limit    int
 
@@ -361,7 +370,7 @@ type Filter struct {
 }
 
 // requestExtras are the Filter fields that apply to the requests table.
-var requestExtras = []string{"model", "engine", "instance", "client", "id", "category", "error_kind", "errors", "flagged", "rule"}
+var requestExtras = []string{"model", "engine", "instance", "client", "team", "id", "category", "error_kind", "errors", "flagged", "rule"}
 
 func (f Filter) where(tsCol string, extra ...string) (string, []any) {
 	var conds []string
@@ -387,6 +396,8 @@ func (f Filter) where(tsCol string, extra ...string) (string, []any) {
 			add("instance", f.Instance)
 		case "client":
 			add("client", f.Client)
+		case "team":
+			add("team", f.Team)
 		case "id":
 			add("id", f.ID)
 		case "category":
@@ -445,7 +456,7 @@ func (db *DB) Requests(f Filter) ([]Request, error) {
 		if err := rows.Scan(&r.ID, &r.TS, &r.Model, &r.Instance, &r.Engine, &r.API, &r.Path, &r.Stream, &r.Status, &r.Error,
 			&r.Client, &r.UserAgent, &r.Remote, &r.PromptTokens, &r.CompletionTokens, &r.CachedTokens, &r.ReasoningTokens,
 			&r.UsageSource, &r.FinishReason, &r.Autostarted, &r.QueueMS, &r.TTFTMS, &r.DurationMS, &r.ReqBytes, &r.RespBytes,
-			&r.Category, &flags, &r.FlagSeverity, &r.ErrorKind); err != nil {
+			&r.Category, &flags, &r.FlagSeverity, &r.ErrorKind, &r.Team, &r.Cost); err != nil {
 			return nil, err
 		}
 		if flags != "" {
@@ -489,11 +500,12 @@ func (db *DB) Events(f Filter) ([]Event, error) {
 
 // Group is an aggregation dimension for Usage.
 var Groups = map[string]string{
-	"model":    "model",
-	"engine":   "engine",
-	"instance": "instance",
-	"client":   "client",
-	"api":      "api",
+	"model":         "model",
+	"engine":        "engine",
+	"instance":      "instance",
+	"client":        "client",
+	"team":          "team",
+	"api":           "api",
 	"category":      "category",
 	"error_kind":    "error_kind",
 	"flag_severity": "flag_severity",
@@ -511,6 +523,7 @@ type UsageRow struct {
 	Blocked          int64    `json:"blocked"` // refused by a blocking rule
 	Models           int64    `json:"models"`  // distinct models used
 	Clients          int64    `json:"clients"` // distinct clients
+	Cost             *float64 `json:"cost"`    // sum over priced requests; nil when none was priced
 	PromptTokens     int64    `json:"prompt_tokens"`
 	CompletionTokens int64    `json:"completion_tokens"`
 	CachedTokens     int64    `json:"cached_tokens"`
@@ -535,7 +548,7 @@ func (db *DB) Usage(group string, f Filter) ([]UsageRow, error) {
 	q := `SELECT ` + key + ` AS k, COUNT(*),
 		SUM(CASE WHEN status >= 400 OR error != '' THEN 1 ELSE 0 END),
 		SUM(CASE WHEN flag_severity != '' THEN 1 ELSE 0 END), SUM(CASE WHEN error_kind = 'policy_blocked' THEN 1 ELSE 0 END),
-		COUNT(DISTINCT NULLIF(model, '')), COUNT(DISTINCT NULLIF(client, '')),
+		COUNT(DISTINCT NULLIF(model, '')), COUNT(DISTINCT NULLIF(client, '')), SUM(cost),
 		COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
 		COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
 		SUM(CASE WHEN status < 400 AND completion_tokens IS NULL THEN 1 ELSE 0 END),
@@ -551,7 +564,7 @@ func (db *DB) Usage(group string, f Filter) ([]UsageRow, error) {
 	var out []UsageRow
 	for rows.Next() {
 		var u UsageRow
-		if err := rows.Scan(&u.Key, &u.Requests, &u.Errors, &u.Flagged, &u.Blocked, &u.Models, &u.Clients, &u.PromptTokens,
+		if err := rows.Scan(&u.Key, &u.Requests, &u.Errors, &u.Flagged, &u.Blocked, &u.Models, &u.Clients, &u.Cost, &u.PromptTokens,
 			&u.CompletionTokens, &u.CachedTokens, &u.ReasoningTokens, &u.UnmeteredReqs, &u.AvgTTFTMS, &u.AvgDurationMS, &u.DecodeTokPerSec); err != nil {
 			return nil, err
 		}
@@ -638,6 +651,39 @@ func (db *DB) ErrorStats(f Filter) ([]ErrorRow, error) {
 		}
 		r.LastError, r.LastModel, r.LastRequest = lastErr.String, lastModel.String, lastID.String
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// TeamUse is a team's metered tokens and cost over a period.
+type TeamUse struct {
+	Tokens int64
+	Cost   float64
+}
+
+// TeamSince sums the tokens and cost recorded for team since t.
+func (db *DB) TeamSince(team string, since time.Time) (TeamUse, error) {
+	var u TeamUse
+	err := db.QueryRow(`SELECT COALESCE(SUM(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0)), 0), COALESCE(SUM(cost), 0)
+		FROM requests WHERE team = ? AND ts >= ?`, team, since.UnixMilli()).Scan(&u.Tokens, &u.Cost)
+	return u, err
+}
+
+// LastUsed returns each client's latest successfully authenticated request (unix ms): for API keys, when the key was last used.
+func (db *DB) LastUsed() (map[string]int64, error) {
+	rows, err := db.Query(`SELECT client, MAX(ts) FROM requests WHERE client != '' AND error_kind NOT IN ('auth_failed', 'forbidden') GROUP BY client`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var c string
+		var ts int64
+		if err := rows.Scan(&c, &ts); err != nil {
+			return nil, err
+		}
+		out[c] = ts
 	}
 	return out, rows.Err()
 }

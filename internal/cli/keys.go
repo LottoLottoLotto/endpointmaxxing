@@ -1,16 +1,19 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lotto/substrate/internal/errs"
+	"github.com/lotto/substrate/internal/gateway"
 	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/paths"
 )
@@ -18,30 +21,63 @@ import (
 // ---- key ----
 
 func cmdKey() *command {
-	return &command{name: "key", summary: "manage per-client gateway API keys (roles, model access, quotas)",
-		sub: []*command{keyAddCmd(), keyListCmd(), keyRmCmd()}}
+	return &command{name: "key", summary: "manage gateway API keys (roles, teams, model access, quotas, expiry, rotation)",
+		sub: []*command{keyAddCmd(), keyListCmd(), keySetCmd(), keyRotateCmd(), keyToggleCmd("disable", true), keyToggleCmd("enable", false), keyRmCmd()}}
+}
+
+// parseExpiry reads "90d", "720h", a date or RFC 3339 time (from now), or "never".
+func parseExpiry(s string) (*time.Time, error) {
+	if s == "" || s == "never" {
+		return nil, nil
+	}
+	if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil && strings.HasSuffix(s, "d") && n > 0 {
+		t := time.Now().AddDate(0, 0, n).UTC()
+		return &t, nil
+	}
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		t := time.Now().Add(d).UTC()
+		return &t, nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			t = t.UTC()
+			return &t, nil
+		}
+	}
+	return nil, errs.New(errs.Usage, "--expires %q: want a duration from now (90d, 720h), a date (2027-01-31), or never", s)
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, m := range strings.Split(s, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func keyAddCmd() *command {
-	return &command{name: "add", synopsis: "<name> [--role user|admin] [--models a,b*] [--rpm N] [--tokens-per-day N]",
+	return &command{name: "add", synopsis: "<name> [--role user|auditor|admin] [--team T] [--models a,b*] [--rpm N] [--tokens-per-day N] [--expires 90d]",
 		summary: "create a key (printed once)",
 		build: func(fs *flag.FlagSet) action {
-			role := fs.String("role", keys.RoleUser, "user (inference, own usage) or admin (everything)")
+			role := fs.String("role", keys.RoleUser, "user (inference, own usage), auditor (read-only: usage, logs, reports; no inference) or admin (everything)")
+			team := fs.String("team", "", "team whose budgets and model access apply (config.yaml teams; substrate team set)")
 			models := fs.String("models", "", "comma-separated model names or globs the key may use (default all)")
 			rpm := fs.Int("rpm", 0, "requests per minute (0 unlimited)")
 			tpd := fs.Int64("tokens-per-day", 0, "prompt+completion tokens per calendar day (0 unlimited)")
+			expires := fs.String("expires", "", "when the key stops working: 90d, 720h, 2027-01-31 (default never)")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("key add", pos, 1, 1); err != nil {
 					return err
 				}
-				if *rpm < 0 || *tpd < 0 {
-					return errs.New(errs.Usage, "key add: --rpm and --tokens-per-day must be >= 0")
+				exp, err := parseExpiry(*expires)
+				if err != nil {
+					return err
 				}
-				k := keys.Key{Name: pos[0], Role: *role, RPM: *rpm, TokensPerDay: *tpd}
-				for _, m := range strings.Split(*models, ",") {
-					if m = strings.TrimSpace(m); m != "" {
-						k.Models = append(k.Models, m)
-					}
+				k := keys.Key{Name: pos[0], Role: *role, Team: *team, Models: splitList(*models), RPM: *rpm, TokensPerDay: *tpd, Expires: exp}
+				if err := warnUnknownTeam(e, k.Team); err != nil {
+					return err
 				}
 				secret, err := keys.Add(k)
 				if err != nil {
@@ -50,8 +86,8 @@ func keyAddCmd() *command {
 					}
 					return errs.Wrap(errs.Usage, err)
 				}
-				return e.out(map[string]any{"name": k.Name, "role": k.Role, "key": secret, "models": k.Models, "rpm": k.RPM,
-					"tokens_per_day": k.TokensPerDay}, func(w io.Writer) {
+				return e.out(map[string]any{"name": k.Name, "role": k.Role, "team": k.Team, "key": secret, "models": k.Models, "rpm": k.RPM,
+					"tokens_per_day": k.TokensPerDay, "expires": k.Expires}, func(w io.Writer) {
 					fmt.Fprintf(w, "%s\n", secret)
 					fmt.Fprintf(e.stderr, "key %s (%s) created; it is shown only now. Clients send it as Authorization: Bearer <key> or x-api-key.\n", k.Name, k.Role)
 				})
@@ -59,32 +95,179 @@ func keyAddCmd() *command {
 		}}
 }
 
+// warnUnknownTeam notes a team that config.yaml does not define (usage is attributed; no budget applies).
+func warnUnknownTeam(e *env, team string) error {
+	if team == "" {
+		return nil
+	}
+	a, err := e.app()
+	if err != nil {
+		return err
+	}
+	if _, ok := a.Config().Team(team); !ok {
+		e.warn("team %q is not in config.yaml: usage is attributed to it, but no budget or model limit applies (substrate team set %s ...)", team, team)
+	}
+	return nil
+}
+
 func keyListCmd() *command {
-	return &command{name: "list", summary: "list keys (secrets are never shown)",
+	return &command{name: "list", summary: "list keys with status, expiry and last use (secrets are never shown)",
 		build: func(fs *flag.FlagSet) action {
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("key list", pos, 0, 0); err != nil {
 					return err
 				}
-				f, err := keys.Load()
+				db, _ := e.db() // without a usage database keys still list, without last use
+				infos, err := gateway.KeyInfos(db)
 				if err != nil {
 					return err
 				}
-				if f.Keys == nil {
-					f.Keys = []keys.Key{}
-				}
-				return e.out(f.Keys, func(w io.Writer) {
-					if len(f.Keys) == 0 {
+				return e.out(infos, func(w io.Writer) {
+					if len(infos) == 0 {
 						fmt.Fprintln(w, "no keys: the gateway is open on loopback (substrate key add <name>)")
 						return
 					}
-					rows := make([][]string, len(f.Keys))
-					for i, k := range f.Keys {
-						rows[i] = []string{k.Name, k.Role, k.Prefix + "...", dash(strings.Join(k.Models, ",")), limit(int64(k.RPM)),
-							limit(k.TokensPerDay), k.Created.Local().Format(time.DateOnly)}
+					rows := make([][]string, len(infos))
+					soon := time.Now().Add(14 * 24 * time.Hour)
+					for i, k := range infos {
+						status := k.Status
+						if status == "active" && k.Expires != nil && k.Expires.Before(soon) {
+							status = "expires soon"
+						}
+						if k.PrevExpires != nil && time.Now().Before(*k.PrevExpires) {
+							status += " (old secret valid until " + k.PrevExpires.Local().Format("2006-01-02 15:04") + ")"
+						}
+						exp, last := "never", "never"
+						if k.Expires != nil {
+							exp = k.Expires.Local().Format(time.DateOnly)
+						}
+						if k.LastUsed != nil {
+							last = k.LastUsed.Local().Format("2006-01-02 15:04")
+						}
+						rows[i] = []string{k.Name, k.Role, dash(k.Team), k.Prefix + "...", dash(strings.Join(k.Models, ",")), limit(int64(k.RPM)),
+							limit(k.TokensPerDay), k.Created.Local().Format(time.DateOnly), exp, last, status}
 					}
-					e.table("NAME\tROLE\tKEY\tMODELS\tRPM\tTOKENS/DAY\tCREATED", rows)
+					e.table("NAME\tROLE\tTEAM\tKEY\tMODELS\tRPM\tTOKENS/DAY\tCREATED\tEXPIRES\tLAST USED\tSTATUS", rows)
 				})
+			}
+		}}
+}
+
+func keySetCmd() *command {
+	return &command{name: "set", synopsis: "<name> [--role R] [--team T] [--models a,b*] [--rpm N] [--tokens-per-day N] [--expires 90d|never]",
+		summary: "change a key's role, team, model access, limits or expiry (the secret stays)",
+		build: func(fs *flag.FlagSet) action {
+			role := fs.String("role", "", "user, auditor or admin")
+			team := fs.String("team", "", `team ("-" for none)`)
+			models := fs.String("models", "", `comma-separated model globs ("-" for all)`)
+			rpm := fs.Int("rpm", -1, "requests per minute (0 unlimited)")
+			tpd := fs.Int64("tokens-per-day", -1, "tokens per calendar day (0 unlimited)")
+			expires := fs.String("expires", "", "90d, 720h, 2027-01-31 or never")
+			return func(e *env, pos, _ []string) error {
+				if err := wantArgs("key set", pos, 1, 1); err != nil {
+					return err
+				}
+				var exp *time.Time
+				if *expires != "" {
+					var err error
+					if exp, err = parseExpiry(*expires); err != nil {
+						return err
+					}
+				}
+				if *team != "" && *team != "-" {
+					if err := warnUnknownTeam(e, *team); err != nil {
+						return err
+					}
+				}
+				k, err := keys.Update(pos[0], func(k *keys.Key) error {
+					if *role != "" {
+						k.Role = *role
+					}
+					switch *team {
+					case "":
+					case "-":
+						k.Team = ""
+					default:
+						k.Team = *team
+					}
+					switch *models {
+					case "":
+					case "-":
+						k.Models = nil
+					default:
+						k.Models = splitList(*models)
+					}
+					if *rpm >= 0 {
+						k.RPM = *rpm
+					}
+					if *tpd >= 0 {
+						k.TokensPerDay = *tpd
+					}
+					if *expires != "" {
+						k.Expires = exp
+					}
+					return nil
+				})
+				if err != nil {
+					return keyErr(err)
+				}
+				return e.out(k, func(w io.Writer) { fmt.Fprintf(w, "updated key %s\n", k.Name) })
+			}
+		}}
+}
+
+func keyErr(err error) error {
+	if errors.Is(err, keys.ErrNotFound) {
+		return errs.Wrap(errs.NotFound, err)
+	}
+	return errs.Wrap(errs.Usage, err)
+}
+
+func keyRotateCmd() *command {
+	return &command{name: "rotate", synopsis: "<name> [--grace 24h]",
+		summary: "replace a key's secret (printed once); the old one keeps working for --grace",
+		build: func(fs *flag.FlagSet) action {
+			grace := fs.Duration("grace", 24*time.Hour, "how long the old secret keeps working (0 revokes it now)")
+			return func(e *env, pos, _ []string) error {
+				if err := wantArgs("key rotate", pos, 1, 1); err != nil {
+					return err
+				}
+				if *grace < 0 {
+					return errs.New(errs.Usage, "key rotate: --grace must be >= 0")
+				}
+				secret, k, err := keys.Rotate(pos[0], *grace)
+				if err != nil {
+					return keyErr(err)
+				}
+				return e.out(map[string]any{"name": k.Name, "key": secret, "old_secret_valid_until": k.PrevExpires}, func(w io.Writer) {
+					fmt.Fprintf(w, "%s\n", secret)
+					if k.PrevExpires != nil {
+						fmt.Fprintf(e.stderr, "key %s rotated; the old secret works until %s. The new one is shown only now.\n", k.Name, k.PrevExpires.Local().Format("2006-01-02 15:04"))
+					} else {
+						fmt.Fprintf(e.stderr, "key %s rotated; the old secret no longer works. The new one is shown only now.\n", k.Name)
+					}
+				})
+			}
+		}}
+}
+
+func keyToggleCmd(name string, disable bool) *command {
+	summary := "re-enable disabled keys"
+	if disable {
+		summary = "refuse keys immediately, keeping them and their history (enable restores them)"
+	}
+	return &command{name: name, synopsis: "<name>...", summary: summary,
+		build: func(fs *flag.FlagSet) action {
+			return func(e *env, pos, _ []string) error {
+				if err := wantArgs("key "+name, pos, 1, -1); err != nil {
+					return err
+				}
+				for _, n := range pos {
+					if _, err := keys.Update(n, func(k *keys.Key) error { k.Disabled = disable; return nil }); err != nil {
+						return keyErr(err)
+					}
+				}
+				return e.out(map[string]any{name + "d": pos}, func(w io.Writer) { fmt.Fprintf(w, "%sd %s\n", name, strings.Join(pos, ", ")) })
 			}
 		}}
 }
@@ -152,6 +335,7 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart=%s serve%s
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
 KillMode=process
