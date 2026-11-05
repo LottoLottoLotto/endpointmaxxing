@@ -246,6 +246,30 @@ under `/substrate/v1/`:
 | GET | `/substrate/v1/teams` | | team limits and their use this day and month |
 | POST | `/substrate/v1/policy/test` | `{"text"}` or `{"body"}`, optionally `model`, `client`, `api` | category and flags, nothing sent to a model |
 | GET / POST | `/substrate/v1/reload` | | last reload outcome / re-read the config now (400 with the error if it is invalid) |
+| GET | `/substrate/v1/whoami` | | the caller's key name, role and team |
+
+### Admin UI
+
+The gateway serves a web admin UI at `/admin/` (for example
+`http://127.0.0.1:7777/admin/`) for people. Agents should use the CLI, MCP or
+the management API instead.
+
+- **A client of the management API only.** The page holds no data and has no
+  routes of its own. Everything it shows or does is a `/substrate/v1` call
+  with the key you sign in with, so the same role rules and admin trail apply.
+- **Sign in** with an `admin` or `auditor` key (or the master key). The key is
+  kept in that browser tab only (`sessionStorage`) and sent as a bearer token,
+  so there is no cookie to forge from another site. An open gateway needs no
+  key. `user` keys are refused.
+- **Pages:** overview (totals, alerts, usage by model, client, team and
+  category, flags, errors), models and instances (start and stop), requests
+  and events with filters, policy matches and prompt testing, keys and teams,
+  and configuration reload. Auditors see everything with the start, stop and
+  reload buttons disabled.
+- **Keys, teams, prices, aliases and models** are changed with the CLI or its
+  MCP tools; the UI shows them read-only.
+- The page is sent with a strict Content-Security-Policy (no inline script,
+  no framing).
 
 ### Keys and access
 
