@@ -341,8 +341,9 @@ substrate key rm alice
 - **`auditor` keys:** read-only: every client's usage and requests, events,
   flags, errors, reports, keys, teams, `/metrics` and `policy/test`. No
   inference, and no starting, stopping or reloading.
-- **`admin` keys:** everything. The master key from `--api-key` or
-  `$SUBSTRATE_API_KEY` is an admin key.
+- **`admin` keys:** everything. The master key (`$SUBSTRATE_API_KEY`, or
+  `serve --api-key-file F` for a file of mode 0600; never an argument, since
+  other users can read command lines) is an admin key.
 - **Lifecycle:** expired and disabled keys get 401, recorded under the key's
   name (`error_kind` `auth_failed`). `key rotate` replaces the secret; the old
   one keeps working until `--grace` ends. `key list` shows when each key was
@@ -618,7 +619,37 @@ substrate samples [--gpu] --since 1h                     # memory over time
 substrate prune --older-than 90d
 substrate --csv report --since 30d > chargeback.csv       # any table as CSV (usage, requests, team list, ...)
 substrate doctor                                         # includes security findings
+substrate prune --older-than 90d --audit-older-than 365d  # usage and admin trail have separate cutoffs
+substrate prune --client alice                          # erase one client's request records and bodies
+substrate audit verify                                   # check the audit file's hash chain (exit 6 if broken)
 ```
+
+### Data protection
+
+- **Private files.** The config and state directories are `0700`, and keys,
+  config, the usage database (with its WAL), the audit file and engine logs
+  are `0600`. Directories and files left wider by an older version are
+  tightened on the next run; `doctor` reports anything it could not fix.
+- **Deletion leaves no copy.** The usage database runs with
+  `secure_delete`, so pruned or erased rows are overwritten, and the WAL is
+  truncated after every prune or erasure.
+- **Retention.** `logging.retention_days` prunes usage records (requests,
+  bodies, lifecycle events, samples) daily; `logging.audit_retention_days`
+  separately prunes the admin trail and rotated audit files, so the record of
+  who changed what can outlive usage data. Both default to 0 (keep
+  everything); typical policies are 30-90 days of usage and a year or more of
+  audit. `doctor` warns when audit retention is the shorter one.
+- **Erasure.** `substrate prune --client NAME` (or `DELETE
+  /substrate/v1/clients/{name}/data`, admin) deletes all of one client's
+  request records and bodies. The erasure itself is recorded in the admin
+  trail; the audit file keeps its lines, as the tamper-evident record.
+- **Tamper-evident audit file.** Each line carries `prev`, the SHA-256 of
+  the line before it, across rotated files. `substrate audit verify` (and
+  `doctor`) finds an edited, inserted, removed or reordered line; lines from
+  before chaining are reported and anchor the chain. A change to the very
+  last line shows once the next line is written, so ship the file (or the
+  `admin` webhook) to a SIEM for an off-host copy. The file rotates at
+  `logging.audit_max_mb` (default 100) to `audit-<UTC time>.jsonl`.
 
 `usage` also reports average TTFT, average duration, and decode speed in
 tokens per second. Decode speed is completion tokens divided by generation
@@ -668,10 +699,11 @@ model is involved.
   `engine_unreachable`, `upstream_timeout`, `engine_error`,
   `engine_rejected` or `client_disconnected` (`substrate errors --kinds`).
   Refused API keys are recorded too, with the caller's address.
-- **Audit log.** `logging.audit_file` appends one JSON line per request and
-  refused key (`type` `request` or `access_denied`; no bodies) for a SIEM or
-  log shipper. It is reopened when rotated, so logrotate needs no
-  `copytruncate`.
+- **Audit log.** `logging.audit_file` appends one JSON line per request,
+  refused key, administrative change and alert (`type` `request`,
+  `access_denied`, `admin` or the alert kind; no bodies) for a SIEM or log
+  shipper. Lines are hash-chained and the file rotates itself (see Data
+  protection); it is also reopened when an outside tool moves it away.
 
 The defaults flag credentials (`secrets`, high), card, IBAN and social
 security numbers (`financial`, high), e-mail addresses and phone numbers
@@ -818,7 +850,9 @@ logging:
   bodies: false          # true stores prompts and outputs
   body_max_bytes: 1048576
   sample_interval: 30s   # 0s disables GPU/memory sampling
-  retention_days: 0      # >0 prunes daily while the gateway runs
+  retention_days: 0      # >0 prunes usage records daily while the gateway runs
+  audit_retention_days: 0  # >0 prunes the admin trail and rotated audit files (keep it longer)
+  audit_max_mb: 100      # audit file rotation size
 prefer:
   gguf: [buun-llama-cpp, llama.cpp]
 engines:

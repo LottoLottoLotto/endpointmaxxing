@@ -3,6 +3,7 @@ package gateway
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -249,5 +250,24 @@ func TestSettingsAPIConfigChangesApplyAtOnce(t *testing.T) {
 	}
 	if _, ok := g.App.RegisteredModel("tiny"); ok {
 		t.Fatal("removed model still registered")
+	}
+}
+
+func TestSettingsAPIErasesOneClient(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
+	g, srv := newGateway(t)
+	db := mustDB(t, g.App)
+	for i, c := range []string{"alice", "alice", "bob"} {
+		if err := db.InsertRequest(&store.Request{ID: fmt.Sprintf("r%d", i), TS: time.Now().UnixMilli(), Model: "m", Client: c, Status: 200}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, out := send(t, "DELETE", srv.URL+"/substrate/v1/clients/alice/data", admin, "")
+	if s != http.StatusOK {
+		t.Fatalf("erase: %d %v", s, out)
+	}
+	if rows := requestsOf(t, g.App, store.Filter{}); len(rows) != 1 || rows[0].Client != "bob" {
+		t.Fatalf("after erasing alice: %+v", rows)
 	}
 }

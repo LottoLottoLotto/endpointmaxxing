@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lotto/substrate/internal/audit"
 	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/store"
 )
@@ -17,7 +18,7 @@ import (
 type live struct {
 	cfg     *config.Config
 	inspect *Inspector
-	audit   *auditLog
+	audit   *audit.Log
 }
 
 // reloadState tracks the current live snapshot and the last reload outcome.
@@ -61,12 +62,13 @@ func (g *Gateway) live() *live {
 	default:
 		g.Log.Printf("policy/classify disabled: %v", err)
 	}
-	if cur != nil && cur.audit != nil && cur.audit.path == auditPath(c.Logging.AuditFile) {
+	if cur != nil && cur.audit != nil && cur.audit.PathOf() == audit.Path(c.Logging.AuditFile) &&
+		cur.cfg.Logging.AuditMaxMB == c.Logging.AuditMaxMB {
 		next.audit = cur.audit
 	} else {
-		next.audit = newAuditLog(c.Logging.AuditFile, g.Log.Printf)
+		next.audit = audit.Open(audit.Path(c.Logging.AuditFile), c.Logging.AuditMaxMB, g.Log.Printf)
 		if cur != nil {
-			cur.audit.close() // a late write from a request on the old snapshot reopens the file; harmless
+			cur.audit.Close() // a late write from a request on the old snapshot reopens the file; harmless
 		}
 	}
 	g.reload.cur = next

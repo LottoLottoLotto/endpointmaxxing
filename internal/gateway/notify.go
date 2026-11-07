@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lotto/substrate/internal/app"
+	"github.com/lotto/substrate/internal/audit"
 	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/runtime"
@@ -132,9 +133,9 @@ func RecordAdmin(a *app.App, actor, detail string) {
 			}
 		}
 	}
-	if l := newAuditLog(cfg.Logging.AuditFile, logf); l != nil {
-		l.writeJSON(auditEvent{Type: "admin", Time: time.Now().UTC().Format(time.RFC3339Nano), Actor: actor, Detail: detail})
-		l.close()
+	if l := audit.Open(audit.Path(cfg.Logging.AuditFile), cfg.Logging.AuditMaxMB, logf); l != nil {
+		l.Write(auditEvent{Type: "admin", Time: time.Now().UTC().Format(time.RFC3339Nano), Actor: actor, Detail: detail})
+		l.Close()
 	}
 	sendWebhooks(cfg, "admin", detail, actor, logf)
 }
@@ -151,7 +152,7 @@ func (g *Gateway) admin(r *http.Request, detail string) {
 // alert sends an operational event to the webhooks subscribed to kind and the audit log (without blocking).
 func (g *Gateway) alert(kind, detail string) {
 	cfg := g.App.Config()
-	g.live().audit.writeJSON(auditEvent{Type: kind, Time: time.Now().UTC().Format(time.RFC3339Nano), Detail: detail})
+	g.live().audit.Write(auditEvent{Type: kind, Time: time.Now().UTC().Format(time.RFC3339Nano), Detail: detail})
 	if len(cfg.Alerts.Webhooks) > 0 {
 		go sendWebhooks(cfg, kind, detail, "", g.Log.Printf)
 	}

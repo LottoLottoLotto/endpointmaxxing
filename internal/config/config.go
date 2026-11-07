@@ -133,11 +133,18 @@ type Logging struct {
 	BodyMaxBytes int `yaml:"body_max_bytes" json:"body_max_bytes"`
 	// SampleInterval is how often the gateway samples GPU and instance memory (0 disables).
 	SampleInterval spec.Duration `yaml:"sample_interval" json:"sample_interval"`
-	// RetentionDays prunes records older than this once a day while the gateway runs (0 keeps everything).
+	// RetentionDays prunes usage records (requests, bodies, lifecycle events, samples) older than this once a
+	// day while the gateway runs (0 keeps everything). The admin trail has its own AuditRetentionDays.
 	RetentionDays int `yaml:"retention_days" json:"retention_days"`
-	// AuditFile appends one JSON line per request (no bodies) and per refused API key, for shipping
-	// to a SIEM or log pipeline; relative paths are under the state directory. Empty disables it.
+	// AuditRetentionDays prunes the admin trail (admin events) and rotated audit files older than this
+	// (0 keeps them forever). Audit retention is usually longer than usage retention.
+	AuditRetentionDays int `yaml:"audit_retention_days,omitempty" json:"audit_retention_days,omitempty"`
+	// AuditFile appends one JSON line per request (no bodies), refused API key, administrative change and
+	// alert, hash-chained so edits and deletions are detectable (substrate audit verify), for shipping to a
+	// SIEM or log pipeline; relative paths are under the state directory. Empty disables it.
 	AuditFile string `yaml:"audit_file,omitempty" json:"audit_file,omitempty"`
+	// AuditMaxMB rotates the audit file when it grows past this size (default 100); rotated files keep the chain.
+	AuditMaxMB int `yaml:"audit_max_mb,omitempty" json:"audit_max_mb,omitempty"`
 }
 
 // EngineOverride is a user's local adjustment to a manifest.
@@ -233,8 +240,8 @@ func (c *Config) validate() error {
 	if c.Logging.BodyMaxBytes <= 0 {
 		return fmt.Errorf("%s: logging.body_max_bytes must be positive", ConfigPath())
 	}
-	if c.Logging.RetentionDays < 0 {
-		return fmt.Errorf("%s: logging.retention_days must be >= 0", ConfigPath())
+	if c.Logging.RetentionDays < 0 || c.Logging.AuditRetentionDays < 0 || c.Logging.AuditMaxMB < 0 {
+		return fmt.Errorf("%s: logging.retention_days, audit_retention_days and audit_max_mb must be >= 0", ConfigPath())
 	}
 	if c.Gateway.MaxOutputTokens < 0 {
 		return fmt.Errorf("%s: gateway.max_output_tokens must be >= 0", ConfigPath())
@@ -279,7 +286,7 @@ func writeYAML(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := paths.Private(filepath.Dir(path)); err != nil {
 		return err
 	}
 	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())

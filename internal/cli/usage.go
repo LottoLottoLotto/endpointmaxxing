@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lotto/substrate/internal/audit"
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/gateway"
 	"github.com/lotto/substrate/internal/policy"
+	"github.com/lotto/substrate/internal/settings"
 	"github.com/lotto/substrate/internal/store"
 )
 
@@ -363,31 +365,75 @@ func cmdSamples() *command {
 }
 
 func cmdPrune() *command {
-	return &command{name: "prune", synopsis: "--older-than 90d", summary: "delete usage records older than a cutoff",
+	return &command{name: "prune", synopsis: "--older-than 90d [--audit-older-than 365d] | --client NAME",
+		summary: "delete usage records older than a cutoff, the admin trail older than another, or all of one client's records",
 		build: func(fs *flag.FlagSet) action {
-			older := fs.String("older-than", "", "cutoff: duration back (90d, 720h) or date")
+			older := fs.String("older-than", "", "usage cutoff: duration back (90d, 720h) or date (requests, bodies, lifecycle events, samples)")
+			auditOlder := fs.String("audit-older-than", "", "admin-trail cutoff (admin events and rotated audit files); usually longer")
+			client := fs.String("client", "", "erase every request record and body of this client (API key name), e.g. for an erasure request")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("prune", pos, 0, 0); err != nil {
 					return err
 				}
-				if *older == "" {
-					return errs.New(errs.Usage, "prune: --older-than is required")
+				if *client != "" {
+					if *older != "" || *auditOlder != "" {
+						return errs.New(errs.Usage, "prune: --client erases all of one client's records; it takes no cutoff")
+					}
+					db, err := e.db()
+					if err != nil {
+						return err
+					}
+					res, n, err := settings.EraseClient(db, *client)
+					if err != nil {
+						return err
+					}
+					e.applied(res)
+					return e.out(map[string]any{"client": *client, "deleted": n}, func(w io.Writer) {
+						fmt.Fprintf(w, "erased client %s: %v\n", *client, n)
+					})
 				}
-				before, err := gateway.ParseSince(*older)
-				if err != nil {
-					return err
+				if *older == "" && *auditOlder == "" {
+					return errs.New(errs.Usage, "prune: --older-than, --audit-older-than or --client is required")
+				}
+				var before, auditBefore time.Time
+				var err error
+				if *older != "" {
+					if before, err = gateway.ParseSince(*older); err != nil {
+						return err
+					}
+				}
+				if *auditOlder != "" {
+					if auditBefore, err = gateway.ParseSince(*auditOlder); err != nil {
+						return err
+					}
 				}
 				db, err := e.db()
 				if err != nil {
 					return err
 				}
-				n, err := db.Prune(before)
+				n, err := db.Prune(before, auditBefore)
 				if err != nil {
 					return err
 				}
-				return e.out(map[string]any{"before": before, "deleted": n}, func(w io.Writer) {
-					fmt.Fprintf(w, "deleted before %s: %v\n", before.Format(time.RFC3339), n)
-				})
+				out := map[string]any{"deleted": n}
+				if !before.IsZero() {
+					out["before"] = before
+				}
+				if !auditBefore.IsZero() {
+					out["audit_before"] = auditBefore
+					a, err := e.app()
+					if err != nil {
+						return err
+					}
+					if p := audit.Path(a.Config().Logging.AuditFile); p != "" {
+						gone, err := audit.PruneRotated(p, auditBefore)
+						if err != nil {
+							return err
+						}
+						out["audit_files_removed"] = gone
+					}
+				}
+				return e.out(out, func(w io.Writer) { fmt.Fprintf(w, "deleted: %v\n", n) })
 			}
 		}}
 }

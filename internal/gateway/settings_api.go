@@ -44,6 +44,8 @@ func (g *Gateway) settingsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /substrate/v1/aliases", g.authed(roleRead, g.listAliases))
 	mux.HandleFunc("PUT /substrate/v1/aliases/{alias}", g.settingsWrite(g.putAlias))
 	mux.HandleFunc("DELETE /substrate/v1/aliases/{alias}", g.settingsWrite(g.removeAlias))
+
+	mux.HandleFunc("DELETE /substrate/v1/clients/{name}/data", g.settingsWrite(g.eraseClient))
 }
 
 // settingsWrite guards a settings change. On top of an admin key it needs the settings API enabled
@@ -436,4 +438,23 @@ func (g *Gateway) removeModel(w http.ResponseWriter, r *http.Request) {
 	}
 	g.reloadNow()
 	g.changed(w, r, http.StatusOK, res, map[string]any{"removed": name})
+}
+
+// ---- data ----
+
+// eraseClient deletes every request record and body of one client (an erasure request); the admin trail
+// records that it happened.
+func (g *Gateway) eraseClient(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	db, err := g.App.DB()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, n, err := settings.EraseClient(db, name)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	g.changed(w, r, http.StatusOK, res, map[string]any{"client": name, "deleted": n})
 }

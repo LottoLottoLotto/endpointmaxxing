@@ -1,8 +1,13 @@
 package store
 
 import (
+	"bytes"
+	"fmt"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/lotto/substrate/internal/paths"
 )
 
 func i64(v int64) *int64 { return &v }
@@ -62,7 +67,7 @@ func TestUsageAggregation(t *testing.T) {
 		t.Fatalf("m2 unmetered: %+v", got[1])
 	}
 
-	n, err := db.Prune(now.Add(-24 * time.Hour))
+	n, err := db.Prune(now.Add(-24*time.Hour), time.Time{})
 	if err != nil || n["requests"] != 1 {
 		t.Fatalf("prune: %v %v", n, err)
 	}
@@ -91,5 +96,73 @@ func TestBodiesAndFilters(t *testing.T) {
 	}
 	if err := db.InsertRequest(r); err == nil {
 		t.Fatal("duplicate request id accepted")
+	}
+}
+
+// The admin trail outlives usage records: each has its own cutoff.
+func TestPruneKeepsTheAdminTrailUntilItsOwnCutoff(t *testing.T) {
+	db := open(t)
+	old := time.Now().Add(-48 * time.Hour).UnixMilli()
+	for _, e := range []*Event{{TS: old, Kind: "exited"}, {TS: old, Kind: "admin", Owner: "ops", Detail: "key add x"}} {
+		if err := db.InsertEvent(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cut := time.Now().Add(-24 * time.Hour)
+	if _, err := db.Prune(cut, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if ev, _ := db.Events(Filter{}); len(ev) != 1 || ev[0].Kind != "admin" {
+		t.Fatalf("usage prune touched the admin trail: %+v", ev)
+	}
+	if n, err := db.Prune(time.Time{}, cut); err != nil || n["admin_events"] != 1 {
+		t.Fatalf("audit prune: %v %v", n, err)
+	}
+}
+
+// Erasing a client removes its records and bodies from the database file and the WAL, not just from queries,
+// and leaves other clients alone.
+func TestEraseClientLeavesNoCopyOnDisk(t *testing.T) {
+	db := open(t)
+	secret := "ERASE-ME-7f3c1b0d9a"
+	for i, c := range []string{"alice", "bob"} {
+		r := &Request{ID: fmt.Sprintf("r%d", i), TS: time.Now().UnixMilli(), Model: "m", Client: c, Status: 200,
+			RequestBody: []byte(`{"prompt":"` + secret + c + `"}`)}
+		if err := db.InsertRequest(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := db.EraseClient("alice")
+	if err != nil || n["requests"] != 1 || n["bodies"] != 1 {
+		t.Fatalf("erase: %v %v", n, err)
+	}
+	if rows, _ := db.Requests(Filter{}); len(rows) != 1 || rows[0].Client != "bob" {
+		t.Fatalf("remaining: %+v", rows)
+	}
+	for _, p := range []string{Path(), Path() + "-wal"} {
+		data, _ := os.ReadFile(p)
+		if bytes.Contains(data, []byte(secret+"alice")) {
+			t.Errorf("%s still holds the erased body", p)
+		}
+	}
+}
+
+func TestDatabaseIsPrivate(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	os.MkdirAll(paths.State(), 0o755)
+	os.WriteFile(Path(), nil, 0o644) // an existing database from an older version
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.InsertEvent(&Event{TS: 1, Kind: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]os.FileMode{paths.State(): 0o700, Path(): 0o600, Path() + "-wal": 0o600} {
+		st, err := os.Stat(p)
+		if err != nil || st.Mode().Perm() != want {
+			t.Errorf("%s: %v %v, want %v", p, st.Mode().Perm(), err, want)
+		}
 	}
 }

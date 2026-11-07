@@ -20,6 +20,7 @@ import (
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/lock"
 	"github.com/lotto/substrate/internal/model"
+	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/route"
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/spec"
@@ -64,6 +65,10 @@ func (a *App) SetOverlay(fn func(*config.Config)) {
 // Open loads config, manifests and the model registry, and (when logging is
 // enabled) routes lifecycle events into the usage database.
 func Open() (*App, error) {
+	// Tighten directories an older version created world-readable (keys, prompts, request records, engine
+	// logs). Best effort: doctor reports what could not be fixed.
+	_ = paths.Private(paths.Config())
+	_ = runtime.PrivateDirs()
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err

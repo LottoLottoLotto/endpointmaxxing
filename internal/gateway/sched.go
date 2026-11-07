@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/lotto/substrate/internal/app"
+	"github.com/lotto/substrate/internal/audit"
+	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/gpu"
 	"github.com/lotto/substrate/internal/runtime"
@@ -30,26 +32,47 @@ func (g *Gateway) Run(ctx context.Context) {
 	if iv := time.Duration(g.App.Config().Logging.SampleInterval); g.App.Config().Logging.Enabled && iv > 0 {
 		go g.every(ctx, iv, g.sample)
 	}
-	if g.App.Config().Logging.Enabled {
-		go g.every(ctx, 24*time.Hour, func() {
-			days := g.App.Config().Logging.RetentionDays // reloadable
-			if days <= 0 {
-				return
-			}
-			db, err := g.App.DB()
-			if err != nil {
-				return
-			}
-			n, err := db.Prune(time.Now().AddDate(0, 0, -days))
-			if err != nil {
-				g.Log.Printf("retention: %v", err)
-				return
-			}
-			g.Log.Printf("retention: pruned %v", n)
-		})
-	}
+	go g.every(ctx, 24*time.Hour, g.retention)
 	go g.watchConfig(ctx, 2*time.Second)
 	go g.every(ctx, time.Hour, g.checkKeyExpiry)
+}
+
+// retention prunes usage records past logging.retention_days, and the admin trail and rotated audit files
+// past logging.audit_retention_days (both reloadable; 0 keeps everything).
+func (g *Gateway) retention() {
+	lc := g.App.Config().Logging
+	if lc.RetentionDays <= 0 && lc.AuditRetentionDays <= 0 {
+		return
+	}
+	before, auditBefore := Cutoffs(lc, time.Now())
+	if db, err := g.App.DB(); err == nil && lc.Enabled {
+		n, err := db.Prune(before, auditBefore)
+		if err != nil {
+			g.Log.Printf("retention: %v", err)
+		} else {
+			g.Log.Printf("retention: pruned %v", n)
+		}
+	}
+	if p := audit.Path(lc.AuditFile); p != "" && !auditBefore.IsZero() {
+		gone, err := audit.PruneRotated(p, auditBefore)
+		if err != nil {
+			g.Log.Printf("retention: audit files: %v", err)
+		}
+		if len(gone) > 0 {
+			g.Log.Printf("retention: removed %d rotated audit file(s)", len(gone))
+		}
+	}
+}
+
+// Cutoffs turns the retention settings into prune cutoffs (zero: keep).
+func Cutoffs(lc config.Logging, now time.Time) (before, auditBefore time.Time) {
+	if lc.RetentionDays > 0 {
+		before = now.AddDate(0, 0, -lc.RetentionDays)
+	}
+	if lc.AuditRetentionDays > 0 {
+		auditBefore = now.AddDate(0, 0, -lc.AuditRetentionDays)
+	}
+	return before, auditBefore
 }
 
 func (g *Gateway) every(ctx context.Context, d time.Duration, fn func()) {

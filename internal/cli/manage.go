@@ -719,14 +719,14 @@ func isLoopback(host string) bool {
 }
 
 func cmdServe() *command {
-	return &command{name: "serve", synopsis: "[--host H] [--port P] [--tls-cert F --tls-key F [--tls-client-ca F]] [--placement memory|exclusive|off] [--no-autostart] [--api-key K]",
+	return &command{name: "serve", synopsis: "[--host H] [--port P] [--tls-cert F --tls-key F [--tls-client-ca F]] [--placement memory|exclusive|off] [--no-autostart] [--api-key-file F]",
 		summary: "run the unified OpenAI/Anthropic-compatible gateway (placement, limits, keys, metering, /metrics)",
 		build: func(fs *flag.FlagSet) action {
 			host := fs.String("host", "", "listen address (default: config gateway.host)")
 			port := fs.Int("port", 0, "listen port (default: config gateway.port)")
 			noAuto := fs.Bool("no-autostart", false, "never start models on demand")
 			placementMode := fs.String("placement", "", "memory, exclusive or off (default: config gateway.placement)")
-			key := fs.String("api-key", "", "master (admin) key (default $SUBSTRATE_API_KEY); per-client keys: substrate key add")
+			keyFile := fs.String("api-key-file", "", "file holding the master (admin) key, mode 0600 (default: $SUBSTRATE_API_KEY); never pass a key as an argument, other users can read the command line")
 			insecure := fs.Bool("insecure", false, "allow a non-loopback address without any API key")
 			tlsCert := fs.String("tls-cert", "", "serve HTTPS with this PEM certificate (default: config gateway.tls.cert)")
 			tlsKey := fs.String("tls-key", "", "PEM private key for --tls-cert (default: config gateway.tls.key)")
@@ -763,15 +763,16 @@ func cmdServe() *command {
 				if *port == 0 {
 					*port = g.Port
 				}
-				if *key == "" {
-					*key = os.Getenv("SUBSTRATE_API_KEY")
+				key, err := masterKey(*keyFile)
+				if err != nil {
+					return err
 				}
 				ks, err := keys.Load()
 				if err != nil {
 					return err
 				}
-				if !isLoopback(*host) && *key == "" && len(ks.Keys) == 0 && !*insecure {
-					return errs.New(errs.Usage, "serve: %s is reachable from other machines; create keys (substrate key add) or set --api-key, or pass --insecure", *host)
+				if !isLoopback(*host) && key == "" && len(ks.Keys) == 0 && !*insecure {
+					return errs.New(errs.Usage, "serve: %s is reachable from other machines; create keys (substrate key add) or set a master key ($SUBSTRATE_API_KEY or --api-key-file), or pass --insecure", *host)
 				}
 				logger := log.New(e.stderr, "substrate: ", log.LstdFlags)
 				a.Warn = logger.Printf
@@ -788,7 +789,7 @@ func cmdServe() *command {
 				}
 				gw := gateway.New(a, logger)
 				defer gw.Close()
-				gw.NoAutostart, gw.APIKey = *noAuto, *key
+				gw.NoAutostart, gw.APIKey = *noAuto, key
 
 				ln, err := net.Listen("tcp", net.JoinHostPort(*host, fmt.Sprint(*port)))
 				if err != nil {
@@ -842,4 +843,28 @@ func cmdServe() *command {
 				return nil
 			}
 		}}
+}
+
+// masterKey reads the gateway's master key from a file (which must not be readable by others) or, without
+// one, from $SUBSTRATE_API_KEY.
+func masterKey(file string) (string, error) {
+	if file == "" {
+		return os.Getenv("SUBSTRATE_API_KEY"), nil
+	}
+	st, err := os.Stat(file)
+	if err != nil {
+		return "", errs.Wrap(errs.NotFound, err)
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		return "", errs.New(errs.Usage, "--api-key-file %s is readable by other users (mode %v); chmod 600 it", file, st.Mode().Perm())
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", err
+	}
+	key := strings.TrimSpace(string(data))
+	if key == "" {
+		return "", errs.New(errs.Usage, "--api-key-file %s is empty", file)
+	}
+	return key, nil
 }

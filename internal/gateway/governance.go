@@ -1,20 +1,16 @@
 package gateway
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lotto/substrate/internal/app"
+	"github.com/lotto/substrate/internal/audit"
 	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/policy"
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/store"
@@ -122,31 +118,6 @@ func gatewayErrorKind(status int, err error) string {
 	return "gateway_error"
 }
 
-// auditLog appends JSON lines to logging.audit_file. It reopens the file when it was rotated away
-// (renamed or deleted), so logrotate needs no copytruncate or signal.
-type auditLog struct {
-	mu   sync.Mutex
-	path string
-	f    *os.File
-	log  func(format string, a ...any)
-	errd bool
-}
-
-func newAuditLog(path string, logf func(string, ...any)) *auditLog {
-	if path == "" {
-		return nil
-	}
-	return &auditLog{path: auditPath(path), log: logf}
-}
-
-// auditPath resolves logging.audit_file: relative paths are under the state directory; "" stays "".
-func auditPath(p string) string {
-	if p != "" && !filepath.IsAbs(p) {
-		return filepath.Join(paths.State(), p)
-	}
-	return p
-}
-
 // auditRecord is one audit line: a request record (bodies never included) with its kind and an RFC 3339 time.
 type auditRecord struct {
 	Type string `json:"type"` // "request", or "access_denied" for auth_failed / forbidden
@@ -154,7 +125,8 @@ type auditRecord struct {
 	*store.Request
 }
 
-func (l *auditLog) write(r *store.Request) {
+// auditRequest appends r to the audit file (nil l: auditing is off).
+func auditRequest(l *audit.Log, r *store.Request) {
 	if l == nil {
 		return
 	}
@@ -162,7 +134,7 @@ func (l *auditLog) write(r *store.Request) {
 	if r.ErrorKind == "auth_failed" || r.ErrorKind == "forbidden" {
 		typ = "access_denied"
 	}
-	l.writeJSON(auditRecord{Type: typ, Time: time.UnixMilli(r.TS).UTC().Format(time.RFC3339Nano), Request: r})
+	l.Write(auditRecord{Type: typ, Time: time.UnixMilli(r.TS).UTC().Format(time.RFC3339Nano), Request: r})
 }
 
 // auditEvent is an audit line for something other than a request: an administrative change or an alert.
@@ -171,57 +143,6 @@ type auditEvent struct {
 	Time   string `json:"time"`
 	Actor  string `json:"actor,omitempty"`
 	Detail string `json:"detail"`
-}
-
-// writeJSON appends v as one line.
-func (l *auditLog) writeJSON(v any) {
-	if l == nil {
-		return
-	}
-	line, err := json.Marshal(v)
-	if err != nil {
-		return
-	}
-	line = append(line, '\n')
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.f != nil {
-		st, err1 := os.Stat(l.path)
-		fst, err2 := l.f.Stat()
-		if err1 != nil || err2 != nil || !os.SameFile(st, fst) {
-			l.f.Close()
-			l.f = nil
-		}
-	}
-	if l.f == nil {
-		if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err == nil {
-			l.f, err = os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-		}
-		if l.f == nil {
-			if !l.errd {
-				l.log("audit log %s: cannot open; audit lines are being dropped", l.path)
-				l.errd = true
-			}
-			return
-		}
-		l.errd = false
-	}
-	if _, err := l.f.Write(line); err != nil && !l.errd {
-		l.log("audit log %s: %v", l.path, err)
-		l.errd = true
-	}
-}
-
-func (l *auditLog) close() {
-	if l == nil {
-		return
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.f != nil {
-		l.f.Close()
-		l.f = nil
-	}
 }
 
 // Report summarizes a window of gateway traffic.

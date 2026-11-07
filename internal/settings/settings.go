@@ -18,6 +18,7 @@ import (
 	"github.com/lotto/substrate/internal/model"
 	"github.com/lotto/substrate/internal/route"
 	"github.com/lotto/substrate/internal/spec"
+	"github.com/lotto/substrate/internal/store"
 )
 
 // Result describes an applied change: Detail is the admin-trail line, Warnings what the caller should
@@ -483,4 +484,19 @@ func RemoveModels(names []string) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Detail: "model rm " + strings.Join(names, ", ")}, nil
+}
+
+// ---- data ----
+
+// EraseClient deletes every request record and stored body of one client. The admin trail records the
+// erasure (not the data); the audit file keeps its lines, as the tamper-evident record of what happened.
+func EraseClient(db *store.DB, client string) (Result, map[string]int64, error) {
+	if client == "" {
+		return Result{}, nil, errs.New(errs.Usage, "erase: a client name is required")
+	}
+	n, err := db.EraseClient(client)
+	if err != nil {
+		return Result{}, nil, err
+	}
+	return Result{Detail: fmt.Sprintf("erase client %s (%d requests, %d bodies)", client, n["requests"], n["bodies"])}, n, nil
 }

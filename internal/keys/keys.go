@@ -153,7 +153,7 @@ func (f *File) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(Path()), 0o755); err != nil {
+	if err := paths.Private(filepath.Dir(Path())); err != nil {
 		return err
 	}
 	tmp := fmt.Sprintf("%s.%d.tmp", Path(), os.Getpid())

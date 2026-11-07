@@ -148,7 +148,7 @@ func (g *Gateway) logRequest(r *store.Request) {
 		team, _ = cfg.Team(r.Team)
 	}
 	g.raiseBudgetAlerts(g.auth.charge(r, team), cfg.Pricing.CurrencyOrDefault())
-	g.live().audit.write(r)
+	auditRequest(g.live().audit, r)
 	g.recMu.RLock()
 	defer g.recMu.RUnlock()
 	if g.rec == nil {
@@ -177,7 +177,7 @@ func (g *Gateway) Close() {
 		close(rec)
 		<-g.recDone
 	}
-	g.live().audit.close()
+	g.live().audit.Close()
 }
 
 // Handler returns the gateway's routes.

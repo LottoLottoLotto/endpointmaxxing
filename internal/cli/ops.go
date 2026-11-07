@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lotto/substrate/internal/app"
+	"github.com/lotto/substrate/internal/audit"
 	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/paths"
@@ -253,13 +254,29 @@ func securityFindings(a *app.App) []securityFinding {
 	if !c.Logging.Enabled {
 		add("no_usage_log", "logging.enabled is off: no request records, audit trail or budgets")
 	}
+	for _, p := range []string{paths.Config(), paths.State(), store.Path()} {
+		if st, err := os.Stat(p); err == nil && st.Mode().Perm()&0o077 != 0 {
+			add("readable_by_others", "%s is readable by other users (mode %v): chmod go-rwx", p, st.Mode().Perm())
+		}
+	}
+	if c.Logging.RetentionDays > 0 && c.Logging.AuditRetentionDays > 0 && c.Logging.AuditRetentionDays < c.Logging.RetentionDays {
+		add("audit_retention_short", "logging.audit_retention_days (%d) is shorter than retention_days (%d): the admin trail goes before the usage it explains",
+			c.Logging.AuditRetentionDays, c.Logging.RetentionDays)
+	}
+	if p := audit.Path(c.Logging.AuditFile); p != "" {
+		if r, err := audit.Verify(p); err != nil {
+			add("audit_chain", "audit file %s: %v", p, err)
+		} else if !r.OK {
+			add("audit_chain_broken", "audit file: %s (substrate audit verify)", r.Problem)
+		}
+	}
 	f, err := keys.Load()
 	if err != nil {
 		add("keys", "keys.yaml: %v", err)
 		return out
 	}
 	if exposed && len(f.Keys) == 0 {
-		add("open_gateway", "gateway.host %s with no API keys: only --api-key or --insecure would let it start", c.Gateway.Host)
+		add("open_gateway", "gateway.host %s with no API keys: only a master key ($SUBSTRATE_API_KEY, --api-key-file) or --insecure would let it start", c.Gateway.Host)
 	}
 	var last map[string]int64
 	if db, err := a.DB(); err == nil {

@@ -135,12 +135,21 @@ var migrations = []string{
 // DB is an open usage database.
 type DB struct{ *sql.DB }
 
-// Open opens (creating and migrating) the usage database.
+// Open opens (creating and migrating) the usage database. The database and its WAL files are private to the
+// owner (an existing database with wider permissions is tightened), and secure_delete overwrites deleted
+// records instead of leaving them in free pages.
 func Open() (*DB, error) {
-	if err := os.MkdirAll(paths.State(), 0o755); err != nil {
+	if err := paths.Private(paths.State()); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + Path() + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)"
+	if f, err := os.OpenFile(Path(), os.O_RDONLY|os.O_CREATE, 0o600); err == nil {
+		f.Close() // created owner-only: SQLite gives its -wal and -shm files the database's permissions
+	}
+	if err := privateFiles(); err != nil {
+		return nil, err
+	}
+	dsn := "file:" + Path() + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)" +
+		"&_pragma=secure_delete(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -150,6 +159,16 @@ func Open() (*DB, error) {
 		return nil, fmt.Errorf("%s: %w", Path(), err)
 	}
 	return &DB{db}, nil
+}
+
+// privateFiles makes the database and its WAL files owner-only.
+func privateFiles() error {
+	for _, p := range []string{Path(), Path() + "-wal", Path() + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrate(db *sql.DB) error {
@@ -343,30 +362,77 @@ func (db *DB) InsertSamples(gs []GPUSample, is []InstanceSample) error {
 	return tx.Commit()
 }
 
-// Prune deletes records older than before and returns how many rows went per table.
-func (db *DB) Prune(before time.Time) (map[string]int64, error) {
-	ms := before.UnixMilli()
+// Prune deletes usage records (requests, bodies, lifecycle events, samples) older than before and admin-trail
+// events older than auditBefore; a zero time leaves that part alone. It returns how many rows went per table.
+// With secure_delete the rows are overwritten, and the WAL is truncated so no copy of them stays there either.
+func (db *DB) Prune(before, auditBefore time.Time) (map[string]int64, error) {
+	type stmt struct {
+		table, sql string
+		cutoff     time.Time
+	}
+	stmts := []stmt{
+		{"bodies", `DELETE FROM bodies WHERE request_id IN (SELECT id FROM requests WHERE ts < ?)`, before},
+		{"requests", `DELETE FROM requests WHERE ts < ?`, before},
+		{"events", `DELETE FROM events WHERE ts < ? AND kind != 'admin'`, before},
+		{"gpu_samples", `DELETE FROM gpu_samples WHERE ts < ?`, before},
+		{"instance_samples", `DELETE FROM instance_samples WHERE ts < ?`, before},
+		{"admin_events", `DELETE FROM events WHERE ts < ? AND kind = 'admin'`, auditBefore},
+	}
 	out := map[string]int64{}
 	tx, err := db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	stmts := []struct{ table, sql string }{
-		{"bodies", `DELETE FROM bodies WHERE request_id IN (SELECT id FROM requests WHERE ts < ?)`},
-		{"requests", `DELETE FROM requests WHERE ts < ?`},
-		{"events", `DELETE FROM events WHERE ts < ?`},
-		{"gpu_samples", `DELETE FROM gpu_samples WHERE ts < ?`},
-		{"instance_samples", `DELETE FROM instance_samples WHERE ts < ?`},
-	}
 	for _, s := range stmts {
-		res, err := tx.Exec(s.sql, ms)
+		if s.cutoff.IsZero() {
+			continue
+		}
+		res, err := tx.Exec(s.sql, s.cutoff.UnixMilli())
 		if err != nil {
 			return nil, err
 		}
 		out[s.table], _ = res.RowsAffected()
 	}
-	return out, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, db.truncateWAL()
+}
+
+// EraseClient deletes every request record (and stored body) of one client (an API key name, or a client's
+// self-reported name in open mode), for a data-subject erasure request. The admin trail and the audit file
+// are kept: they are the record that the erasure happened.
+func (db *DB) EraseClient(client string) (map[string]int64, error) {
+	if client == "" {
+		return nil, fmt.Errorf("erase: a client name is required")
+	}
+	out := map[string]int64{}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	for _, s := range []struct{ table, sql string }{
+		{"bodies", `DELETE FROM bodies WHERE request_id IN (SELECT id FROM requests WHERE client = ?)`},
+		{"requests", `DELETE FROM requests WHERE client = ?`},
+	} {
+		res, err := tx.Exec(s.sql, client)
+		if err != nil {
+			return nil, err
+		}
+		out[s.table], _ = res.RowsAffected()
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, db.truncateWAL()
+}
+
+// truncateWAL checkpoints the WAL into the database and empties it, so deleted rows survive in neither.
+func (db *DB) truncateWAL() error {
+	_, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
 }
 
 // Filter narrows queries.

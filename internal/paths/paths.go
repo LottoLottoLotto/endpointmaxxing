@@ -49,3 +49,18 @@ func Expand(p string) string {
 	}
 	return os.ExpandEnv(p)
 }
+
+// Private creates each directory (parents included) readable by the owner only, and tightens ones that
+// exist with wider permissions: they hold keys, prompts, request records and engine logs. Pass the
+// substrate root (State or Config) before its subdirectories so the root is tightened too.
+func Private(dirs ...string) error {
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -108,6 +108,9 @@ func RecordEvent(kind string, in *Instance, detail string) { record(kind, in, ni
 func instancesDir() string { return filepath.Join(paths.State(), "instances") }
 func logsDir() string      { return filepath.Join(paths.State(), "logs") }
 
+// PrivateDirs makes the state directory and its instance and log directories owner-only.
+func PrivateDirs() error { return paths.Private(paths.State(), instancesDir(), logsDir()) }
+
 // LogPath is where instance id logs (kept after the instance stops).
 func LogPath(id string) string { return filepath.Join(logsDir(), id+".log") }
 
@@ -151,7 +154,7 @@ func Redact(argv []string, secret string) []string {
 }
 
 func (in *Instance) save() error {
-	if err := os.MkdirAll(instancesDir(), 0o755); err != nil {
+	if err := paths.Private(paths.State(), instancesDir()); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(in, "", "  ")
@@ -386,7 +389,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 			}
 		}()
 	}
-	if err := os.MkdirAll(logsDir(), 0o755); err != nil {
+	if err := paths.Private(paths.State(), logsDir()); err != nil {
 		return nil, err
 	}
 	logPath := LogPath(id)
