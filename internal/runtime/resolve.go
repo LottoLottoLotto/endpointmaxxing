@@ -274,9 +274,17 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 		return nil, err
 	}
 	// A manifest var declared empty is a required setting: per model (e.g. a container image),
-	// or per engine for a multi-model host, whose launch serves no one model.
+	// or per engine for a multi-model host, whose launch serves no one model. Checked in name order so
+	// the first missing one reported is always the same.
+	required := make([]string, 0, len(e.Manifest.Vars))
 	for k, x := range e.Manifest.Vars {
-		if x == "" && v[k] == "" {
+		if x == "" {
+			required = append(required, k)
+		}
+	}
+	sort.Strings(required)
+	for _, k := range required {
+		if v[k] == "" {
 			if e.Host != nil {
 				return nil, errs.New(errs.Usage, "engine %s needs vars.%s (substrate engine set %s --var %s=...)", e.ID, k, e.ID, k)
 			}

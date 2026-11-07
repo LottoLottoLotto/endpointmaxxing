@@ -207,6 +207,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /substrate/v1/reload", g.authed(roleRead, g.mgmtReloadStatus))
 	mux.HandleFunc("POST /substrate/v1/reload", g.authed(roleAdmin, g.mgmtReload))
 	mux.HandleFunc("GET /substrate/v1/whoami", g.authed(roleAny, g.whoami))
+	g.settingsRoutes(mux)
 	mux.Handle("GET /admin/", uiHandler())
 	mux.Handle("GET /admin", http.RedirectHandler("/admin/", http.StatusMovedPermanently))
 	return mux

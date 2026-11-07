@@ -79,3 +79,5 @@ dialog h2 { margin-top: 0; }
   border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, .18); white-space: pre-wrap; z-index: 5; }
 .toast.err { border-left-color: var(--err); }
+.card.secret { border-left: 4px solid var(--warn); margin-bottom: 12px; }
+.card.secret pre { margin: 8px 0; user-select: all; }

@@ -355,9 +355,25 @@ async function models() {
     class: cls, disabled: !isAdmin(), title: isAdmin() ? null : 'needs an admin key', onclick,
   }, label);
 
+  // The form sits outside the auto-refreshed area so typing is not lost.
+  const content = el('div');
+  body.append(
+    el('h2', {}, 'Register a model'),
+    el('p', { class: 'muted' }, 'A local path (GGUF file, checkpoint directory, Strata config) or a Hugging Face org/repo id. Engine arguments and container options are set with the CLI on the host.'),
+    settingsForm([
+      { name: 'name', label: 'Name', ph: 'qwen3-8b', required: true },
+      { name: 'source', label: 'Source', ph: '/models/Qwen3-8B or Qwen/Qwen3-8B', required: true },
+      { name: 'engine', label: 'Engine', ph: 'auto' },
+    ], {}, async (v) => {
+      const r = await change('POST', '/substrate/v1/models', v, `Registered ${v.name}`, () => load());
+      if (r.engine) toast(`Registered ${v.name} → ${r.engine}` + (r.warnings ? '\n' + r.warnings.join('\n') : ''));
+    }, 'Register'),
+    content);
+  const remove = (name) => change('DELETE', '/substrate/v1/models/' + enc(name), undefined, `Removed ${name} from the registry`, () => load());
+
   const load = () => {
     const gen = S.gen;
-    guarded(gen, body, async () => {
+    guarded(gen, content, async () => {
       const [ms_, ins] = await Promise.all([get('/v1/models'), get('/substrate/v1/instances')]);
       const alive = (s) => s === 'ready' || s === 'starting' || s === 'loading' || s === 'unhealthy';
       return [
@@ -376,9 +392,10 @@ async function models() {
           { h: '', v: (m) => {
             if (m.substrate.alias_for || !m.substrate.registered) return '';
             const is = m.substrate.instances || [];
-            if (is.some((i) => alive(i.status))) return is.filter((i) => alive(i.status)).map((i) => adminBtn('Stop', 'secondary', (e) => stop(e.target, i.id)));
-            if (m.substrate.source_missing) return '';
-            return adminBtn('Start', '', (e) => ensure(e.target, m.id));
+            const rm = adminAction('Remove', 'danger', () => remove(m.id), `Remove ${m.id} from the registry? Running instances keep running; its files stay.`);
+            if (is.some((i) => alive(i.status))) return [...is.filter((i) => alive(i.status)).map((i) => adminBtn('Stop', 'secondary', (e) => stop(e.target, i.id))), ' ', rm];
+            if (m.substrate.source_missing) return rm;
+            return [adminBtn('Start', '', (e) => ensure(e.target, m.id)), ' ', rm];
           } },
         ], ms_.data, { empty: 'No models registered (substrate model add).', onrow: (m) => go('requests', { model: m.id, since: S.since }) }),
         el('h2', {}, 'Instances'),
@@ -550,17 +567,134 @@ async function policy() {
   load();
 }
 
+// ---------- settings forms ----------
+
+// settingsForm builds an inline form. Field types: text (default), number, select (options), list
+// (comma-separated, sent as an array). Blank number fields are left out; blank text/list fields are left out
+// unless keepBlank (then "" / [] clear the setting), except fields marked omitBlank.
+function settingsForm(fields, values, onsubmit, label, opts = {}) {
+  const form = el('form', { class: 'filters' });
+  for (const f of fields) {
+    const v = values[f.name];
+    let input;
+    if (f.options) {
+      input = el('select', { name: f.name }, f.options.map((o) => el('option', { value: o, selected: (v ?? f.def ?? '') === o }, o || '—')));
+    } else {
+      const shown = Array.isArray(v) ? v.join(', ') : v ?? '';
+      input = el('input', { name: f.name, value: shown, placeholder: f.ph || '', type: f.type === 'number' ? 'number' : 'text',
+        step: f.type === 'number' ? 'any' : null, required: f.required || null });
+    }
+    form.append(el('label', {}, f.label, input));
+  }
+  const btn = el('button', { type: 'submit', disabled: !isAdmin(), title: isAdmin() ? null : 'needs an admin key' }, label);
+  form.append(btn);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const out = {};
+    for (const f of fields) {
+      const raw = form.elements[f.name].value.trim();
+      if (f.type === 'number') {
+        if (raw !== '') out[f.name] = Number(raw);
+      } else if (f.type === 'list') {
+        if (raw !== '' || (opts.keepBlank && !f.omitBlank)) out[f.name] = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      } else if (raw !== '' || (opts.keepBlank && !f.omitBlank)) {
+        out[f.name] = raw;
+      }
+    }
+    btn.disabled = true;
+    try { await onsubmit(out); } catch (e) { toast(e.message, true); }
+    btn.disabled = !isAdmin();
+  });
+  return form;
+}
+
+// change sends one settings change, reports its warnings, and re-renders the page.
+async function change(method, path, body, okMsg, rerender) {
+  const r = await api(method, path, body);
+  toast(okMsg + (r && r.warnings ? '\n' + r.warnings.join('\n') : ''), false);
+  rerender();
+  return r;
+}
+
+const enc = encodeURIComponent;
+
+function adminAction(label, cls, onclick, confirmText) {
+  return el('button', { class: cls, disabled: !isAdmin(), title: isAdmin() ? null : 'needs an admin key', onclick: async (ev) => {
+    if (confirmText && !confirm(confirmText)) return;
+    ev.target.disabled = true;
+    try { await onclick(); } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+  } }, label);
+}
+
+// secretBox shows a new key secret once.
+function secretBox(name, secret, note) {
+  const box = el('div', { class: 'card secret' },
+    el('div', {}, el('b', {}, `Secret for ${name}`), ' — shown only now. ', note || ''),
+    el('pre', { class: 'json' }, secret),
+    el('div', { class: 'bar' },
+      el('button', { class: 'secondary', onclick: async () => {
+        try { await navigator.clipboard.writeText(secret); toast('Copied'); } catch { toast('Copy failed: select the text instead', true); }
+      } }, 'Copy'),
+      el('button', { class: 'secondary', onclick: () => box.remove() }, 'Done')));
+  return box;
+}
+
+const keyFields = [
+  { name: 'role', label: 'Role', options: ['user', 'auditor', 'admin'] },
+  { name: 'team', label: 'Team', ph: 'research' },
+  { name: 'models', label: 'Models', type: 'list', ph: 'all, or qwen*, lfm*' },
+  { name: 'rpm', label: 'Requests/min', type: 'number', ph: '0 = no limit' },
+  { name: 'tokens_per_day', label: 'Tokens/day', type: 'number', ph: '0 = no limit' },
+  { name: 'max_output_tokens', label: 'Max output', type: 'number', ph: '0 = gateway cap' },
+  { name: 'expires', label: 'Expires', ph: '90d, 2027-01-31, never', omitBlank: true },
+];
+
+const teamFields = [
+  { name: 'tokens_per_day', label: 'Tokens/day', type: 'number', ph: '0 = no limit' },
+  { name: 'tokens_per_month', label: 'Tokens/month', type: 'number', ph: '0 = no limit' },
+  { name: 'budget_per_month', label: 'Budget/month', type: 'number', ph: '0 = no limit' },
+  { name: 'alert_at', label: 'Alert at', type: 'number', ph: '0.8' },
+  { name: 'models', label: 'Models', type: 'list', ph: 'all, or qwen*' },
+];
+
 async function access() {
   const body = page('Keys & teams');
-  const gen = S.gen;
-  guarded(gen, body, async () => {
+  const secrets = el('div');
+  const content = el('div');
+  body.append(secrets, content);
+  const rerender = () => load();
+  const load = () => guarded(S.gen, content, async () => {
     const [ks, teams] = await Promise.all([get('/substrate/v1/keys'), get('/substrate/v1/teams')]);
     const limit = (v) => (v ? num(v) : el('span', { class: 'muted' }, '∞'));
+    const self = (k) => S.who && S.who.name === k.name;
+    const keyRow = (k) => el('div', {},
+      el('p', { class: 'muted' }, 'Change this key. Blank team or models clears them; blank numbers stay as they are.'),
+      settingsForm(keyFields, { ...k, expires: '' }, async (v) => {
+        await change('PATCH', '/substrate/v1/keys/' + enc(k.name), v, `Updated ${k.name}`, rerender);
+      }, 'Save', { keepBlank: true }),
+      el('div', { class: 'bar' },
+        adminAction('Rotate secret', 'secondary', async () => {
+          const r = await api('POST', '/substrate/v1/keys/' + enc(k.name) + '/rotate', { grace: '24h' });
+          secrets.prepend(secretBox(k.name, r.secret, 'The old secret keeps working for 24 hours.'));
+          rerender();
+        }, `Rotate the secret of ${k.name}? The old one keeps working for 24 hours.`),
+        k.disabled
+          ? adminAction('Enable', 'secondary', () => change('POST', '/substrate/v1/keys/' + enc(k.name) + '/enable', undefined, `Enabled ${k.name}`, rerender))
+          : adminAction('Disable', 'secondary', () => change('POST', '/substrate/v1/keys/' + enc(k.name) + '/disable', undefined, `Disabled ${k.name}`, rerender),
+            self(k) ? null : `Disable ${k.name}? Requests with it are refused at once.`),
+        adminAction('Delete', 'danger', () => change('DELETE', '/substrate/v1/keys/' + enc(k.name), undefined, `Deleted ${k.name}`, rerender),
+          `Delete ${k.name}? This cannot be undone; its usage history stays.`)),
+      jsonBlock(k));
     return [
-      el('p', { class: 'muted' }, 'Keys and teams are managed with the CLI (substrate key …, substrate team …) or its MCP tools; changes appear here and in the admin trail.'),
+      el('p', { class: 'muted' }, 'Every change here goes through the management API with your key and is recorded in the admin trail (Events → admin). Agents make the same changes over the API or with the CLI and its MCP tools.'),
+      el('h2', {}, 'New API key'),
+      settingsForm([{ name: 'name', label: 'Name', ph: 'alice', required: true }, ...keyFields], { role: 'user' }, async (v) => {
+        const r = await change('POST', '/substrate/v1/keys', v, `Created ${v.name}`, rerender);
+        secrets.prepend(secretBox(r.name, r.secret, 'Clients send it as Authorization: Bearer <key>.'));
+      }, 'Create key'),
       el('h2', {}, 'API keys'),
       table([
-        { h: 'Name', v: (k) => k.name },
+        { h: 'Name', v: (k) => [k.name, self(k) ? el('span', { class: 'muted' }, ' (you)') : ''] },
         { h: 'Prefix', v: (k) => el('code', {}, k.prefix + '…') },
         { h: 'Role', v: (k) => k.role },
         { h: 'Team', v: (k) => k.team || '' },
@@ -570,37 +704,72 @@ async function access() {
         { h: 'Expires', n: 1, v: (k) => (k.expires ? when(k.expires) : el('span', { class: 'muted' }, 'never')) },
         { h: 'Status', v: (k) => pill(k.status, k.status === 'active' ? 'ok' : 'err') },
         { h: 'Last used', n: 1, v: (k) => ago(k.last_used) },
-      ], ks, { empty: 'No keys in keys.yaml (substrate key add).', detail: jsonBlock }),
+      ], ks, { empty: 'No keys yet.', detail: keyRow }),
       el('h2', {}, 'Teams'),
+      settingsForm([{ name: 'name', label: 'Team', ph: 'research', required: true }, ...teamFields], {}, async (v) => {
+        const { name, ...rest } = v;
+        await change('PUT', '/substrate/v1/teams/' + enc(name), rest, `Saved team ${name}`, rerender);
+      }, 'Create or update team'),
       table([
         { h: 'Team', v: (t) => t.name },
         { h: 'Keys', n: 1, v: (t) => num(t.keys) },
         { h: 'Models', v: (t) => (t.config.models || []).join(', ') || el('span', { class: 'muted' }, 'all') },
         { h: 'Limits', cls: 'wrap', v: (t) => (t.limits || []).map((l) => el('div', {},
           `${l.limit}: ${num(l.used)} of ${num(l.max)} this ${l.period} `, pill((100 * l.ratio).toFixed(0) + '%', l.ratio >= 1 ? 'err' : l.ratio >= (t.config.alert_at || 0.8) ? 'warn' : 'ok'))) },
+        { h: '', v: (t) => adminAction('Delete', 'danger', () => change('DELETE', '/substrate/v1/teams/' + enc(t.name), undefined, `Deleted team ${t.name}`, rerender),
+          `Delete team ${t.name}? Its keys keep the label but lose the budgets.`) },
       ], teams, { empty: 'No teams configured.' }),
     ];
   });
+  load();
 }
 
 async function config() {
   const body = page('Config');
-  const show = (st) => [
-    el('h2', {}, 'Configuration reload'),
-    el('p', { class: 'muted' }, 'The gateway re-reads config.yaml and models.yaml when they change. An invalid file is refused and the running configuration stays.'),
-    table([{ h: 'Field', v: (r) => r[0] }, { h: 'Value', cls: 'wrap', v: (r) => (r[0].endsWith('_at') ? when(r[1]) : String(r[1])) }],
-      Object.entries(st)),
-    el('p', {}, el('button', { disabled: !isAdmin(), title: isAdmin() ? null : 'needs an admin key', onclick: async () => {
-      try {
-        const r = await api('POST', '/substrate/v1/reload');
-        toast('Configuration reloaded');
-        body.replaceChildren(...show(r), ...who());
-      } catch (e) { toast(e.message, true); }
-    } }, 'Reload now')),
-  ];
-  const who = () => [el('h2', {}, 'Signed in as'), jsonBlock(S.who)];
-  const gen = S.gen;
-  guarded(gen, body, async () => [...show(await get('/substrate/v1/reload')), ...who()]);
+  const rerender = () => load();
+  const load = () => guarded(S.gen, body, async () => {
+    const [st, aliases, prices] = await Promise.all([get('/substrate/v1/reload'), get('/substrate/v1/aliases'), get('/substrate/v1/prices')]);
+    currency = prices.currency || currency;
+    const priceRows = Object.entries(prices.models || {}).map(([k, p]) => ({ pattern: k, ...p }));
+    if (prices.default) priceRows.push({ pattern: 'default', ...prices.default });
+    return [
+      el('h2', {}, 'Model aliases'),
+      el('p', { class: 'muted' }, 'Stable names for clients: point an alias at another model and clients switch within seconds.'),
+      settingsForm([{ name: 'alias', label: 'Alias', ph: 'chat-default', required: true }, { name: 'model', label: 'Model', ph: 'registered model', required: true }], {},
+        async (v) => change('PUT', '/substrate/v1/aliases/' + enc(v.alias), { model: v.model }, `${v.alias} → ${v.model}`, rerender), 'Set alias'),
+      table([
+        { h: 'Alias', v: (r) => r[0] },
+        { h: 'Model', v: (r) => r[1] },
+        { h: '', v: (r) => adminAction('Remove', 'danger', () => change('DELETE', '/substrate/v1/aliases/' + enc(r[0]), undefined, `Removed ${r[0]}`, rerender), `Remove alias ${r[0]}?`) },
+      ], Object.entries(aliases), { empty: 'No aliases.' }),
+      el('h2', {}, `Prices (${prices.currency} per million tokens)`),
+      el('p', { class: 'muted' }, 'Costs requests and drives team budgets. Model names, globs (qwen*) or default.'),
+      settingsForm([
+        { name: 'pattern', label: 'Model, glob or default', ph: 'qwen*', required: true },
+        { name: 'prompt', label: 'Prompt', type: 'number', required: true },
+        { name: 'completion', label: 'Completion', type: 'number', required: true },
+        { name: 'cached', label: 'Cached', type: 'number', ph: '= prompt' },
+        { name: 'currency', label: 'Currency', ph: prices.currency },
+      ], {}, async (v) => {
+        const { pattern, ...rest } = v;
+        await change('PUT', '/substrate/v1/prices/' + enc(pattern), rest, `Priced ${pattern}`, rerender);
+      }, 'Set price'),
+      table([
+        { h: 'Model', v: (p) => p.pattern },
+        { h: 'Prompt', n: 1, v: (p) => String(p.prompt) },
+        { h: 'Cached', n: 1, v: (p) => (p.cached == null ? el('span', { class: 'muted' }, '= prompt') : String(p.cached)) },
+        { h: 'Completion', n: 1, v: (p) => String(p.completion) },
+        { h: '', v: (p) => adminAction('Remove', 'danger', () => change('DELETE', '/substrate/v1/prices/' + enc(p.pattern), undefined, `Removed the price of ${p.pattern}`, rerender), `Remove the price of ${p.pattern}?`) },
+      ], priceRows, { empty: 'No prices: requests are not costed.' }),
+      el('h2', {}, 'Configuration reload'),
+      el('p', { class: 'muted' }, 'The gateway re-reads config.yaml and models.yaml when they change, and at once after a change made here. An invalid file is refused and the running configuration stays.'),
+      table([{ h: 'Field', v: (r) => r[0] }, { h: 'Value', cls: 'wrap', v: (r) => (r[0].endsWith('_at') || r[0] === 'last_attempt' ? when(r[1]) : String(r[1])) }],
+        Object.entries(st)),
+      el('p', {}, adminAction('Reload now', '', () => change('POST', '/substrate/v1/reload', undefined, 'Configuration reloaded', rerender))),
+      el('h2', {}, 'Signed in as'), jsonBlock(S.who),
+    ];
+  });
+  load();
 }
 
 const PAGES = { overview, models, requests, events, policy, access, config };

@@ -14,9 +14,9 @@ import (
 
 	"github.com/lotto/substrate/internal/app"
 	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/paths"
+	"github.com/lotto/substrate/internal/settings"
 	"github.com/lotto/substrate/internal/store"
 )
 
@@ -73,23 +73,11 @@ func aliasSetCmd() *command {
 				if err != nil {
 					return err
 				}
-				if _, ok := a.RegisteredModel(pos[1]); !ok {
-					e.warn("%s is not a registered model; the alias only works while an instance serves it", pos[1])
+				res, err := settings.SetAlias(a, pos[0], pos[1])
+				if err != nil {
+					return err
 				}
-				if _, ok := a.RegisteredModel(pos[0]); ok {
-					e.warn("%s is also a registered model: requests for it now go to %s", pos[0], pos[1])
-				}
-				prev := a.Config().Aliases[pos[0]]
-				if _, err := config.Update(func(c *config.Config) error {
-					if c.Aliases == nil {
-						c.Aliases = map[string]string{}
-					}
-					c.Aliases[pos[0]] = pos[1]
-					return nil
-				}); err != nil {
-					return errs.Wrap(errs.Usage, err)
-				}
-				e.recordAdmin(fmt.Sprintf("alias set %s -> %s (was %s)", pos[0], pos[1], dash(prev)))
+				e.applied(res)
 				return e.out(map[string]string{"alias": pos[0], "model": pos[1]}, func(w io.Writer) { fmt.Fprintf(w, "%s -> %s\n", pos[0], pos[1]) })
 			}
 		}}
@@ -102,18 +90,11 @@ func aliasRmCmd() *command {
 				if err := wantArgs("alias rm", pos, 1, 1); err != nil {
 					return err
 				}
-				found := false
-				if _, err := config.Update(func(c *config.Config) error {
-					_, found = c.Aliases[pos[0]]
-					delete(c.Aliases, pos[0])
-					return nil
-				}); err != nil {
+				res, err := settings.RemoveAlias(pos[0])
+				if err != nil {
 					return err
 				}
-				if !found {
-					return errs.New(errs.NotFound, "no alias %q", pos[0])
-				}
-				e.recordAdmin("alias rm " + pos[0])
+				e.applied(res)
 				return e.out(map[string]string{"removed": pos[0]}, func(w io.Writer) { fmt.Fprintf(w, "removed alias %s\n", pos[0]) })
 			}
 		}}

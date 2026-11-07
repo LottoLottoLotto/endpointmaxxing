@@ -237,8 +237,8 @@ under `/substrate/v1/`:
 | POST | `/substrate/v1/ensure` | `{"model", "engine"?, "timeout"?}` | a ready instance (placed, evicting if needed) |
 | POST | `/substrate/v1/stop` | `{"id"}` (instance id or model name) | waits for in-flight requests, then stops |
 | GET | `/substrate/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client`, `team`, `category`, `error_kind`, `errors`, `flagged`, `min_severity`, `rule` | aggregates (with cost) |
-| GET | `/substrate/v1/requests` | same filters, plus `limit` | request records |
-| GET | `/substrate/v1/events` | same filters, plus `limit` | lifecycle events, budget alerts, config reloads |
+| GET | `/substrate/v1/requests` | same filters, plus `id` and `limit` | request records |
+| GET | `/substrate/v1/events` | `since`, `until`, `model`, `engine`, `instance`, `kind` (`admin`, `exited`, `budget_alert`, ...), `limit` | lifecycle events, budget alerts, config reloads, admin trail |
 | GET | `/substrate/v1/flags` | same filters | policy matches by rule and detector |
 | GET | `/substrate/v1/errors` | same filters | failed requests by error kind |
 | GET | `/substrate/v1/report` | same filters (`since` defaults to `24h`) | totals, cost, models, teams, clients, categories, flags, errors |
@@ -247,6 +247,53 @@ under `/substrate/v1/`:
 | POST | `/substrate/v1/policy/test` | `{"text"}` or `{"body"}`, optionally `model`, `client`, `api` | category and flags, nothing sent to a model |
 | GET / POST | `/substrate/v1/reload` | | last reload outcome / re-read the config now (400 with the error if it is invalid) |
 | GET | `/substrate/v1/whoami` | | the caller's key name, role and team |
+
+#### Settings API
+
+Admins change the same settings as `substrate key|team|price|alias|model`
+over HTTP. Both go through one code path, so validation, warnings and the
+admin trail are identical.
+
+| Method | Path | Body | Result |
+| --- | --- | --- | --- |
+| POST | `/substrate/v1/keys` | `{"name", "role"?, "team"?, "models"?, "rpm"?, "tokens_per_day"?, "max_output_tokens"?, "expires"?}` | 201, the key and its `secret` (shown only now) |
+| PATCH | `/substrate/v1/keys/{name}` | any of the fields above except `name`; `""` / `[]` clear `team` / `models`, `"expires": "never"` | the key |
+| POST | `/substrate/v1/keys/{name}/rotate` | `{"grace"?: "24h"}` | the new `secret`; the old one works until `old_secret_valid_until` |
+| POST | `/substrate/v1/keys/{name}/disable`, `/enable` | | refused at once / restored |
+| DELETE | `/substrate/v1/keys/{name}` | | revoked |
+| PUT / DELETE | `/substrate/v1/teams/{name}` | `{"tokens_per_day"?, "tokens_per_month"?, "budget_per_month"?, "alert_at"?, "models"?}` | creates or changes the team / removes it |
+| GET | `/substrate/v1/prices` | | currency, default and per-model prices |
+| PUT / DELETE | `/substrate/v1/prices/{model\|glob\|default}` | `{"prompt", "completion", "cached"?, "currency"?}` | sets / removes a price |
+| GET | `/substrate/v1/aliases` | | alias → model |
+| PUT / DELETE | `/substrate/v1/aliases/{alias}` | `{"model"}` | sets / removes an alias |
+| GET | `/substrate/v1/models` | | the registry, with `source_missing` for entries whose files are gone |
+| POST | `/substrate/v1/models` | `{"name", "source", "engine"?, "force"?, "flags"?, "vram_mib"?, "idle_unload"?, "max_concurrency"?, "devices"?}` | 201, the entry and its route |
+| DELETE | `/substrate/v1/models/{name}` | | removed from the registry (running instances keep running) |
+
+Changes to config.yaml and models.yaml apply at once; responses carry
+`warnings` (an unconfigured team, a budget without prices, an alias to an
+unregistered model). Reads need an admin or auditor key, changes an admin key.
+
+Security:
+
+- **Encrypted or local only.** Changes are refused (403) over plain HTTP
+  from anything but loopback, because requests and answers carry key
+  secrets. Serve HTTPS (`gateway.tls`) for remote administration; a
+  TLS-terminating proxy on the same host connects over loopback.
+- **No host command lines.** Engine arguments, manifest vars, container
+  pre-args, engine binaries and environment are not settable over HTTP: they
+  reach command lines and container options on the host. Use the CLI there.
+  Unified flags are, since they are validated per type.
+- **No self-lockout.** A key cannot delete, disable or demote itself; use
+  another admin key or the CLI.
+- **Strict input.** Bodies must be `application/json` (no form posts), at
+  most 64 KiB, with no unknown fields. Answers are sent `Cache-Control:
+  no-store`.
+- **Audited.** Every change is an `admin` event, audit-log line and webhook
+  naming the key and the client address (`... [api from 10.0.0.7]`); refused
+  attempts are recorded as `auth_failed` requests.
+- **Off switch.** `gateway.disable_settings_api: true` refuses every change
+  over HTTP; reads stay.
 
 ### Admin UI
 
@@ -262,12 +309,12 @@ the management API instead.
   so there is no cookie to forge from another site. An open gateway needs no
   key. `user` keys are refused.
 - **Pages:** overview (totals, alerts, usage by model, client, team and
-  category, flags, errors), models and instances (start and stop), requests
-  and events with filters, policy matches and prompt testing, keys and teams,
-  and configuration reload. Auditors see everything with the start, stop and
-  reload buttons disabled.
-- **Keys, teams, prices, aliases and models** are changed with the CLI or its
-  MCP tools; the UI shows them read-only.
+  category, flags, errors), models and instances (register, remove, start,
+  stop), requests and events with filters, policy matches and prompt testing,
+  keys and teams (create, edit, rotate, disable, delete), and config (aliases,
+  prices, reload). Auditors see everything with every change button disabled.
+- **New secrets** (a created or rotated key) are shown once, with a copy
+  button; nothing stores them.
 - The page is sent with a strict Content-Security-Policy (no inline script,
   no framing).
 
@@ -488,7 +535,10 @@ substrate bench submit <id>...                    # upload recorded runs later
 - **Publishing:** `--validate` asks LocalMaxxing for its verdict without
   uploading. `--submit` uploads only runs it would mark verified (batch 1, the
   canonical prompt, complete evidence); `--force` uploads anyway. Uploads are
-  recorded in the admin trail.
+  recorded in the admin trail. A run is never uploaded twice: an upload whose
+  only failure was lmx saving its receipt counts as done, and `bench submit`
+  on a payload lmx already marked submitted records that run id instead of
+  uploading again.
 
 ### Metrics and service
 
@@ -563,7 +613,7 @@ substrate requests --id req_...                          # one request, with bod
 substrate report --since 7d                              # totals, models, clients, categories, flags, errors
 substrate flagged --since 7d                             # policy matches by rule and detector
 substrate errors --since 7d                              # failures by kind (`--kinds` lists them)
-substrate events --since 7d                              # starts, load times, crashes
+substrate events --since 7d                              # starts, load times, crashes (--kind admin for the admin trail)
 substrate samples [--gpu] --since 1h                     # memory over time
 substrate prune --older-than 90d
 substrate --csv report --since 30d > chargeback.csv       # any table as CSV (usage, requests, team list, ...)
@@ -577,7 +627,9 @@ as CSV; `report --csv` is one table with a `SECTION` column and raw numbers.
 `doctor` also checks the setup: plain HTTP on a public address, public
 metrics, prompt storage without retention, keys without expiry, expiring or
 unused for 90 days, keys in undefined teams, many admin keys, budgets
-without prices and aliases to unregistered models.
+without prices and aliases to unregistered models. It lists registered
+models whose files no longer exist (`/v1/models` marks them
+`source_missing`, and the admin UI offers no Start for them).
 
 Only traffic that passes through `substrate serve` or `substrate chat` is
 metered. A client that calls an engine's port directly bypasses the meter.

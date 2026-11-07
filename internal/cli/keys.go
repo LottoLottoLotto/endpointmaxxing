@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +14,7 @@ import (
 	"github.com/lotto/substrate/internal/gateway"
 	"github.com/lotto/substrate/internal/keys"
 	"github.com/lotto/substrate/internal/paths"
+	"github.com/lotto/substrate/internal/settings"
 )
 
 // ---- key ----
@@ -23,28 +22,6 @@ import (
 func cmdKey() *command {
 	return &command{name: "key", summary: "manage gateway API keys (roles, teams, model access, quotas, expiry, rotation)",
 		sub: []*command{keyAddCmd(), keyListCmd(), keySetCmd(), keyRotateCmd(), keyToggleCmd("disable", true), keyToggleCmd("enable", false), keyRmCmd()}}
-}
-
-// parseExpiry reads "90d", "720h", a date or RFC 3339 time (from now), or "never".
-func parseExpiry(s string) (*time.Time, error) {
-	if s == "" || s == "never" {
-		return nil, nil
-	}
-	if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil && strings.HasSuffix(s, "d") && n > 0 {
-		t := time.Now().AddDate(0, 0, n).UTC()
-		return &t, nil
-	}
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		t := time.Now().Add(d).UTC()
-		return &t, nil
-	}
-	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			t = t.UTC()
-			return &t, nil
-		}
-	}
-	return nil, errs.New(errs.Usage, "--expires %q: want a duration from now (90d, 720h), a date (2027-01-31), or never", s)
 }
 
 func splitList(s string) []string {
@@ -72,23 +49,21 @@ func keyAddCmd() *command {
 				if err := wantArgs("key add", pos, 1, 1); err != nil {
 					return err
 				}
-				exp, err := parseExpiry(*expires)
+				exp, err := settings.ParseExpiry(*expires)
+				if err != nil {
+					return err
+				}
+				a, err := e.app()
 				if err != nil {
 					return err
 				}
 				k := keys.Key{Name: pos[0], Role: *role, Team: *team, Models: splitList(*models), RPM: *rpm, TokensPerDay: *tpd,
 					MaxOutputTokens: *maxOut, Expires: exp}
-				if err := warnUnknownTeam(e, k.Team); err != nil {
+				secret, res, err := settings.AddKey(a.Config(), k)
+				if err != nil {
 					return err
 				}
-				secret, err := keys.Add(k)
-				if err != nil {
-					if strings.Contains(err.Error(), "exists") {
-						return errs.Wrap(errs.Conflict, err)
-					}
-					return errs.Wrap(errs.Usage, err)
-				}
-				e.recordAdmin(fmt.Sprintf("key add %s (role %s, team %s, expires %s)", k.Name, k.Role, dash(k.Team), expiryText(k.Expires)))
+				e.applied(res)
 				return e.out(map[string]any{"name": k.Name, "role": k.Role, "team": k.Team, "key": secret, "models": k.Models, "rpm": k.RPM,
 					"tokens_per_day": k.TokensPerDay, "expires": k.Expires}, func(w io.Writer) {
 					fmt.Fprintf(w, "%s\n", secret)
@@ -96,21 +71,6 @@ func keyAddCmd() *command {
 				})
 			}
 		}}
-}
-
-// warnUnknownTeam notes a team that config.yaml does not define (usage is attributed; no budget applies).
-func warnUnknownTeam(e *env, team string) error {
-	if team == "" {
-		return nil
-	}
-	a, err := e.app()
-	if err != nil {
-		return err
-	}
-	if _, ok := a.Config().Team(team); !ok {
-		e.warn("team %q is not in config.yaml: usage is attributed to it, but no budget or model limit applies (substrate team set %s ...)", team, team)
-	}
-	return nil
 }
 
 func keyListCmd() *command {
@@ -171,65 +131,53 @@ func keySetCmd() *command {
 				if err := wantArgs("key set", pos, 1, 1); err != nil {
 					return err
 				}
-				var exp *time.Time
+				p := settings.KeyPatch{}
 				if *expires != "" {
-					var err error
-					if exp, err = parseExpiry(*expires); err != nil {
+					exp, err := settings.ParseExpiry(*expires)
+					if err != nil {
 						return err
 					}
+					p.ExpiresSet, p.Expires = true, exp
 				}
-				if *team != "" && *team != "-" {
-					if err := warnUnknownTeam(e, *team); err != nil {
-						return err
-					}
+				if *role != "" {
+					p.Role = role
 				}
-				k, err := keys.Update(pos[0], func(k *keys.Key) error {
-					if *role != "" {
-						k.Role = *role
-					}
-					switch *team {
-					case "":
-					case "-":
-						k.Team = ""
-					default:
-						k.Team = *team
-					}
-					switch *models {
-					case "":
-					case "-":
-						k.Models = nil
-					default:
-						k.Models = splitList(*models)
-					}
-					if *rpm >= 0 {
-						k.RPM = *rpm
-					}
-					if *tpd >= 0 {
-						k.TokensPerDay = *tpd
-					}
-					if *maxOut >= 0 {
-						k.MaxOutputTokens = *maxOut
-					}
-					if *expires != "" {
-						k.Expires = exp
-					}
-					return nil
-				})
+				switch *team {
+				case "":
+				case "-":
+					p.Team = new(string)
+				default:
+					p.Team = team
+				}
+				switch *models {
+				case "":
+				case "-":
+					p.Models = &[]string{}
+				default:
+					ms := splitList(*models)
+					p.Models = &ms
+				}
+				if *rpm >= 0 {
+					p.RPM = rpm
+				}
+				if *tpd >= 0 {
+					p.TokensPerDay = tpd
+				}
+				if *maxOut >= 0 {
+					p.MaxOutputTokens = maxOut
+				}
+				a, err := e.app()
 				if err != nil {
-					return keyErr(err)
+					return err
 				}
-				e.recordAdmin(fmt.Sprintf("key set %s (role %s, team %s, models %s, rpm %d, tokens/day %d, max output %d, expires %s)",
-					k.Name, k.Role, dash(k.Team), dash(strings.Join(k.Models, ",")), k.RPM, k.TokensPerDay, k.MaxOutputTokens, expiryText(k.Expires)))
+				k, res, err := settings.SetKey(a.Config(), pos[0], p)
+				if err != nil {
+					return err
+				}
+				e.applied(res)
 				return e.out(k, func(w io.Writer) { fmt.Fprintf(w, "updated key %s\n", k.Name) })
 			}
 		}}
-}
-
-func keyErr(err error) error {
-	if errors.Is(err, keys.ErrNotFound) {
-		return errs.Wrap(errs.NotFound, err)
-	}
-	return errs.Wrap(errs.Usage, err)
 }
 
 func keyRotateCmd() *command {
@@ -241,14 +189,11 @@ func keyRotateCmd() *command {
 				if err := wantArgs("key rotate", pos, 1, 1); err != nil {
 					return err
 				}
-				if *grace < 0 {
-					return errs.New(errs.Usage, "key rotate: --grace must be >= 0")
-				}
-				secret, k, err := keys.Rotate(pos[0], *grace)
+				secret, k, res, err := settings.RotateKey(pos[0], *grace)
 				if err != nil {
-					return keyErr(err)
+					return err
 				}
-				e.recordAdmin(fmt.Sprintf("key rotate %s (old secret valid until %s)", k.Name, expiryText(k.PrevExpires)))
+				e.applied(res)
 				return e.out(map[string]any{"name": k.Name, "key": secret, "old_secret_valid_until": k.PrevExpires}, func(w io.Writer) {
 					fmt.Fprintf(w, "%s\n", secret)
 					if k.PrevExpires != nil {
@@ -272,12 +217,11 @@ func keyToggleCmd(name string, disable bool) *command {
 				if err := wantArgs("key "+name, pos, 1, -1); err != nil {
 					return err
 				}
-				for _, n := range pos {
-					if _, err := keys.Update(n, func(k *keys.Key) error { k.Disabled = disable; return nil }); err != nil {
-						return keyErr(err)
-					}
+				res, err := settings.SetKeysDisabled(pos, disable)
+				if err != nil {
+					return err
 				}
-				e.recordAdmin(fmt.Sprintf("key %s %s", name, strings.Join(pos, ", ")))
+				e.applied(res)
 				return e.out(map[string]any{name + "d": pos}, func(w io.Writer) { fmt.Fprintf(w, "%sd %s\n", name, strings.Join(pos, ", ")) })
 			}
 		}}
@@ -297,16 +241,11 @@ func keyRmCmd() *command {
 				if err := wantArgs("key rm", pos, 1, -1); err != nil {
 					return err
 				}
-				for _, n := range pos {
-					ok, err := keys.Remove(n)
-					if err != nil {
-						return err
-					}
-					if !ok {
-						return errs.New(errs.NotFound, "no key %q", n)
-					}
+				res, err := settings.RemoveKeys(pos)
+				if err != nil {
+					return err
 				}
-				e.recordAdmin("key rm " + strings.Join(pos, ", "))
+				e.applied(res)
 				return e.out(map[string]any{"removed": pos}, func(w io.Writer) { fmt.Fprintf(w, "removed %s\n", strings.Join(pos, ", ")) })
 			}
 		}}

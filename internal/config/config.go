@@ -108,6 +108,9 @@ type Gateway struct {
 	// MaxOutputTokens caps every request's output tokens (0 = no cap); a key's own cap can only lower it.
 	// Requests without a limit get it as their limit.
 	MaxOutputTokens int `yaml:"max_output_tokens,omitempty" json:"max_output_tokens,omitempty"`
+	// DisableSettingsAPI refuses changes to keys, teams, prices, aliases and models through the management
+	// API (they are then made with the CLI on the gateway host); reads stay available.
+	DisableSettingsAPI bool `yaml:"disable_settings_api,omitempty" json:"disable_settings_api,omitempty"`
 }
 
 // Placement modes.

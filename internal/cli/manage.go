@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lotto/substrate/internal/app"
 	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/gateway"
@@ -28,6 +27,7 @@ import (
 	"github.com/lotto/substrate/internal/paths"
 	"github.com/lotto/substrate/internal/route"
 	"github.com/lotto/substrate/internal/runtime"
+	"github.com/lotto/substrate/internal/settings"
 	"github.com/lotto/substrate/internal/spec"
 	"github.com/lotto/substrate/internal/store"
 	"github.com/lotto/substrate/internal/tenstorrent"
@@ -100,67 +100,18 @@ func modelAddCmd() *command {
 				if err != nil {
 					return err
 				}
-				info, err := model.Inspect(source)
-				if err != nil {
-					if os.IsNotExist(err) {
-						return errs.Wrap(errs.NotFound, err)
-					}
-					return errs.Wrap(errs.Usage, err)
-				}
-				// Store absolute paths: the registry must not depend on the caller's cwd.
-				if info.Path != "" && info.Ref == info.Path {
-					info.Source = info.Path
-				}
-				m := app.FromInfo(name, info)
-				m.Engine = *engine
-				m.VRAMMiB, m.IdleUnload, m.MaxConcurrency = *vram, spec.Duration(*idle), *maxConc
-				m.Devices = *devices
-				if len(vm) > 0 {
-					m.Vars = vm
-				}
-				if len(preArgs) > 0 {
-					m.PreArgs = map[string][]string{*engine: preArgs}
-				}
-				if len(flags) > 0 {
-					m.Flags = flags
-				}
-				if len(extra) > 0 {
-					m.Args = map[string][]string{*engine: extra}
-				}
-				if err := m.Validate(); err != nil {
-					return errs.Wrap(errs.Usage, err)
-				}
-				t := &app.Target{Model: m, Info: info, Registered: true}
-				cands := a.Route(t)
-				if *engine != "" {
-					if _, err := a.Engine(*engine); err != nil {
-						return err
-					}
-					for _, c := range cands {
-						if c.Engine == *engine && !c.Compatible {
-							return errs.New(errs.Unsupported, "%s cannot serve %s: %s", *engine, name, strings.Join(c.Reasons, "; "))
-						}
-					}
-				}
-				err = config.UpdateModels(func(ms *config.Models) error {
-					if _, exists := ms.Get(name); exists && !*force {
-						return errs.New(errs.Conflict, "model %s exists (use --force to replace)", name)
-					}
-					ms.Put(m)
-					return nil
-				})
+				added, res, err := settings.AddModel(a, settings.ModelSpec{Name: name, Source: source, Engine: *engine, Force: *force,
+					Flags: flags, VRAMMiB: *vram, IdleUnload: *idle, MaxConcurrency: *maxConc, Devices: *devices,
+					Vars: vm, PreArgs: preArgs, Args: extra})
 				if err != nil {
 					return err
 				}
-				pick, perr := route.Pick(cands)
-				if perr != nil {
-					e.warn("%s registered, but: %v", name, perr)
-				}
-				e.recordAdmin(fmt.Sprintf("model add %s (source %s, engine %s)", m.Name, m.Source, dash(pick)))
-				return e.out(map[string]any{"model": m, "engine": pick, "route": cands}, func(w io.Writer) {
+				e.applied(res)
+				m := added.Model
+				return e.out(added, func(w io.Writer) {
 					fmt.Fprintf(w, "added %s (%s %s %s)", name, m.Format, dash(m.Arch), dash(m.Quant))
-					if pick != "" {
-						fmt.Fprintf(w, " -> %s", pick)
+					if added.Engine != "" {
+						fmt.Fprintf(w, " -> %s", added.Engine)
 					}
 					fmt.Fprintln(w)
 				})
@@ -175,18 +126,11 @@ func modelRmCmd() *command {
 				if err := wantArgs("model rm", pos, 1, -1); err != nil {
 					return err
 				}
-				err := config.UpdateModels(func(ms *config.Models) error {
-					for _, n := range pos {
-						if !ms.Remove(n) {
-							return errs.New(errs.NotFound, "no model %q", n)
-						}
-					}
-					return nil
-				})
+				res, err := settings.RemoveModels(pos)
 				if err != nil {
 					return err
 				}
-				e.recordAdmin("model rm " + strings.Join(pos, ", "))
+				e.applied(res)
 				return e.out(map[string]any{"removed": pos}, func(w io.Writer) { fmt.Fprintf(w, "removed %s\n", strings.Join(pos, ", ")) })
 			}
 		}}
