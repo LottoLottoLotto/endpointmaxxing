@@ -690,12 +690,22 @@ func cmdDoctor() *command {
 						dbStatus = "ok"
 					}
 				}
+				type missingModel struct {
+					Name   string `json:"name"`
+					Source string `json:"source"`
+				}
+				missing := []missingModel{}
+				for _, m := range a.RegisteredModels() {
+					if model.MissingLocal(m.Source) {
+						missing = append(missing, missingModel{m.Name, m.Source})
+					}
+				}
 				res := map[string]any{
 					"version": Version, "spec": spec.Version,
 					"paths": map[string]string{"config": config.ConfigPath(), "models": config.ModelsPath(), "engines": config.EnginesDir(),
 						"state": paths.State(), "data": paths.Data(), "usage_db": store.Path()},
 					"gpus": gs, "engines": engines, "manifest_errors": manifestErrs, "models": len(a.RegisteredModels()),
-					"usage_db": dbStatus, "logging": a.Config().Logging,
+					"missing_models": missing, "usage_db": dbStatus, "logging": a.Config().Logging,
 				}
 				type chip struct {
 					Index int    `json:"index"`
@@ -745,6 +755,9 @@ func cmdDoctor() *command {
 						fmt.Fprintf(w, "\nmanifest error: %s\n", m)
 					}
 					fmt.Fprintf(w, "\n%d registered model(s)\n", len(a.RegisteredModels()))
+					for _, m := range missing {
+						fmt.Fprintf(w, "missing  %s: %s does not exist (restore it, or substrate model rm %s)\n", m.Name, m.Source, m.Name)
+					}
 					printFindings(w, findings)
 				})
 			}

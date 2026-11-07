@@ -379,6 +379,7 @@ type Filter struct {
 	Client   string
 	Team     string
 	ID       string // requests only
+	Kind     string // events only
 	Limit    int
 
 	// Requests only:
@@ -424,6 +425,8 @@ func (f Filter) where(tsCol string, extra ...string) (string, []any) {
 			add("team", f.Team)
 		case "id":
 			add("id", f.ID)
+		case "kind":
+			add("kind", f.Kind)
 		case "category":
 			add("category", f.Category)
 		case "error_kind":
@@ -504,7 +507,7 @@ func (db *DB) Bodies(id string) (req, resp []byte, truncated, ok bool, err error
 
 // Events lists lifecycle events, newest first.
 func (db *DB) Events(f Filter) ([]Event, error) {
-	w, args := f.where("ts", "model", "engine", "instance")
+	w, args := f.where("ts", "model", "engine", "instance", "kind")
 	rows, err := db.Query(`SELECT id, ts, kind, instance, engine, model, owner, pid, port, duration_ms, detail FROM events`+w+
 		` ORDER BY ts DESC, id DESC`+limit(f.Limit), args...)
 	if err != nil {

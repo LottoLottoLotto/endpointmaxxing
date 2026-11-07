@@ -91,12 +91,13 @@ func (g *Gateway) mgmtStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"stopped": in.ID})
 }
 
-// filterFrom reads since/until/model/engine/instance/client/limit and category/error_kind/errors/flagged/
-// min_severity/rule query parameters; a user key only ever sees its own records.
+// filterFrom reads since/until/model/engine/instance/client/limit, category/error_kind/errors/flagged/
+// min_severity/rule/id (requests) and kind (events) query parameters; a user key only ever sees its own records.
 func filterFrom(r *http.Request) (store.Filter, error) {
 	q := r.URL.Query()
 	f := store.Filter{Model: q.Get("model"), Engine: q.Get("engine"), Instance: q.Get("instance"), Client: q.Get("client"),
 		Category: q.Get("category"), ErrorKind: q.Get("error_kind"), MinSeverity: q.Get("min_severity"), Rule: q.Get("rule"),
+		ID: q.Get("id"), Kind: q.Get("kind"),
 		Errors: q.Get("errors") == "true" || q.Get("errors") == "1", Flagged: q.Get("flagged") == "true" || q.Get("flagged") == "1"}
 	if f.MinSeverity != "" && !contains(policy.Severities, f.MinSeverity) {
 		return f, errs.New(errs.Usage, "min_severity %q: want %s", f.MinSeverity, strings.Join(policy.Severities, ", "))

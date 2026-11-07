@@ -108,3 +108,42 @@ func TestLMXArgumentsAndVerdicts(t *testing.T) {
 		t.Fatalf("submit: %+v %v", s, err)
 	}
 }
+
+// lmx prints the server's response, then fails to record the receipt in its run files (exit 1): the run was
+// uploaded, so Submit must report it rather than fail and invite a duplicate upload.
+func TestSubmitSucceedsWhenOnlyTheReceiptWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "lmx")
+	script := `#!/bin/sh
+echo '{"id": "run_9", "status": "APPROVED", "verifiedRun": true, "verificationIssues": []}'
+echo '{"code": "submission_receipt_write_failed", "message": "Submission succeeded, but its receipt could not be saved."}'
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := (&LMX{Bin: bin}).Submit(context.Background(), "p.json")
+	if err != nil || s.SubmissionID != "run_9" || !s.Verified {
+		t.Fatalf("submit: %+v %v", s, err)
+	}
+
+	// A failure before any upload still fails.
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho '{\"code\": \"unauthorized\", \"message\": \"bad key\"}'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := (&LMX{Bin: bin}).Submit(context.Background(), "p.json"); err == nil {
+		t.Fatalf("an upload that never happened succeeded: %+v", s)
+	}
+}
+
+func TestReceiptReadsTheSubmissionLMXRecorded(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "p.json")
+	os.WriteFile(p, []byte(`{"tokSOut": 1, "submissionId": "cm123", "submissionStatus": "approved"}`), 0o600)
+	if id, st := Receipt(p); id != "cm123" || st != "approved" {
+		t.Fatalf("receipt: %q %q", id, st)
+	}
+	os.WriteFile(p, []byte(`{"tokSOut": 1}`), 0o600)
+	if id, _ := Receipt(p); id != "" {
+		t.Fatalf("unsubmitted payload has receipt %q", id)
+	}
+}

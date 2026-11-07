@@ -323,6 +323,8 @@ function errorsTable(rows) {
     { h: 'Count', n: 1, v: (r) => num(r.count) },
     { h: 'Last error', cls: 'wrap', v: (r) => r.last_error || '' },
     { h: 'Last', n: 1, v: (r) => ago(r.last_ts) },
+    { h: '', v: (r) => (r.last_request
+      ? el('button', { class: 'link', onclick: () => go('requests', { id: r.last_request }) }, 'last request') : '') },
   ], rows, { empty: 'No errors.', onrow: (r) => go('requests', { errors: true, error_kind: r.kind, since: S.since }) });
 }
 
@@ -367,12 +369,15 @@ async function models() {
           { h: 'State', v: (m) => {
             if (m.substrate.alias_for) return el('span', { class: 'muted' }, 'alias for ' + m.substrate.alias_for);
             const is = m.substrate.instances || [];
-            return is.length ? is.map((i) => [statusPill(i.status), ' ']) : el('span', { class: 'muted' }, 'not running');
+            if (is.length) return is.map((i) => [statusPill(i.status), ' ']);
+            if (m.substrate.source_missing) return pill('files missing', 'err');
+            return el('span', { class: 'muted' }, 'not running');
           } },
           { h: '', v: (m) => {
             if (m.substrate.alias_for || !m.substrate.registered) return '';
             const is = m.substrate.instances || [];
             if (is.some((i) => alive(i.status))) return is.filter((i) => alive(i.status)).map((i) => adminBtn('Stop', 'secondary', (e) => stop(e.target, i.id)));
+            if (m.substrate.source_missing) return '';
             return adminBtn('Start', '', (e) => ensure(e.target, m.id));
           } },
         ], ms_.data, { empty: 'No models registered (substrate model add).', onrow: (m) => go('requests', { model: m.id, since: S.since }) }),
@@ -440,6 +445,7 @@ async function requests() {
     { name: 'error_kind', label: 'Error kind' },
     { name: 'rule', label: 'Policy rule' },
     { name: 'min_severity', label: 'Min severity', options: ['', 'low', 'medium', 'high', 'critical'] },
+    { name: 'id', label: 'Request id', ph: 'req_…' },
     { name: 'limit', label: 'Limit', def: '100' },
     { name: 'errors', label: 'errors only', type: 'check' },
     { name: 'flagged', label: 'flagged only', type: 'check' },
@@ -448,7 +454,7 @@ async function requests() {
   body.append(filterForm(fields, p, (v) => go('requests', v)), results);
   const gen = S.gen;
   guarded(gen, results, async () => {
-    const rows = await get('/substrate/v1/requests' + qs({ since: '24h', limit: 100, ...p }));
+    const rows = await get('/substrate/v1/requests' + qs({ since: p.id ? '' : '24h', limit: 100, ...p }));
     return [
       el('p', { class: 'muted' }, `${rows.length} request${rows.length === 1 ? '' : 's'}, newest first. Click a row for the full record.`),
       table([
@@ -484,11 +490,7 @@ async function events() {
   body.append(filterForm(fields, p, (v) => go('events', v)), results);
   const gen = S.gen;
   guarded(gen, results, async () => {
-    // The API has no kind filter: with a kind, read further back so the newest matches still fill the page.
-    const { kind, ...q } = p;
-    const limit = Number(q.limit || 200);
-    let rows = await get('/substrate/v1/events' + qs({ since: '7d', ...q, limit: kind ? Math.max(limit * 10, 2000) : limit }));
-    if (kind) rows = rows.filter((e) => e.kind === kind).slice(0, limit);
+    const rows = await get('/substrate/v1/events' + qs({ since: '7d', limit: 200, ...p }));
     return table([
       { h: 'Time', v: (e) => when(e.ts) },
       { h: 'Kind', v: (e) => e.kind },

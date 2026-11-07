@@ -29,6 +29,7 @@ import (
 	"github.com/lotto/substrate/internal/config"
 	"github.com/lotto/substrate/internal/errs"
 	"github.com/lotto/substrate/internal/meter"
+	"github.com/lotto/substrate/internal/model"
 	"github.com/lotto/substrate/internal/runtime"
 	"github.com/lotto/substrate/internal/spec"
 	"github.com/lotto/substrate/internal/store"
@@ -300,6 +301,9 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		e := entry(m.Name, 0)
 		e.Substrate["registered"] = true
 		e.Substrate["format"] = m.Format
+		if model.MissingLocal(m.Source) {
+			e.Substrate["source_missing"] = true // its files are gone: starting it fails until restored
+		}
 		if m.Engine != "" {
 			e.Substrate["engine"] = m.Engine
 		}

@@ -33,6 +33,20 @@ func FindLMX() (*LMX, error) {
 
 // run executes lmx with --json --quiet and decodes its stdout into out (when not nil).
 func (l *LMX) run(ctx context.Context, out any, args ...string) error {
+	stdout, err := l.runRaw(ctx, args...)
+	if err != nil {
+		return err
+	}
+	if out != nil {
+		if err := json.Unmarshal(stdout, out); err != nil {
+			return fmt.Errorf("lmx %s %s: unreadable output: %v", args[0], args[1], err)
+		}
+	}
+	return nil
+}
+
+// runRaw executes lmx with --json --quiet and returns its stdout, also when it fails.
+func (l *LMX) runRaw(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, l.Bin, append(args, "--json", "--quiet")...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -53,14 +67,9 @@ func (l *LMX) run(ctx context.Context, out any, args ...string) error {
 		if msg == "" {
 			msg = strings.TrimSpace(stdout.String())
 		}
-		return fmt.Errorf("lmx %s: %v: %s", args[0]+" "+args[1], err, lastLines(msg, 6))
+		return stdout.Bytes(), fmt.Errorf("lmx %s: %v: %s", args[0]+" "+args[1], err, lastLines(msg, 6))
 	}
-	if out != nil {
-		if err := json.Unmarshal(stdout.Bytes(), out); err != nil {
-			return fmt.Errorf("lmx %s %s: unreadable output: %v", args[0], args[1], err)
-		}
-	}
-	return nil
+	return stdout.Bytes(), nil
 }
 
 func lastLines(s string, n int) string {
@@ -86,6 +95,9 @@ type Run struct {
 	Notes           string
 	HardwareFile    string
 	Out             string
+	// RunsDir is where lmx keeps its own copy of the run; absolute, so a later submit from any working
+	// directory finds it to record the receipt.
+	RunsDir string
 }
 
 // Measure runs `lmx speed-test run` against the endpoint and writes the LocalMaxxing payload to r.Out.
@@ -98,6 +110,7 @@ func (l *LMX) Measure(ctx context.Context, m *Meta, r Run) (map[string]any, erro
 			args = append(args, flag, value)
 		}
 	}
+	add("--runs-dir", r.RunsDir)
 	add("--model-revision", m.Revision)
 	add("--backend", m.Backend)
 	add("--engine-version", m.EngineVersion)
@@ -163,19 +176,53 @@ func (l *LMX) Validate(ctx context.Context, payload string) (*Verdict, error) {
 	return &Verdict{Verified: out.Verification.Verified, Issues: out.Verification.Issues}, nil
 }
 
-// Submit uploads payload.
+// submitResponse is LocalMaxxing's answer to an upload.
+type submitResponse struct {
+	ID                 string   `json:"id"`
+	Status             string   `json:"status"`
+	VerifiedRun        bool     `json:"verifiedRun"`
+	VerificationIssues []string `json:"verificationIssues"`
+}
+
+// Submit uploads payload. lmx prints the server's response before recording the receipt in the run files;
+// when only that bookkeeping fails, the upload happened, so the response is returned rather than an error
+// (retrying would upload the run twice).
 func (l *LMX) Submit(ctx context.Context, payload string) (*Verdict, error) {
-	var out struct {
-		ID                 string   `json:"id"`
-		Status             string   `json:"status"`
-		VerifiedRun        bool     `json:"verifiedRun"`
-		VerificationIssues []string `json:"verificationIssues"`
-	}
-	if err := l.run(ctx, &out, "speed-test", "submit", payload); err != nil {
-		return nil, err
+	stdout, err := l.runRaw(ctx, "speed-test", "submit", payload)
+	var out submitResponse
+	dec := json.NewDecoder(bytes.NewReader(stdout))
+	for {
+		var r submitResponse
+		if dec.Decode(&r) != nil {
+			break
+		}
+		if r.ID != "" {
+			out = r
+			break
+		}
 	}
 	if out.ID == "" {
+		if err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("LocalMaxxing returned no submission id")
 	}
 	return &Verdict{Verified: out.VerifiedRun, Issues: out.VerificationIssues, SubmissionID: out.ID, Status: out.Status}, nil
+}
+
+// Receipt reports the submission lmx already recorded in payload (its "submissionId"), if any: such a run
+// was uploaded even if substrate did not learn of it.
+func Receipt(payload string) (id, status string) {
+	data, err := os.ReadFile(payload)
+	if err != nil {
+		return "", ""
+	}
+	var p struct {
+		SubmissionID     string `json:"submissionId"`
+		SubmissionStatus string `json:"submissionStatus"`
+	}
+	if json.Unmarshal(data, &p) != nil {
+		return "", ""
+	}
+	return p.SubmissionID, p.SubmissionStatus
 }

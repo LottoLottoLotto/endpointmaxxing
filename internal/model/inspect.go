@@ -30,6 +30,13 @@ type Info struct {
 
 var repoRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// MissingLocal reports whether source names a local file or directory that does not exist (a Hugging Face
+// repo id is never missing here: it downloads on first use).
+func MissingLocal(source string) bool {
+	_, err := os.Stat(paths.Expand(source))
+	return os.IsNotExist(err) && !(repoRe.MatchString(source) && !strings.HasPrefix(source, "."))
+}
+
 // Inspect identifies source: a .gguf file, a directory of GGUF shards or of a
 // Hugging Face checkpoint, a Strata config, or a Hugging Face repo id.
 func Inspect(source string) (*Info, error) {

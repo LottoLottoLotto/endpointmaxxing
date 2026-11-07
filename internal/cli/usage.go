@@ -269,10 +269,11 @@ func rawOrString(b []byte) any {
 }
 
 func cmdEvents() *command {
-	return &command{name: "events", synopsis: "[--since 7d] [filters]",
+	return &command{name: "events", synopsis: "[--since 7d] [--kind admin] [filters]",
 		summary: "engine lifecycle events: start, ready (load time), start_failed, stop, exited", tool: true,
 		build: func(fs *flag.FlagSet) action {
 			ff := addFilterFlags(fs, "", 50)
+			kind := fs.String("kind", "", "only this event kind (start, ready, stop, exited, admin, budget_alert, config_reloaded, ...)")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("events", pos, 0, 0); err != nil {
 					return err
@@ -281,6 +282,7 @@ func cmdEvents() *command {
 				if err != nil {
 					return err
 				}
+				f.Kind = *kind
 				db, err := e.db()
 				if err != nil {
 					return err

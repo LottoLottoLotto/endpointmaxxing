@@ -138,7 +138,8 @@ func benchRunCmd() *command {
 				warnBusy(e, a, in)
 
 				run := bench.Run{CanonicalPrompt: *canonical, PromptFile: *promptFile, MaxTokens: *maxTokens,
-					Iterations: *iterations, Warmup: *warmup, BaseURL: in.BaseURL, ServedModel: res.Model, APIKey: in.APIKey}
+					Iterations: *iterations, Warmup: *warmup, BaseURL: in.BaseURL, ServedModel: res.Model, APIKey: in.APIKey,
+					RunsDir: filepath.Join(benchDir(), "lmx-runs")}
 				if *via == "gateway" {
 					run.BaseURL, _ = gateway.Client(&a.Config().Gateway)
 					run.ServedModel, run.APIKey = m.Name, os.Getenv("SUBSTRATE_API_KEY")
@@ -197,7 +198,13 @@ func benchRunCmd() *command {
 }
 
 // publish validates rec's payload with LocalMaxxing and, when asked, uploads it (only verified runs unless force).
+// A payload lmx already recorded as submitted is adopted rather than uploaded again.
 func publish(e *env, a *app.App, lmx *bench.LMX, rec *store.Benchmark, submit, force bool) {
+	if id, status := bench.Receipt(rec.Payload); id != "" && submit {
+		rec.Status, rec.SubmissionID = "submitted", id
+		e.recordAdmin(fmt.Sprintf("bench submit %s: already uploaded as LocalMaxxing run %s (%s); recorded", rec.ID, id, status))
+		return
+	}
 	v, err := lmx.Validate(e.ctx, rec.Payload)
 	if err != nil {
 		rec.Error = err.Error()
