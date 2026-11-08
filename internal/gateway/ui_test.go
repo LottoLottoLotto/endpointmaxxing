@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -67,5 +68,25 @@ func TestAdminUIServedWithoutDataOrFraming(t *testing.T) {
 	}
 	if s := call(t, "GET", srv.URL+"/substrate/v1/report", "", ""); s != http.StatusUnauthorized {
 		t.Fatalf("report without a key: %d", s)
+	}
+}
+
+// Clients (the admin UI, agents) iterate these answers: no match must be [], not null.
+func TestEmptyListsAreArrays(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
+	_, srv := newGateway(t)
+	for _, p := range []string{"/substrate/v1/requests?client=nobody", "/substrate/v1/events?kind=none", "/substrate/v1/usage?by=model"} {
+		req, _ := http.NewRequest("GET", srv.URL+p, nil)
+		req.Header.Set("Authorization", "Bearer "+admin)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if strings.TrimSpace(string(body)) != "[]" {
+			t.Errorf("%s: %d %s", p, resp.StatusCode, body)
+		}
 	}
 }

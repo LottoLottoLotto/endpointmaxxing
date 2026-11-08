@@ -542,7 +542,7 @@ func (db *DB) Requests(f Filter) ([]Request, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Request
+	out := []Request{} // an empty result is [] in JSON, not null
 	for rows.Next() {
 		var r Request
 		var flags string
@@ -580,7 +580,7 @@ func (db *DB) Events(f Filter) ([]Event, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Event
+	out := []Event{}
 	for rows.Next() {
 		var e Event
 		if err := rows.Scan(&e.ID, &e.TS, &e.Kind, &e.Instance, &e.Engine, &e.Model, &e.Owner, &e.PID, &e.Port, &e.DurationMS, &e.Detail); err != nil {
@@ -654,7 +654,7 @@ func (db *DB) Usage(group string, f Filter) ([]UsageRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []UsageRow
+	out := []UsageRow{}
 	for rows.Next() {
 		var u UsageRow
 		if err := rows.Scan(&u.Key, &u.Requests, &u.Errors, &u.Flagged, &u.Blocked, &u.Models, &u.Clients, &u.Cost, &u.PromptTokens,
@@ -816,7 +816,7 @@ func (db *DB) InstanceSamples(f Filter) ([]InstanceSample, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []InstanceSample
+	out := []InstanceSample{}
 	for rows.Next() {
 		var s InstanceSample
 		if err := rows.Scan(&s.TS, &s.Instance, &s.Engine, &s.Model, &s.GPUMemMiB, &s.RSSMiB, &s.Processes); err != nil {
@@ -836,7 +836,7 @@ func (db *DB) GPUSamples(f Filter) ([]GPUSample, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []GPUSample
+	out := []GPUSample{}
 	for rows.Next() {
 		var g GPUSample
 		if err := rows.Scan(&g.TS, &g.GPU, &g.Name, &g.MemUsedMiB, &g.MemTotalMiB, &g.UtilPct, &g.PowerW); err != nil {
