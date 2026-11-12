@@ -13,6 +13,7 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/gpu"
 	"github.com/LottoLottoLotto/substrate/internal/paths"
 	"github.com/LottoLottoLotto/substrate/internal/placement"
+	"github.com/LottoLottoLotto/substrate/internal/proc"
 	"github.com/LottoLottoLotto/substrate/internal/route"
 	"github.com/LottoLottoLotto/substrate/internal/runtime"
 	"github.com/LottoLottoLotto/substrate/internal/spec"
@@ -233,7 +234,7 @@ func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
 		if !in.Alive() {
 			continue
 		}
-		held := usage.Of(runtime.SessionPIDs(in.PID))
+		held := usage.Of(proc.Members(in.PID))
 		if in.ReadyAt == nil && in.PlannedMiB > 0 {
 			for _, g := range in.GPUs {
 				if r := in.PlannedMiB - held[g]; r > 0 {
@@ -378,9 +379,9 @@ func (a *App) RecordFootprint(in *runtime.Instance) {
 		return
 	}
 	usage, _ := gpu.ProcessUsage(gpus)
-	pids := runtime.SessionPIDs(in.PID)
+	pids := proc.Members(in.PID)
 	s := store.InstanceSample{TS: time.Now().UnixMilli(), Instance: in.ID, Engine: in.Engine, Model: in.Name,
-		RSSMiB: runtime.RSSMiB(pids), Processes: int64(len(pids))}
+		RSSMiB: proc.RSSMiB(pids), Processes: int64(len(pids))}
 	for _, m := range usage.Of(pids) {
 		s.GPUMemMiB += m
 	}

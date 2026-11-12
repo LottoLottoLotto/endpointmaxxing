@@ -262,7 +262,7 @@ func securityFindings(a *app.App) []securityFinding {
 		add("no_usage_log", "logging.enabled is off: no request records, audit trail or budgets")
 	}
 	for _, p := range []string{paths.Config(), paths.State(), store.Path()} {
-		if st, err := os.Stat(p); err == nil && st.Mode().Perm()&0o077 != 0 {
+		if st, err := os.Stat(p); err == nil && !paths.OwnerOnly(st.Mode()) {
 			add("readable_by_others", "%s is readable by other users (mode %v): chmod go-rwx", p, st.Mode().Perm())
 		}
 	}

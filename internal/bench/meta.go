@@ -4,7 +4,6 @@
 package bench
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -254,48 +253,16 @@ func setGPUs(hw map[string]any, names map[string]int, mem float64, problems *[]s
 
 var coreSuffix = regexp.MustCompile(`\s+\d+-Core Processor$|\s+Processor$|\(R\)|\(TM\)|\s+CPU @.*$`)
 
+// cpuName is the processor model without marketing suffixes. cpuModel, memKB and osName are per platform.
 func cpuName() string {
-	f, err := os.Open("/proc/cpuinfo")
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if k, v, ok := strings.Cut(sc.Text(), ":"); ok && strings.TrimSpace(k) == "model name" {
-			return strings.Join(strings.Fields(coreSuffix.ReplaceAllString(strings.TrimSpace(v), "")), " ")
-		}
-	}
-	return ""
+	return strings.Join(strings.Fields(coreSuffix.ReplaceAllString(strings.TrimSpace(cpuModel()), "")), " ")
 }
 
-// ramGB is installed memory as sold: MemTotal rounded up to a multiple of 8 GB (the kernel reserves some).
+// ramGB is installed memory as sold: the total rounded up to a multiple of 8 GB (the kernel reserves some).
 func ramGB() int {
-	f, err := os.Open("/proc/meminfo")
-	if err != nil {
+	kb := memKB()
+	if kb <= 0 {
 		return 0
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var kb int64
-		if _, err := fmt.Sscanf(sc.Text(), "MemTotal: %d kB", &kb); err == nil {
-			gb := float64(kb) / (1 << 20)
-			return int(math.Ceil(gb/8) * 8)
-		}
-	}
-	return 0
-}
-
-func osName() string {
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return "Linux"
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(line, "PRETTY_NAME="); ok {
-			return strings.Trim(v, `"`)
-		}
-	}
-	return "Linux"
+	return int(math.Ceil(float64(kb)/(1<<20)/8) * 8)
 }

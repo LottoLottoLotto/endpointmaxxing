@@ -356,6 +356,9 @@ func engineInstallCmd() *command {
 				if err := os.MkdirAll(paths.Data(), 0o755); err != nil {
 					return err
 				}
+				if _, err := exec.LookPath("sh"); err != nil {
+					return errs.New(errs.Unsupported, "install steps are POSIX shell commands and there is no `sh` on PATH (on Windows, Git for Windows provides one); or install %s yourself and run: substrate engine set %s --bin <path>", en.ID, en.ID)
+				}
 				for i, s := range steps {
 					fmt.Fprintf(e.stderr, "[%d/%d] %s\n", i+1, len(steps), s)
 					cmd := exec.CommandContext(e.ctx, "sh", "-c", s)
@@ -452,7 +455,7 @@ func engineAddCmd() *command {
 				if err := os.WriteFile(tmp, data, 0o644); err != nil {
 					return err
 				}
-				if err := os.Rename(tmp, dst); err != nil {
+				if err := paths.Replace(tmp, dst); err != nil {
 					return err
 				}
 				_, builtin := spec.BuiltinYAML(m.ID)
@@ -861,7 +864,7 @@ func masterKey(file string) (string, error) {
 	if err != nil {
 		return "", errs.Wrap(errs.NotFound, err)
 	}
-	if st.Mode().Perm()&0o077 != 0 {
+	if !paths.OwnerOnly(st.Mode()) {
 		return "", errs.New(errs.Usage, "--api-key-file %s is readable by other users (mode %v); chmod 600 it", file, st.Mode().Perm())
 	}
 	data, err := os.ReadFile(file)

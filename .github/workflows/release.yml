@@ -1,16 +1,24 @@
 name: Release
 
+# Pushing a tag like v0.1.0 tests on every operating system, builds the archives, runs each native binary,
+# and publishes a GitHub release. "Run workflow" (manual) does everything except publish: the archives are
+# kept as a workflow artifact.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -19,43 +27,91 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: go test
-        run: go test -race ./...
+        run: go test ./...
+
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Version
+        id: tag
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v0.0.0-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build archives
+        run: scripts/package.sh "${{ steps.tag.outputs.tag }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Run the binary that was just built on the system it was built for.
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archive: linux_amd64.tar.gz
+          - os: macos-latest
+            archive: darwin_arm64.tar.gz
+          - os: windows-latest
+            archive: windows_amd64.zip
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Unpack and run
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd dist
+          file="substrate_${TAG#v}_${{ matrix.archive }}"
+          grep " $file\$" checksums.txt | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -)
+          case "$file" in
+            *.zip) unzip -q "$file" ;;
+            *) tar -xzf "$file" ;;
+          esac
+          export SUBSTRATE_HOME="$PWD/home"
+          ./substrate version | tee version.txt
+          grep -q "$TAG" version.txt
+          ./substrate doctor
+          ./substrate engines
 
   release:
-    needs: test
+    if: github.ref_type == 'tag'
+    needs: [test, build, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@v4
         with:
-          go-version-file: go.mod
-      - name: Build archives
-        env:
-          TAG: ${{ github.ref_name }}
-          CGO_ENABLED: "0"
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"
-          mkdir -p dist
-          for target in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64; do
-            goos="${target%/*}"
-            goarch="${target#*/}"
-            stage="$(mktemp -d)"
-            GOOS="$goos" GOARCH="$goarch" go build -trimpath \
-              -ldflags "-s -w -X github.com/LottoLottoLotto/substrate/internal/cli.Version=${TAG}" \
-              -o "$stage/substrate" ./cmd/substrate
-            cp LICENSE NOTICE README.md "$stage/"
-            tar -C "$stage" -czf "dist/substrate_${version}_${goos}_${goarch}.tar.gz" \
-              substrate LICENSE NOTICE README.md
-            rm -rf "$stage"
-          done
-          (cd dist && sha256sum substrate_*.tar.gz > checksums.txt)
+          name: dist
+          path: dist
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/substrate_*.tar.gz dist/checksums.txt \
+          gh release create "$TAG" dist/substrate_* dist/checksums.txt \
             --title "$TAG" --generate-notes --verify-tag

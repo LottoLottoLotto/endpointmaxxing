@@ -7,7 +7,9 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 )
 
 func home() string {
@@ -63,4 +65,21 @@ func Private(dirs ...string) error {
 		}
 	}
 	return nil
+}
+
+// OwnerOnly reports whether mode grants nothing to group or others. Windows does not express access in
+// mode bits (files under the user profile are protected by its ACL), so there it is always true.
+func OwnerOnly(mode os.FileMode) bool {
+	return runtime.GOOS == "windows" || mode.Perm()&0o077 == 0
+}
+
+// Replace renames tmp over dst, the last step of an atomic write. On Windows a rename fails while another
+// process has dst open (a reader, for the instant it reads); it is retried for up to a second.
+func Replace(tmp, dst string) error {
+	err := os.Rename(tmp, dst)
+	for i := 0; err != nil && runtime.GOOS == "windows" && i < 50; i++ {
+		time.Sleep(20 * time.Millisecond)
+		err = os.Rename(tmp, dst)
+	}
+	return err
 }

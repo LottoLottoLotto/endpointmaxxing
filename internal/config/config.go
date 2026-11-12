@@ -312,7 +312,7 @@ func writeYAML(path string, v any) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return paths.Replace(tmp, path)
 }
 
 // Model is one registry entry.

@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +22,7 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/gpu"
 	"github.com/LottoLottoLotto/substrate/internal/lock"
 	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/proc"
 	"github.com/LottoLottoLotto/substrate/internal/spec"
 	"github.com/LottoLottoLotto/substrate/internal/store"
 	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
@@ -203,7 +203,7 @@ func (in *Instance) save() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, in.path())
+	return paths.Replace(tmp, in.path())
 }
 
 // List returns every recorded instance, sorted by ID.
@@ -283,33 +283,9 @@ func Find(ref string) (*Instance, error) {
 	return nil, errs.New(errs.Conflict, "%q is served by several instances (%s); give the id", ref, strings.Join(ids, ", "))
 }
 
-// stat reads /proc/<pid>/stat fields after the command name (field 3 onward); nil when gone.
-func stat(pid int) []string {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return nil
-	}
-	s := string(data)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 {
-		return nil
-	}
-	return strings.Fields(s[i+1:])
-}
-
-// procStart reads the process start time in clock ticks; 0 when the process is gone or a zombie.
-func procStart(pid int) uint64 {
-	f := stat(pid)
-	if len(f) < 20 || f[0] == "Z" {
-		return 0
-	}
-	t, _ := strconv.ParseUint(f[19], 10, 64)
-	return t
-}
-
 // Alive reports whether the instance's process still runs.
 func (in *Instance) Alive() bool {
-	return in.PID > 0 && in.StartTick != 0 && procStart(in.PID) == in.StartTick
+	return in.PID > 0 && in.StartTick != 0 && proc.Start(in.PID) == in.StartTick
 }
 
 var probeClient = &http.Client{Timeout: 3 * time.Second}
@@ -474,8 +450,8 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 	}
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.ExtraFiles = lockFiles
-	// Own session: the engine outlives this CLI and is stopped as a process group.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Own session or group: the engine outlives this CLI and is stopped as a whole.
+	proc.Detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, errs.New(errs.EngineFailed, "start %s: %w", p.Argv[0], err)
 	}
@@ -491,7 +467,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		Hosting: p.Hosting,
 	}
 	for i := 0; i < 50 && in.StartTick == 0; i++ {
-		if in.StartTick = procStart(in.PID); in.StartTick == 0 {
+		if in.StartTick = proc.Start(in.PID); in.StartTick == 0 {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
@@ -573,8 +549,8 @@ func (in *Instance) noteExit() {
 	detail := Tail(in.Log, 5)
 	// The leader is gone, but its workers (vLLM EngineCore, SGLang scheduler) may still hold
 	// the GPU. Skip when the pid was reused: that process leads somebody else's session.
-	if procStart(in.PID) == 0 {
-		if orphans := SessionPIDs(in.PID); len(orphans) > 0 {
+	if proc.Start(in.PID) == 0 {
+		if orphans := proc.Members(in.PID); len(orphans) > 0 {
 			killSession(in.PID)
 			detail = fmt.Sprintf("killed %d orphaned worker(s)\n%s", len(orphans), detail)
 		}
@@ -606,8 +582,7 @@ func (in *Instance) stop(reason string) error {
 		if s, ok := spec.Signals[in.StopSignal]; ok {
 			sig = s
 		}
-		// Setsid made the engine a group leader: pgid == pid.
-		if err := syscall.Kill(-in.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := proc.Signal(in.PID, sig); err != nil {
 			return err
 		}
 		timeout := in.StopTimeout
@@ -620,7 +595,7 @@ func (in *Instance) stop(reason string) error {
 		}
 		forced := in.Alive()
 		if forced {
-			syscall.Kill(-in.PID, syscall.SIGKILL)
+			proc.Kill(in.PID)
 			for i := 0; i < 50 && in.Alive(); i++ {
 				time.Sleep(100 * time.Millisecond)
 			}
@@ -701,17 +676,14 @@ func (in *Instance) reset(why string) string {
 	return fmt.Sprintf("chips %s reset after %s\n", tenstorrent.Join(in.Devices), why)
 }
 
-// killSession SIGKILLs every process left in the engine's session (sid == leader pid).
+// killSession force-kills every process left of the engine started as sid.
 func killSession(sid int) {
-	victims := append(SessionPIDs(sid), sid)
-	syscall.Kill(-sid, syscall.SIGKILL)
-	for _, p := range victims {
-		syscall.Kill(p, syscall.SIGKILL)
-	}
+	victims := append(proc.Members(sid), sid)
+	proc.Kill(sid)
 	// Wait (up to 10s) until they are gone and the driver no longer lists them, so their
 	// GPU memory is free before anyone re-plans (a restart would otherwise evict needlessly).
 	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) && len(SessionPIDs(sid)) > 0 {
+	for time.Now().Before(deadline) && len(proc.Members(sid)) > 0 {
 		time.Sleep(100 * time.Millisecond)
 	}
 	for time.Now().Before(deadline) && holdsGPU(victims) {
@@ -729,45 +701,6 @@ func holdsGPU(pids []int) bool {
 		return false
 	}
 	return len(u.Of(pids)) > 0
-}
-
-// SessionPIDs lists live processes whose session id is sid (an engine and all its workers).
-func SessionPIDs(sid int) []int {
-	ents, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	var out []int
-	want := strconv.Itoa(sid)
-	for _, e := range ents {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		// Fields after ')': state ppid pgrp session ...
-		if f := stat(pid); len(f) > 3 && f[3] == want && f[0] != "Z" {
-			out = append(out, pid)
-		}
-	}
-	return out
-}
-
-// RSSMiB sums resident memory of pids.
-func RSSMiB(pids []int) int64 {
-	var kb int64
-	for _, p := range pids {
-		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", p))
-		if err != nil {
-			continue
-		}
-		for _, l := range strings.Split(string(data), "\n") {
-			if v, ok := strings.CutPrefix(l, "VmRSS:"); ok {
-				n, _ := strconv.ParseInt(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "kB")), 10, 64)
-				kb += n
-			}
-		}
-	}
-	return kb / 1024
 }
 
 // Forget removes the record of an exited instance (recording its exit first).

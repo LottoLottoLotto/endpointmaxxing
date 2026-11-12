@@ -1,0 +1,2 @@
+# Same bytes on every system: sources are gofmt-checked and manifests, assets and test data are embedded.
+* text=auto eol=lf

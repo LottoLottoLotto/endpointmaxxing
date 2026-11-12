@@ -68,7 +68,7 @@ func LoadKey(file string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit key file: %w", err)
 	}
-	if st.Mode().Perm()&0o077 != 0 {
+	if !paths.OwnerOnly(st.Mode()) {
 		return nil, fmt.Errorf("audit key file %s is accessible by group or others (mode %v); chmod 600 it", file, st.Mode().Perm())
 	}
 	data, err := io.ReadAll(f)
@@ -255,7 +255,7 @@ func (l *Log) writeHead() error {
 	if err == nil {
 		tmp := headPath(l.path) + ".tmp"
 		if err = os.WriteFile(tmp, append(data, '\n'), 0o600); err == nil {
-			err = os.Rename(tmp, headPath(l.path))
+			err = paths.Replace(tmp, headPath(l.path))
 		}
 	}
 	if err != nil {

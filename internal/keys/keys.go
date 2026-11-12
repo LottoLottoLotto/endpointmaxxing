@@ -160,7 +160,7 @@ func (f *File) save() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, Path())
+	return paths.Replace(tmp, Path())
 }
 
 func lockPath() string { return filepath.Join(paths.Config(), ".keys.lock") }

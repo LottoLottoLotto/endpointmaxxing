@@ -7,6 +7,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
 
 // Builtin engines may ship files (e.g. the server a container runs) in assets/<id>/.
@@ -46,6 +48,6 @@ func SyncAssets(id, dir string) error {
 		if err := os.WriteFile(tmp, data, 0o644); err != nil {
 			return err
 		}
-		return os.Rename(tmp, dst)
+		return paths.Replace(tmp, dst)
 	})
 }

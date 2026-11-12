@@ -1,12 +1,12 @@
 // Package lock serializes read-modify-write cycles across substrate processes
-// (CLI invocations, the gateway, MCP sessions) with advisory flock(2) locks.
+// (CLI invocations, the gateway, MCP sessions) with advisory whole-file locks:
+// flock(2) on Unix, LockFileEx on Windows. A lock lives as long as the open file.
 package lock
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // With holds an exclusive lock on path (created if absent) while fn runs.
@@ -19,15 +19,12 @@ func With(path string, fn func() error) error {
 		return err
 	}
 	defer f.Close()
-	for {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
-		if err != syscall.EINTR {
-			break
-		}
-	}
-	if err != nil {
+	if err := lockFile(f, true); err != nil {
 		return fmt.Errorf("lock %s: %w", path, err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	defer Unlock(f)
 	return fn()
 }
+
+// Try takes an exclusive lock on f without waiting; an error means another process holds it.
+func Try(f *os.File) error { return lockFile(f, false) }

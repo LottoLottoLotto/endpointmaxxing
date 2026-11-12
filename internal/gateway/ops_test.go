@@ -182,6 +182,7 @@ func TestRequestIDsAreGeneratedByTheGateway(t *testing.T) {
 	if ids[0] == ids[1] {
 		t.Fatalf("both requests got id %s", ids[0])
 	}
+	srv.Close() // a handler records its request after the client has the response: wait for both
 	g.Close()
 	rows := requestsOf(t, g.App, store.Filter{ID: "client-chosen"})
 	if len(rows) != 2 || rows[0].ClientRequestID != "client-chosen" || rows[1].ClientRequestID != "client-chosen" {

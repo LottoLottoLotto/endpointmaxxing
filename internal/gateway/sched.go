@@ -13,6 +13,7 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/config"
 	"github.com/LottoLottoLotto/substrate/internal/errs"
 	"github.com/LottoLottoLotto/substrate/internal/gpu"
+	"github.com/LottoLottoLotto/substrate/internal/proc"
 	"github.com/LottoLottoLotto/substrate/internal/runtime"
 	"github.com/LottoLottoLotto/substrate/internal/spec"
 	"github.com/LottoLottoLotto/substrate/internal/store"
@@ -727,9 +728,9 @@ func (g *Gateway) sample() {
 		if !in.Alive() {
 			continue
 		}
-		pids := runtime.SessionPIDs(in.PID)
+		pids := proc.Members(in.PID)
 		s := store.InstanceSample{TS: now, Instance: in.ID, Engine: in.Engine, Model: in.Name,
-			RSSMiB: runtime.RSSMiB(pids), Processes: int64(len(pids))}
+			RSSMiB: proc.RSSMiB(pids), Processes: int64(len(pids))}
 		for _, m := range usage.Of(pids) {
 			s.GPUMemMiB += m
 		}

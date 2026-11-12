@@ -14,8 +14,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/LottoLottoLotto/substrate/internal/lock"
 )
 
 // Config locates the lock files and tt-smi.
@@ -80,10 +81,10 @@ func (c Config) Held(n int) bool {
 		return false
 	}
 	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lock.Try(f); err != nil {
 		return true
 	}
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	lock.Unlock(f)
 	return false
 }
 
@@ -119,7 +120,7 @@ func (c Config) Acquire(chips []int) ([]*os.File, error) {
 			release()
 			return nil, err
 		}
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if err := lock.Try(f); err != nil {
 			f.Close()
 			release()
 			return nil, fmt.Errorf("chip %d: lock %s is held by another job: %w", n, c.LockPath(n), ErrBusy)
