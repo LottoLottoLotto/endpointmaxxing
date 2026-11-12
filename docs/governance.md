@@ -1,0 +1,159 @@
+# Governance: policy, audit and data protection
+
+[← README](../README.md) · [Documentation index](../README.md#documentation)
+
+## Prompt policy, classification and errors
+
+Every request the gateway proxies is inspected before it reaches an engine.
+The inspection is local and rule-based: no prompt leaves the machine, and no
+model is involved.
+
+- **Policy flags.** `policy.rules` match the prompt (system, user, assistant
+  and tool text, from any API) against built-in detectors, keywords (whole
+  words, case-insensitive) or RE2 patterns. Each match is recorded on the
+  request with its rule, detector, severity, count and a redacted sample
+  (`AK****************LE`); the matched text itself is never stored, unless
+  `logging.flagged_bodies` keeps flagged bodies for review.
+- **Blocking.** A rule with `action: block` refuses the request with 400 and
+  `error_kind` `policy_blocked`. The error names the rule, not the matched
+  text, and the engine never sees the request.
+- **Exceptions.** `allow` (per rule, or `policy.allow` for every rule)
+  ignores individual matches that contain an allowed keyword or match an
+  allowed pattern: test card numbers, the company's own e-mail domain.
+  `except_models` and `except_clients` exempt models or API keys from a rule.
+  `unless` skips a rule for prompts containing a term; whoever writes the
+  prompt controls that, so use it against false positives, never to exempt
+  users from a block (use `except_clients` for that).
+- **Categories.** The last user turn is labelled with a task category
+  (`coding`, `math`, `translation`, `summarization`, `data_analysis`,
+  `writing`, `extraction`, `reasoning`, `question_answering`, else
+  `general`) by keyword and pattern scores. `classify.categories` replaces
+  the built-in set.
+- **Error kinds.** Every failure gets an `error_kind`: `auth_failed`,
+  `forbidden`, `rate_limited`, `budget_exceeded`, `policy_blocked`, `bad_request`,
+  `model_not_found`, `no_capacity`, `engine_start_failed`,
+  `engine_unreachable`, `upstream_timeout`, `engine_error`,
+  `engine_rejected` or `client_disconnected` (`substrate errors --kinds`).
+  Refused API keys are recorded too, with the caller's address.
+- **Audit log.** `logging.audit_file` appends one JSON line per request,
+  refused key, administrative change and alert (`type` `request`,
+  `access_denied`, `admin` or the alert kind; no bodies) for a SIEM or log
+  shipper. Lines are hash-chained and the file rotates itself (see
+  [Data protection](#data-protection)); it is also reopened when an outside
+  tool moves it away.
+
+The defaults flag credentials (`secrets`, high), card, IBAN and social
+security numbers (`financial`, high), e-mail addresses and phone numbers
+(`contact_info`, low) and prompt-injection phrasing (`prompt_injection`,
+medium), and block nothing. Rule and category changes apply within seconds
+(see [Configuration reload](gateway.md#configuration-reload)).
+
+```yaml
+policy:
+    enabled: true
+    scan_max_bytes: 1048576          # prompt text scanned per request
+    allow:                           # matches every rule ignores
+        patterns: ['@mycorp\.com$']
+    rules:
+        - name: secrets
+          severity: high              # low, medium, high, critical
+          detectors: [api_key, aws_access_key, private_key, jwt, password_assignment]
+        - name: codenames
+          action: block               # flag (default) or block
+          severity: critical
+          keywords: ["Project Falcon"]
+          patterns: ['\bFALCON-\d{4}\b']
+          models: [qwen3.8-27b-tt]    # optional scope: models, clients, apis (exact names)
+          except_clients: [legal-team]
+        - name: financial
+          detectors: [credit_card, iban]
+          allow:
+              keywords: ["4111 1111 1111 1111"]   # test card
+          unless:
+              keywords: ["PCI training"]
+classify:
+    enabled: true
+    default: general
+    categories:                       # optional; replaces the built-in set
+        - name: legal
+          keywords: [contract, liability, NDA]
+logging:
+    flagged_bodies: false
+    audit_file: audit.jsonl           # relative to ~/.local/state/substrate
+```
+
+`substrate policy show` lists the rules, categories and detectors.
+`substrate policy test "text"` (or `--file`, `--body request.json`) shows
+what a prompt would be labelled and flagged with, without sending it.
+Requests recorded before this feature have no category or flags, and their
+failures are reported as `unclassified`.
+
+## Data protection
+
+- **Private files.** The config and state directories are `0700`, and keys,
+  config, the usage database (with its WAL), the audit file and engine logs
+  are `0600`. Directories and files left wider by an older version are
+  tightened on the next run; `doctor` reports anything it could not fix.
+- **Deletion leaves no copy.** The usage database runs with
+  `secure_delete`, so pruned or erased rows are overwritten, and the WAL is
+  truncated after every prune or erasure.
+- **Retention.** `logging.retention_days` prunes usage records (requests,
+  bodies, lifecycle events, samples) daily; `logging.audit_retention_days`
+  separately prunes the admin trail and rotated audit files, so the record of
+  who changed what can outlive usage data. Both default to 0 (keep
+  everything); typical policies are 30-90 days of usage and a year or more of
+  audit. `doctor` warns when audit retention is the shorter one.
+- **Erasure.** `substrate prune --client NAME` (or `DELETE
+  /substrate/v1/clients/{name}/data`, admin) deletes all of one client's
+  request records and bodies. The erasure itself is recorded in the admin
+  trail; the audit file keeps its lines, as the tamper-evident record.
+- **Tamper-evident audit file.** Each line carries `prev`, the SHA-256 of
+  the line before it, across rotated files. `substrate audit verify` (and
+  `doctor`) finds an edited, inserted, removed or reordered line; lines from
+  before chaining are reported and anchor the chain. A change to the very
+  last line shows once the next line is written, so ship the file (or the
+  `admin` webhook) to a SIEM for an off-host copy. The file rotates at
+  `logging.audit_max_mb` (default 100) to `audit-<UTC time>.jsonl`.
+
+`usage` also reports average TTFT, average duration, and decode speed in
+tokens per second. Decode speed is completion tokens divided by generation
+time (total time minus TTFT), over metered streams. `--csv` prints any table
+as CSV; `report --csv` is one table with a `SECTION` column and raw numbers.
+`doctor` also checks the setup: plain HTTP on a public address, public
+metrics, prompt storage without retention, keys without expiry, expiring or
+unused for 90 days, keys in undefined teams, many admin keys, budgets
+without prices and aliases to unregistered models. It lists registered
+models whose files no longer exist (`/v1/models` marks them
+`source_missing`, and the admin UI offers no Start for them).
+
+Only traffic that passes through `substrate serve` or `substrate chat` is
+metered. A client that calls an engine's port directly bypasses the meter.
+GPU and memory samples are taken only while the gateway runs.
+
+## Alerts and the admin trail
+
+```yaml
+alerts:
+    webhooks:
+        - url: https://hooks.slack.com/services/T000/B000/XXXX
+          format: text                     # {"text": ...}: Slack, Teams, Mattermost, Google Chat
+          kinds: [budget_alert, engine_exited, key_expiring]
+        - url: https://siem.example.com/ingest
+          headers: {Authorization: Bearer ...}
+          kinds: [admin]                   # json: {kind, detail, actor, time, host}
+```
+
+- **Kinds:** `budget_alert`, `config_reload_failed`, `key_expiring` (keys
+  expiring within 7 days or expired in the last 7, once a day per key),
+  `engine_exited`, `engine_start_failed` and `admin`; no `kinds` means all.
+  Deliveries time out after 5 seconds and are retried once; failures are
+  logged with the URL's path (its secret) removed.
+- **Admin trail:** every administrative change is recorded as an `admin`
+  event (`substrate events`), an audit-log line (`type` `admin`) and an
+  `admin` webhook, with who made it: `key add/set/rotate/disable/enable/rm`,
+  `team set/rm`, `price set/rm`, `alias set/rm`, `model add/rm`, `engine set`
+  (actor: `$SUBSTRATE_ACTOR`, else the OS user), and the management API's
+  `ensure`, `stop` and `reload` (actor: the API key). Edits to `config.yaml`
+  itself show up as `config_reloaded` events naming the changed sections.
+- **Request ids:** the engine receives the gateway's request id as
+  `X-Request-Id`, so engine logs can be matched to `substrate requests --id`.

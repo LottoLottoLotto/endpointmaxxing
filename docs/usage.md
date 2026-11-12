@@ -1,0 +1,57 @@
+# Usage data
+
+[← README](../README.md) · [Documentation index](../README.md#documentation)
+
+Everything is stored in `~/.local/state/substrate/usage.db`, an SQLite
+database in WAL mode. You can query it directly with any SQLite client.
+
+| Table | One row per | Contents |
+| --- | --- | --- |
+| `requests` | gateway request, `substrate chat` request, or refused API key | model, instance, engine, API, stream, status, error, error kind, client, team, user agent, remote address, prompt/completion/cached/reasoning tokens, usage source, finish reason, autostart, queue ms (wait for a ready instance, including autostart), TTFT ms, duration ms, bytes in and out, prompt category, policy flags (JSON) and their highest severity, cost |
+| `bodies` | request, when `logging.bodies` is on (or `logging.flagged_bodies` and the request was flagged) | request and response bodies (capped at `body_max_bytes`) |
+| `events` | lifecycle change, gateway event or admin change | `start` (redacted argv), `ready` (load time), `start_failed`, `stop` (uptime), `exited` (crash, with the log tail and the number of orphaned workers killed), `budget_alert`, `key_expiring`, `config_reloaded` (changed sections), `config_reload_failed`, `admin` (who changed what) |
+| `gpu_samples` | GPU per sample | memory used/total, utilization, power |
+| `instance_samples` | instance per sample | GPU memory and RSS summed over the engine's whole process session, process count |
+| `benchmarks` | `substrate bench run` level | model, engine, instance, via, concurrency, prompt, tok/s out, prefill and total, TTFT, prompt/output tokens, payload path, status, LocalMaxxing verdict and issues, submission id |
+
+## How tokens are counted
+
+The `usage_source` column says where each count came from:
+
+- **`usage`**: the engine's own usage report. This covers OpenAI chat and
+  completions (JSON and streams), the Responses API, Anthropic Messages
+  (input tokens from `message_start`, output tokens from `message_delta`) and
+  embeddings.
+- **`timings`**: llama.cpp's `timings` block, used when the engine sends no
+  usage report.
+- **`chunks`**: an estimate from the number of streamed content events, used
+  when the engine reports nothing.
+- An empty `usage_source` means the request was not metered. These requests
+  appear in the `UNMETERED` column of `substrate usage`.
+
+For streamed chat and completions requests, the gateway adds
+`stream_options.include_usage` to the request, so engines send a final usage
+chunk and streamed tokens are counted exactly. Turn this off with
+`gateway.stream_usage: false`. Clients can tag their traffic with an
+`X-Substrate-Client` header (or the request's `user` field) to attribute
+usage.
+
+## Commands
+
+```sh
+substrate usage --by model|engine|instance|client|team|api|category|error_kind|flag_severity|status|day|hour|total --since 24h
+substrate requests --since 1h --model qwen3-0.6b       # recent requests
+substrate requests --flagged --min-severity high       # flagged requests (also --rule, --category, --errors, --error-kind)
+substrate requests --id req_...                          # one request, with bodies if captured
+substrate report --since 7d                              # totals, models, clients, categories, flags, errors
+substrate flagged --since 7d                             # policy matches by rule and detector
+substrate errors --since 7d                              # failures by kind (`--kinds` lists them)
+substrate events --since 7d                              # starts, load times, crashes (--kind admin for the admin trail)
+substrate samples [--gpu] --since 1h                     # memory over time
+substrate prune --older-than 90d
+substrate --csv report --since 30d > chargeback.csv       # any table as CSV (usage, requests, team list, ...)
+substrate doctor                                         # includes security findings
+substrate prune --older-than 90d --audit-older-than 365d  # usage and admin trail have separate cutoffs
+substrate prune --client alice                          # erase one client's request records and bodies
+substrate audit verify                                   # check the audit file's hash chain (exit 6 if broken)
+```
