@@ -727,7 +727,7 @@ func cmdServe() *command {
 			noAuto := fs.Bool("no-autostart", false, "never start models on demand")
 			placementMode := fs.String("placement", "", "memory, exclusive or off (default: config gateway.placement)")
 			keyFile := fs.String("api-key-file", "", "file holding the master (admin) key, mode 0600 (default: $SUBSTRATE_API_KEY); never pass a key as an argument, other users can read the command line")
-			insecure := fs.Bool("insecure", false, "allow a non-loopback address without any API key")
+			insecure := fs.Bool("insecure", false, "allow open mode (no API keys: every caller is admin) on a non-loopback address, for requests addressed to any host name")
 			tlsCert := fs.String("tls-cert", "", "serve HTTPS with this PEM certificate (default: config gateway.tls.cert)")
 			tlsKey := fs.String("tls-key", "", "PEM private key for --tls-cert (default: config gateway.tls.key)")
 			tlsCA := fs.String("tls-client-ca", "", "require client certificates signed by these PEM CAs (mutual TLS)")
@@ -790,6 +790,9 @@ func cmdServe() *command {
 				gw := gateway.New(a, logger)
 				defer gw.Close()
 				gw.NoAutostart, gw.APIKey = *noAuto, key
+				// Whether the gateway may run open is decided once, here: removing the last key later must not
+				// turn a gateway that other machines reach into one where everyone is admin.
+				gw.AllowOpen, gw.Insecure = isLoopback(*host) || *insecure, *insecure
 
 				ln, err := net.Listen("tcp", net.JoinHostPort(*host, fmt.Sprint(*port)))
 				if err != nil {

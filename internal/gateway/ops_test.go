@@ -53,6 +53,9 @@ func do(t *testing.T, method, url, key, body string) *http.Response {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +151,44 @@ teams:
 	retry, _ = strconv.Atoi(over.Header.Get("Retry-After"))
 	if over.StatusCode != 429 || retry < 1 || retry > 60 || over.Header.Get("x-ratelimit-remaining-requests") != "0" {
 		t.Fatalf("rpm refusal: %d Retry-After %q remaining %q", over.StatusCode, over.Header.Get("Retry-After"), over.Header.Get("x-ratelimit-remaining-requests"))
+	}
+}
+
+// The usage record's id is the gateway's own: a client repeating its X-Request-Id loses no record, and
+// its id is kept beside the gateway's.
+func TestRequestIDsAreGeneratedByTheGateway(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	backend := okBackend()
+	defer backend.Close()
+	instance(t, "m.fake", "m", backend.URL)
+	g, srv := newGateway(t)
+
+	var ids []string
+	for range 2 {
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions", strings.NewReader(chatBody("m")))
+		req.Header.Set("X-Request-Id", "client-chosen")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		id := resp.Header.Get("X-Substrate-Request-Id")
+		if resp.StatusCode != 200 || id == "" || id == "client-chosen" || resp.Header.Get("X-Request-Id") != id {
+			t.Fatalf("status %d, X-Substrate-Request-Id %q, X-Request-Id %q", resp.StatusCode, id, resp.Header.Get("X-Request-Id"))
+		}
+		ids = append(ids, id)
+	}
+	if ids[0] == ids[1] {
+		t.Fatalf("both requests got id %s", ids[0])
+	}
+	g.Close()
+	rows := requestsOf(t, g.App, store.Filter{ID: "client-chosen"})
+	if len(rows) != 2 || rows[0].ClientRequestID != "client-chosen" || rows[1].ClientRequestID != "client-chosen" {
+		t.Fatalf("records by the client's id: %+v", rows)
+	}
+	if rows := requestsOf(t, g.App, store.Filter{ID: ids[0]}); len(rows) != 1 || rows[0].ID != ids[0] {
+		t.Fatalf("record by the gateway's id: %+v", rows)
 	}
 }
 

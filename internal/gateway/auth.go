@@ -25,6 +25,7 @@ type principal struct {
 	name string // key name; "admin" for the master key; "" when the gateway is open
 	role string
 	key  *keys.Key // nil for the master key and open mode
+	open bool      // open mode: no master key and no keys, so nothing was checked
 }
 
 // team is the key's team in cfg; nil without a key, without a team, or for a team not configured.
@@ -173,7 +174,10 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 		return &principal{name: k.Name, role: k.Role, key: k}, nil
 	}
 	if g.APIKey == "" && len(byHash) == 0 {
-		return &principal{role: keys.RoleAdmin}, nil // open (loopback-only, enforced by serve)
+		if !g.AllowOpen { // decided when serve started: removing the last key must not open a networked gateway
+			return nil, errs.New(errs.Forbidden, "no API keys exist and this gateway does not run open; create one (substrate key add) or restart serve with a master key")
+		}
+		return &principal{role: keys.RoleAdmin, open: true}, nil
 	}
 	return nil, errs.New(errs.Forbidden, "invalid API key")
 }
@@ -200,23 +204,42 @@ func (g *Gateway) authed(level int, h http.HandlerFunc) http.HandlerFunc {
 			g.logDenied(r, client, status, err.Error())
 			return
 		}
+		deny := func(status int, typ, msg string) {
+			apiError(w, status, typ, msg)
+			g.logDenied(r, p.name, status, msg)
+		}
+		if p.open {
+			if msg := g.openModeRefusal(r); msg != "" {
+				deny(http.StatusForbidden, "permission_error", msg)
+				return
+			}
+		}
 		if !permits(level, p.role) {
-			msg := fmt.Sprintf("key %s (role %s) may not use %s", p.name, p.role, r.URL.Path)
-			apiError(w, http.StatusForbidden, "permission_error", msg)
-			g.logDenied(r, p.name, http.StatusForbidden, msg)
+			deny(http.StatusForbidden, "permission_error", fmt.Sprintf("key %s (role %s) may not use %s", p.name, p.role, clip(r.URL.Path, maxStoredField)))
+			return
+		}
+		if needsJSON(r) {
+			deny(http.StatusUnsupportedMediaType, "invalid_request_error", "management and settings calls take a JSON body (Content-Type: application/json)")
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	}
 }
 
-// logDenied records a request refused before reaching its handler (bad, expired or disabled key, or a role
-// too low for the route); client is the key's name when it is known.
+// logDenied records a request refused before reaching its handler (bad, expired or disabled key, a role
+// too low for the route, or a request open mode does not answer); client is the key's name when it is known.
+// Refused keys (401) cost an attacker nothing to produce: only maxStoredDenials a minute are stored, the
+// rest are counted in substrate_auth_denials_unstored_total.
 func (g *Gateway) logDenied(r *http.Request, client string, status int, msg string) {
 	now := time.Now()
+	if status == http.StatusUnauthorized && !g.denials.allow(now) {
+		g.metrics.denialUnstored()
+		return
+	}
 	api, _ := apiForPath(r.URL.Path)
-	rec := &store.Request{ID: newID(), TS: now.UnixMilli(), API: api, Path: r.URL.Path, UserAgent: r.UserAgent(),
-		Remote: clientIP(r), Client: client, Status: status, Error: msg, ErrorKind: gatewayErrorKind(status, nil)}
+	rec := &store.Request{ID: newID(), TS: now.UnixMilli(), API: api, Path: clip(r.URL.Path, maxStoredField),
+		UserAgent: clip(r.UserAgent(), maxStoredField), Remote: clientIP(r), Client: client, Status: status,
+		Error: clip(msg, maxStoredError), ErrorKind: gatewayErrorKind(status, nil)}
 	if status == http.StatusInternalServerError {
 		rec.ErrorKind = "gateway_error"
 	}

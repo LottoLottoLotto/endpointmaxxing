@@ -234,7 +234,7 @@ func (g *Gateway) mgmtPolicyTest(w http.ResponseWriter, r *http.Request) {
 		Client string          `json:"client"`
 		API    string          `json:"api"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(&req); err != nil || (req.Text == "" && len(req.Body) == 0) {
+	if err := json.NewDecoder(io.LimitReader(r.Body, bodyLimit(g.gw()))).Decode(&req); err != nil || (req.Text == "" && len(req.Body) == 0) {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", `body must be {"text": "..."} or {"body": {<chat request>}}, optionally with "model", "client", "api"`)
 		return
 	}
