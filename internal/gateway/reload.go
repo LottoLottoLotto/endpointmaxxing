@@ -19,6 +19,9 @@ type live struct {
 	cfg     *config.Config
 	inspect *Inspector
 	audit   *audit.Log
+	// auditStale: cfg's audit writer could not be opened (its key file was refused), so audit is still the
+	// one of the config before; the next reload tries again.
+	auditStale bool
 }
 
 // reloadState tracks the current live snapshot and the last reload outcome.
@@ -62,11 +65,18 @@ func (g *Gateway) live() *live {
 	default:
 		g.Log.Printf("policy/classify disabled: %v", err)
 	}
-	if cur != nil && cur.audit != nil && cur.audit.PathOf() == audit.Path(c.Logging.AuditFile) &&
-		cur.cfg.Logging.AuditMaxMB == c.Logging.AuditMaxMB {
+	if cur != nil && cur.audit != nil && !cur.auditStale && cur.audit.PathOf() == audit.Path(c.Logging.AuditFile) &&
+		cur.cfg.Logging.AuditMaxMB == c.Logging.AuditMaxMB && cur.cfg.Gateway.AuditKeyFile == c.Gateway.AuditKeyFile {
 		next.audit = cur.audit
+	} else if l, err := audit.Open(audit.Path(c.Logging.AuditFile), c.Logging.AuditMaxMB, audit.KeyPath(c.Gateway.AuditKeyFile), g.Log.Printf); err != nil {
+		// serve checks the key before it starts the gateway, so this is a reload: better the previous writer than none
+		g.Log.Printf("audit log: %v; the audit file is written as before this configuration", err)
+		next.auditStale = true
+		if cur != nil {
+			next.audit = cur.audit
+		}
 	} else {
-		next.audit = audit.Open(audit.Path(c.Logging.AuditFile), c.Logging.AuditMaxMB, g.Log.Printf)
+		next.audit = l
 		if cur != nil {
 			cur.audit.Close() // a late write from a request on the old snapshot reopens the file; harmless
 		}

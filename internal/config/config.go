@@ -116,6 +116,11 @@ type Gateway struct {
 	// MaxBufferedMB bounds the request bodies held in memory by all in-flight requests together, in MiB;
 	// a body that would exceed it is refused with 503 and Retry-After.
 	MaxBufferedMB int `yaml:"max_buffered_mb" json:"max_buffered_mb"`
+	// AuditKeyFile names a file holding a secret of at least 32 bytes, accessible by its owner only (relative
+	// paths are under the config directory). With it the audit file's chain is keyed (HMAC-SHA256): a file
+	// rewritten without the secret does not verify (substrate audit verify). The gateway refuses to start
+	// when the file is missing, accessible by group or others, or too short.
+	AuditKeyFile string `yaml:"audit_key_file,omitempty" json:"audit_key_file,omitempty"`
 }
 
 // MaxBodyMBLimit is the highest gateway.max_body_mb.

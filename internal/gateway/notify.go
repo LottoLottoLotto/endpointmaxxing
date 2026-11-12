@@ -140,7 +140,11 @@ func RecordAdmin(a *app.App, actor, detail string) {
 			}
 		}
 	}
-	if l := audit.Open(audit.Path(cfg.Logging.AuditFile), cfg.Logging.AuditMaxMB, logf); l != nil {
+	l, err := audit.Open(audit.Path(cfg.Logging.AuditFile), cfg.Logging.AuditMaxMB, audit.KeyPath(cfg.Gateway.AuditKeyFile), logf)
+	if err != nil {
+		logf("audit log: %v; this change is not in the audit file", err)
+	}
+	if l != nil {
 		l.Write(auditEvent{Type: "admin", Time: time.Now().UTC().Format(time.RFC3339Nano), Actor: actor, Detail: detail})
 		l.Close()
 	}
