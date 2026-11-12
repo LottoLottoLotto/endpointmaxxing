@@ -30,6 +30,9 @@ type metrics struct {
 	cost      map[[2]string]float64 // model, team
 	gpus      []gpu.GPU
 	instances []store.InstanceSample
+	// unrouted holds the model names of requests that never reached an engine. Clients choose those names,
+	// so only the first maxUnroutedModels get their own series; later ones are counted as "other".
+	unrouted map[string]struct{}
 
 	// unstoredDenials counts refused-key (401) requests over the stored-per-minute limit.
 	unstoredDenials int64
@@ -64,9 +67,26 @@ func newMetrics() *metrics {
 		errorKind: map[[2]string]int64{}, cost: map[[2]string]float64{}}
 }
 
+// maxUnroutedModels bounds the metric series a client can create by asking for models that do not exist.
+const maxUnroutedModels = 200
+
 func (m *metrics) observe(r *store.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if r.Engine == "" && r.Model != "" {
+		if _, seen := m.unrouted[r.Model]; !seen {
+			if len(m.unrouted) >= maxUnroutedModels {
+				folded := *r
+				folded.Model = "other"
+				r = &folded
+			} else {
+				if m.unrouted == nil {
+					m.unrouted = map[string]struct{}{}
+				}
+				m.unrouted[r.Model] = struct{}{}
+			}
+		}
+	}
 	m.requests[[4]string{r.Model, r.Engine, r.API, fmt.Sprint(r.Status)}]++
 	for _, f := range r.Flags {
 		m.flags[[3]string{f.Rule, f.Severity, f.Action}]++

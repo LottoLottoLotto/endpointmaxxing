@@ -421,7 +421,11 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	g.auth.teamTokenQuota(team, &q)
 	setRateLimitHeaders(w.Header(), q)
 
+	// A client that declares a body and then stalls would hold its share of the buffer budget: bound the read.
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
 	body, held, err := g.readBody(r, bodyLimit(&lv.cfg.Gateway), int64(lv.cfg.Gateway.MaxBufferedMB)<<20)
+	_ = rc.SetReadDeadline(time.Time{})
 	defer g.buffered.release(held) // the body stays in memory until the request is done (failover resends it)
 	rec.ReqBytes = int64(len(body))
 	var tooLarge errBodyTooLarge

@@ -107,6 +107,9 @@ var errBufferFull = errs.New(errs.Capacity, "the gateway is holding too many req
 // bodyStep is how much of the budget a body of unknown length takes at a time.
 const bodyStep = 64 << 10
 
+// bodyReadTimeout bounds how long a client may take to send its request body.
+const bodyReadTimeout = 5 * time.Minute
+
 // readBody buffers r's body, of at most limit bytes, within the gateway's memory budget. held is what the
 // body holds of the budget, whether or not reading succeeded: the caller releases it when the request is done.
 func (g *Gateway) readBody(r *http.Request, limit, budget int64) (body []byte, held int64, err error) {
