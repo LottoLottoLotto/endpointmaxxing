@@ -264,7 +264,9 @@ func securityFindings(a *app.App) []securityFinding {
 			c.Logging.AuditRetentionDays, c.Logging.RetentionDays)
 	}
 	if p := audit.Path(c.Logging.AuditFile); p != "" {
-		if r, err := audit.Verify(p); err != nil {
+		if key, err := auditKey(c, ""); err != nil {
+			add("audit_key", "%v", err)
+		} else if r, err := audit.Verify(p, audit.Check{Key: key}); err != nil {
 			add("audit_chain", "audit file %s: %v", p, err)
 		} else if !r.OK {
 			add("audit_chain_broken", "audit file: %s (substrate audit verify)", r.Problem)

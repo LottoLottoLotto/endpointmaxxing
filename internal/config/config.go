@@ -111,6 +111,11 @@ type Gateway struct {
 	// DisableSettingsAPI refuses changes to keys, teams, prices, aliases and models through the management
 	// API (they are then made with the CLI on the gateway host); reads stay available.
 	DisableSettingsAPI bool `yaml:"disable_settings_api,omitempty" json:"disable_settings_api,omitempty"`
+	// AuditKeyFile names a file holding a secret of at least 32 bytes, accessible by its owner only (relative
+	// paths are under the config directory). With it the audit file's chain is keyed (HMAC-SHA256): a file
+	// rewritten without the secret does not verify (substrate audit verify). The gateway refuses to start
+	// when the file is missing, accessible by group or others, or too short.
+	AuditKeyFile string `yaml:"audit_key_file,omitempty" json:"audit_key_file,omitempty"`
 }
 
 // Placement modes.

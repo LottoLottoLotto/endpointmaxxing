@@ -787,6 +787,9 @@ func cmdServe() *command {
 				} else if !isLoopback(*host) {
 					logger.Printf("warning: serving plain HTTP on %s: prompts and API keys cross the network unencrypted (set gateway.tls or --tls-cert/--tls-key)", *host)
 				}
+				if _, err := auditKey(a.Config(), ""); err != nil {
+					return err
+				}
 				gw := gateway.New(a, logger)
 				defer gw.Close()
 				gw.NoAutostart, gw.APIKey = *noAuto, key
