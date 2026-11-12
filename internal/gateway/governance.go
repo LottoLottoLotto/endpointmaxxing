@@ -69,11 +69,29 @@ func maxSeverity(flags []policy.Flag) string {
 	return policy.Severities[best]
 }
 
-// errPolicyBlocked refuses a request that matched a blocking rule; the message names the rules, never the matched text.
-type errPolicyBlocked struct{ rules []string }
+// errPolicyBlocked refuses a request that matched a blocking rule, or (tooLarge) one too long to be scanned
+// whole where blocking rules apply; the message names the rules, never the matched text.
+type errPolicyBlocked struct {
+	rules    []string
+	tooLarge bool
+}
 
 func (e errPolicyBlocked) Error() string {
+	if e.tooLarge {
+		return "request too large to inspect: its text exceeds policy.scan_max_bytes and blocking rules apply (rules: " + strings.Join(e.rules, ", ") + ")"
+	}
 	return "request blocked by content policy (rules: " + strings.Join(e.rules, ", ") + ")"
+}
+
+// policyBlocked is the refusal for a request whose flags block it.
+func policyBlocked(flags []policy.Flag) errPolicyBlocked {
+	e := errPolicyBlocked{rules: blockingRules(flags), tooLarge: true}
+	for _, f := range flags {
+		if f.Action == policy.ActionBlock && f.Detector != policy.DetectorTooLarge {
+			e.tooLarge = false // a rule matched in the part that was scanned: that is the reason
+		}
+	}
+	return e
 }
 
 func blockingRules(flags []policy.Flag) []string {

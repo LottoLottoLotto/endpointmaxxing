@@ -111,7 +111,15 @@ type Gateway struct {
 	// DisableSettingsAPI refuses changes to keys, teams, prices, aliases and models through the management
 	// API (they are then made with the CLI on the gateway host); reads stay available.
 	DisableSettingsAPI bool `yaml:"disable_settings_api,omitempty" json:"disable_settings_api,omitempty"`
+	// MaxBodyMB bounds one inference request body in MiB (1-256); larger bodies are refused with 413.
+	MaxBodyMB int `yaml:"max_body_mb" json:"max_body_mb"`
+	// MaxBufferedMB bounds the request bodies held in memory by all in-flight requests together, in MiB;
+	// a body that would exceed it is refused with 503 and Retry-After.
+	MaxBufferedMB int `yaml:"max_buffered_mb" json:"max_buffered_mb"`
 }
+
+// MaxBodyMBLimit is the highest gateway.max_body_mb.
+const MaxBodyMBLimit = 256
 
 // Placement modes.
 const (
@@ -168,7 +176,7 @@ func Default() *Config {
 			EvictOwners: []string{"gateway"}, RestartCrashed: true, HealthInterval: spec.Duration(15 * time.Second),
 			MaxQueue: 64, QueueTimeout: spec.Duration(5 * time.Minute),
 			UpstreamHeaderTimeout: spec.Duration(10 * time.Minute), UpstreamIdleTimeout: spec.Duration(5 * time.Minute),
-			StreamUsage: true,
+			StreamUsage: true, MaxBodyMB: 64, MaxBufferedMB: 1024,
 			Swap: Swap{MinResidency: spec.Duration(30 * time.Second), MaxResidency: spec.Duration(10 * time.Minute),
 				WaitTimeout: spec.Duration(15 * time.Minute)}},
 		Tenstorrent: Tenstorrent{Lock: "/var/tmp/tenstorrent/chip-{n}.lock", TTSmi: "tt-smi"},
@@ -233,6 +241,12 @@ func (c *Config) validate() error {
 	}
 	if c.Gateway.MaxConcurrency < 0 || c.Gateway.MaxQueue < 0 {
 		return fmt.Errorf("%s: gateway.max_concurrency and max_queue must be >= 0", ConfigPath())
+	}
+	if c.Gateway.MaxBodyMB < 1 || c.Gateway.MaxBodyMB > MaxBodyMBLimit {
+		return fmt.Errorf("%s: gateway.max_body_mb must be between 1 and %d", ConfigPath(), MaxBodyMBLimit)
+	}
+	if c.Gateway.MaxBufferedMB < c.Gateway.MaxBodyMB {
+		return fmt.Errorf("%s: gateway.max_buffered_mb must be at least gateway.max_body_mb (%d)", ConfigPath(), c.Gateway.MaxBodyMB)
 	}
 	if !strings.Contains(c.Tenstorrent.Lock, "{n}") {
 		return fmt.Errorf("%s: tenstorrent.lock must contain {n} (the chip index)", ConfigPath())

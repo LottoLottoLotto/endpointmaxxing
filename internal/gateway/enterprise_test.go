@@ -238,6 +238,7 @@ func TestHotReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := New(a, log.New(io.Discard, "", 0))
+	g.AllowOpen = true
 	defer g.Close()
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()

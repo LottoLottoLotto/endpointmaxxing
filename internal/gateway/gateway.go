@@ -35,8 +35,9 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
-// maxBody bounds a buffered request body (images ride inline as base64).
-const maxBody = 256 << 20
+// maxBody is the hard upper bound on a buffered request body (images ride inline as base64);
+// gateway.max_body_mb sets the limit in force.
+const maxBody = config.MaxBodyMBLimit << 20
 
 // Gateway is the HTTP front door.
 type Gateway struct {
@@ -45,7 +46,13 @@ type Gateway struct {
 	NoAutostart bool
 	// APIKey is the master (admin) key; per-client keys live in keys.yaml.
 	APIKey string
-	Log    *log.Logger
+	// AllowOpen permits open mode: with no master key and no keys, every caller is admin. serve decides it
+	// once at start (a loopback listen address, or --insecure); without it a gateway whose last key was
+	// removed answers 401 instead of opening up.
+	AllowOpen bool
+	// Insecure (serve --insecure) lets open-mode requests be addressed to a non-loopback host name.
+	Insecure bool
+	Log      *log.Logger
 
 	transport *http.Transport
 
@@ -70,6 +77,8 @@ type Gateway struct {
 	metrics  *metrics
 	restarts restartBudget
 	reload   reloadState
+	buffered byteBudget  // request bodies in memory, all in-flight requests together
+	denials  denialLimit // stored 401 records this minute
 
 	expiryMu      sync.Mutex
 	expiryAlerted map[string]string // key -> day of its last key_expiring alert
@@ -334,30 +343,28 @@ func newID() string {
 	return "req_" + hex.EncodeToString(b[:])
 }
 
-// injectStreamUsage asks for a final usage chunk on a streamed chat/completions
-// request unless the client already decided.
-func injectStreamUsage(body []byte) ([]byte, bool) {
+// forceStreamUsage asks for a final usage chunk on a streamed chat/completions request, whatever the client
+// asked for: without it streamed tokens are not metered, and quotas and budgets would not count them.
+func forceStreamUsage(body []byte) []byte {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil {
-		return body, false
+		return body
 	}
 	so := map[string]json.RawMessage{}
-	if raw, ok := m["stream_options"]; ok && string(raw) != "null" {
-		if json.Unmarshal(raw, &so) != nil {
-			return body, false
-		}
-		if _, set := so["include_usage"]; set {
-			return body, false
-		}
+	if json.Unmarshal(m["stream_options"], &so) != nil || so == nil { // anything but an object is replaced
+		so = map[string]json.RawMessage{}
+	}
+	if string(so["include_usage"]) == "true" {
+		return body
 	}
 	so["include_usage"] = json.RawMessage("true")
 	raw, _ := json.Marshal(so)
 	m["stream_options"] = raw
 	out, err := json.Marshal(m)
 	if err != nil {
-		return body, false
+		return body
 	}
-	return out, true
+	return out
 }
 
 func clientIP(r *http.Request) string {
@@ -378,12 +385,12 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	api, _ := apiForPath(r.URL.Path)
 	p := principalOf(r)
-	rec := &store.Request{ID: r.Header.Get("X-Request-Id"), TS: start.UnixMilli(), API: api, Path: r.URL.Path,
-		UserAgent: r.UserAgent(), Remote: clientIP(r), Client: p.client(r)}
-	if rec.ID == "" || len(rec.ID) > 128 {
-		rec.ID = newID()
-	}
+	// The record's id is the gateway's own; a client's X-Request-Id (which it may repeat) is kept beside it.
+	rec := &store.Request{ID: newID(), ClientRequestID: clip(r.Header.Get("X-Request-Id"), 128), TS: start.UnixMilli(), API: api,
+		Path: clip(r.URL.Path, maxStoredField), UserAgent: clip(r.UserAgent(), maxStoredField), Remote: clientIP(r),
+		Client: clip(p.client(r), maxStoredField)}
 	w.Header().Set("X-Substrate-Request-Id", rec.ID)
+	w.Header().Set("X-Request-Id", rec.ID)
 	lv := g.live() // this request keeps one config snapshot from here on
 	logging := lv.cfg.Logging
 	if p.key != nil {
@@ -391,53 +398,13 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	fail := func(status int, err error) {
 		apiError(w, status, errType(status, err), err.Error())
-		rec.Status, rec.Error, rec.ErrorKind = status, err.Error(), gatewayErrorKind(status, err)
+		rec.Status, rec.Error, rec.ErrorKind = status, clip(err.Error(), maxStoredError), gatewayErrorKind(status, err)
 		d := time.Since(start).Milliseconds()
 		rec.DurationMS = &d
 		g.logRequest(rec)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
-	if err != nil {
-		fail(http.StatusBadRequest, fmt.Errorf("reading body: %w", err))
-		return
-	}
-	rec.ReqBytes = int64(len(body))
-	if len(body) > maxBody {
-		fail(http.StatusRequestEntityTooLarge, errors.New("request body over 256 MiB"))
-		return
-	}
-	var req struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
-		User   string `json:"user"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		fail(http.StatusBadRequest, fmt.Errorf("body is not JSON: %w", err))
-		return
-	}
-	if target, ok := lv.cfg.Alias(req.Model); ok {
-		w.Header().Set("X-Substrate-Alias", req.Model)
-		body = setJSONField(body, "model", target)
-		req.Model = target
-	}
-	rec.Model, rec.Stream = req.Model, req.Stream
-	if rec.Client == "" {
-		rec.Client = req.User
-	}
-	blocked := lv.inspect.Inspect(rec, body)
-	keepBodies := logging.Bodies || (logging.FlaggedBodies && len(rec.Flags) > 0)
-	if keepBodies {
-		rec.RequestBody, rec.BodyTruncated = capBytes(body, logging.BodyMaxBytes)
-	}
-	if req.Model != "" && !p.allows(req.Model, lv.cfg) {
-		fail(http.StatusForbidden, errs.New(errs.Forbidden, "key %s may not use model %q", p.name, req.Model))
-		return
-	}
-	if blocked {
-		fail(http.StatusBadRequest, errPolicyBlocked{rules: blockingRules(rec.Flags)})
-		return
-	}
+	// What needs no body comes first: a key over its limits never makes the gateway buffer one.
 	q, wait, err := g.auth.admit(p)
 	if err != nil {
 		setRateLimitHeaders(w.Header(), q)
@@ -454,6 +421,58 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	g.auth.teamTokenQuota(team, &q)
 	setRateLimitHeaders(w.Header(), q)
 
+	body, held, err := g.readBody(r, bodyLimit(&lv.cfg.Gateway), int64(lv.cfg.Gateway.MaxBufferedMB)<<20)
+	defer g.buffered.release(held) // the body stays in memory until the request is done (failover resends it)
+	rec.ReqBytes = int64(len(body))
+	var tooLarge errBodyTooLarge
+	switch {
+	case errors.As(err, &tooLarge):
+		fail(http.StatusRequestEntityTooLarge, err)
+		return
+	case errors.Is(err, errBufferFull):
+		w.Header().Set("Retry-After", "1")
+		fail(http.StatusServiceUnavailable, err)
+		return
+	case err != nil:
+		fail(http.StatusBadRequest, fmt.Errorf("reading body: %w", err))
+		return
+	}
+	req, err := parseRequest(body)
+	if err != nil {
+		fail(http.StatusBadRequest, fmt.Errorf("body is not a JSON request: %w", err))
+		return
+	}
+	if target, ok := lv.cfg.Alias(req.Model); ok {
+		w.Header().Set("X-Substrate-Alias", req.Model)
+		body = setJSONField(body, "model", target)
+		req.Model = target
+	}
+	if req.Model == "" {
+		// Model access and policy apply to the model the request reaches: name it before checking them.
+		if req.Model, err = g.soleModel(r.Context(), api); err != nil {
+			fail(statusFor(err), err)
+			return
+		}
+		body = setJSONField(body, "model", req.Model)
+	}
+	rec.Model, rec.Stream = req.Model, req.Stream // policy rules are scoped by the name as sent
+	if rec.Client == "" {
+		rec.Client = clip(req.User, maxStoredField)
+	}
+	blocked := lv.inspect.Inspect(rec, body)
+	rec.Model = modelLabel(req.Model) // until the request is routed the name is only the client's word
+	keepBodies := logging.Bodies || (logging.FlaggedBodies && len(rec.Flags) > 0)
+	if keepBodies {
+		rec.RequestBody, rec.BodyTruncated = capBytes(body, logging.BodyMaxBytes)
+	}
+	if !p.allows(req.Model, lv.cfg) {
+		fail(http.StatusForbidden, errs.New(errs.Forbidden, "key %s may not use model %q", p.name, clip(req.Model, 128)))
+		return
+	}
+	if blocked {
+		fail(http.StatusBadRequest, policyBlocked(rec.Flags))
+		return
+	}
 	cands, started, err := g.pick(r.Context(), req.Model, api)
 	rec.Autostarted = started
 	if err != nil {
@@ -465,9 +484,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		fail(statusFor(err), err)
 		return
 	}
-	if rec.Model == "" {
-		rec.Model = cands[0].Name
-	}
+	rec.Model = req.Model // routed: the name of a model that exists
 	release, err := g.lim.acquire(r.Context(), rec.Model, g.maxConcurrency(rec.Model), g.gw().MaxQueue, time.Duration(g.gw().QueueTimeout))
 	queue := time.Since(start).Milliseconds()
 	rec.QueueMS = &queue
@@ -480,7 +497,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	if g.gw().StreamUsage && req.Stream && (api == "chat" || api == "completions") {
-		body, _ = injectStreamUsage(body)
+		body = forceStreamUsage(body)
 	}
 	keyCap := 0
 	if p.key != nil {
@@ -576,6 +593,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 			proxyErr = err // the caller decides: fail over, or answer 502
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del("X-Request-Id") // the client gets the gateway's id, set already
 			mw.Header().Set("X-Substrate-Instance", in.ID)
 			mw.Header().Set("X-Substrate-Engine", in.Engine)
 			return nil

@@ -72,6 +72,28 @@ func TestScanRedactsScopesAndBlocks(t *testing.T) {
 	}
 }
 
+// Text beyond scan_max_bytes was not inspected: where a blocking rule applies the request is refused.
+func TestScanBlocksTextTooLargeToInspect(t *testing.T) {
+	p, err := Compile(&Config{Enabled: true, ScanMaxBytes: 16, Rules: []Rule{
+		{Name: "tickets", Patterns: []string{`\bJIRA-\d+\b`}},
+		{Name: "codenames", Action: ActionBlock, Keywords: []string{"Project Falcon"}, Models: []string{"external"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("harmless words ", 10)
+	flags, blocked := p.Scan(long, Scope{Model: "external"})
+	if !blocked || len(flags) != 1 || flags[0].Rule != "codenames" || flags[0].Detector != DetectorTooLarge || flags[0].Action != ActionBlock {
+		t.Fatalf("where a blocking rule applies: flags %+v blocked %v", flags, blocked)
+	}
+	if flags, blocked := p.Scan(long, Scope{Model: "internal"}); blocked || len(flags) != 0 {
+		t.Fatalf("where only flagging rules apply: flags %+v blocked %v", flags, blocked)
+	}
+	if flags, blocked := p.Scan("short text", Scope{Model: "external"}); blocked || len(flags) != 0 {
+		t.Fatalf("text within the limit: flags %+v blocked %v", flags, blocked)
+	}
+}
+
 func TestCompileRejectsBadRules(t *testing.T) {
 	for _, r := range []Rule{
 		{Name: "", Detectors: []string{"email"}},
@@ -141,6 +163,31 @@ func TestExtractPromptAcrossAPIs(t *testing.T) {
 		{"completions prompt", `{"prompt":"once upon"}`, "once upon", "once upon"},
 		{"responses items", `{"instructions":"sys","input":[{"role":"user","content":[{"type":"input_text","text":"a"}]}]}`, "sys\na", "a"},
 		{"embeddings list", `{"input":["x","y"]}`, "x\ny", "x\ny"},
+	}
+	for _, c := range cases {
+		p := ExtractPrompt([]byte(c.body))
+		if p.All != c.all || p.Last != c.last {
+			t.Errorf("%s: got all %q last %q, want %q / %q", c.name, p.All, p.Last, c.all, c.last)
+		}
+	}
+}
+
+// Text in tool definitions, tool calls, tool results and rerank requests reaches the rules too.
+func TestExtractPromptCoversToolsAndRerank(t *testing.T) {
+	cases := []struct {
+		name, body, all, last string
+	}{
+		{"openai tools", `{"tools":[{"type":"function","function":{"name":"lookup","description":"find Project Falcon","parameters":{}}}],` +
+			`"messages":[{"role":"user","content":"q"},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"secret plan\"}"}}]},` +
+			`{"role":"tool","tool_call_id":"1","content":"tool says hi"}]}`,
+			"lookup\nfind Project Falcon\nq\nlookup\nq\nsecret plan\ntool says hi", "q"},
+		{"anthropic tools", `{"tools":[{"name":"get_weather","description":"weather for a city","input_schema":{"type":"object"}}],` +
+			`"messages":[{"role":"assistant","content":[{"type":"text","text":"calling"},{"type":"tool_use","id":"t1","name":"get_weather","input":{"city":"Paris"}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"rainy"}]},{"type":"text","text":"thanks"}]}]}`,
+			"get_weather\nweather for a city\ncalling\nget_weather\ncity\nParis\nthanks\nrainy", "thanks"},
+		{"rerank", `{"model":"r","query":"which doc","documents":["doc one",{"text":"doc two"}]}`, "which doc\ndoc one\ndoc two", "which doc"},
+		{"a field of the wrong type hides nothing", `{"instructions":5,"messages":[{"role":"user","content":"still scanned"}]}`, "still scanned", "still scanned"},
 	}
 	for _, c := range cases {
 		p := ExtractPrompt([]byte(c.body))

@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -96,6 +97,31 @@ func TestBodiesAndFilters(t *testing.T) {
 	}
 	if err := db.InsertRequest(r); err == nil {
 		t.Fatal("duplicate request id accepted")
+	}
+}
+
+// A client's own request id is stored beside the gateway's: repeating it never drops a row.
+func TestClientRequestIDIsNotUnique(t *testing.T) {
+	db := open(t)
+	for _, id := range []string{"req_1", "req_2"} {
+		if err := db.InsertRequest(&Request{ID: id, ClientRequestID: "same", TS: time.Now().UnixMilli(), Model: "m"}); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	if err := db.InsertRequest(&Request{ID: "req_3", TS: time.Now().UnixMilli(), Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.Requests(Filter{ID: "same"})
+	if err != nil || len(got) != 2 || got[0].ClientRequestID != "same" {
+		t.Fatalf("by client id: %+v %v", got, err)
+	}
+	got, err = db.Requests(Filter{ID: "req_3"})
+	if err != nil || len(got) != 1 || got[0].ClientRequestID != "" {
+		t.Fatalf("by gateway id: %+v %v", got, err)
+	}
+	data, _ := json.Marshal(got[0])
+	if bytes.Contains(data, []byte("client_request_id")) {
+		t.Fatalf("an absent client id must be omitted: %s", data)
 	}
 }
 

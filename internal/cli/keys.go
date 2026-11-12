@@ -222,6 +222,9 @@ func keyToggleCmd(name string, disable bool) *command {
 					return err
 				}
 				e.applied(res)
+				if disable {
+					warnNoUsableKeys(e)
+				}
 				return e.out(map[string]any{name + "d": pos}, func(w io.Writer) { fmt.Fprintf(w, "%sd %s\n", name, strings.Join(pos, ", ")) })
 			}
 		}}
@@ -232,6 +235,25 @@ func limit(n int64) string {
 		return "-"
 	}
 	return fmt.Sprint(n)
+}
+
+// warnNoUsableKeys tells the operator on stderr when a change left no key that authenticates.
+func warnNoUsableKeys(e *env) {
+	f, err := keys.Load()
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for i := range f.Keys {
+		if f.Keys[i].Status(now) == "active" {
+			return
+		}
+	}
+	if len(f.Keys) == 0 {
+		fmt.Fprintln(e.stderr, "warning: that was the last API key. A gateway serving on a loopback address (or started with --insecure) now runs open: every caller is admin. Any other gateway refuses every request except the master key's until a key exists.")
+		return
+	}
+	fmt.Fprintln(e.stderr, "warning: no usable API key is left (the others are disabled or expired): the gateway refuses every request except the master key's.")
 }
 
 func keyRmCmd() *command {
@@ -246,6 +268,7 @@ func keyRmCmd() *command {
 					return err
 				}
 				e.applied(res)
+				warnNoUsableKeys(e)
 				return e.out(map[string]any{"removed": pos}, func(w io.Writer) { fmt.Fprintf(w, "removed %s\n", strings.Join(pos, ", ")) })
 			}
 		}}

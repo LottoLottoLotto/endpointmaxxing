@@ -97,9 +97,6 @@ func (g *Gateway) pick(ctx context.Context, model, api string) ([]*runtime.Insta
 	if ins, err := g.ready(ctx, model, api); len(ins) > 0 || err != nil {
 		return ins, false, err
 	}
-	if model == "" {
-		return nil, false, errs.New(errs.Usage, "request has no model, and not exactly one instance is ready")
-	}
 	if !g.autostart() {
 		return nil, false, errs.New(errs.NotFound, "no ready instance serves %q (autostart is off)", model)
 	}
@@ -334,6 +331,21 @@ func placementNote(in *runtime.Instance) string {
 		gs[i] = fmt.Sprint(g)
 	}
 	return fmt.Sprintf("GPU %s, %d MiB planned per GPU", strings.Join(gs, ","), in.PlannedMiB)
+}
+
+// soleModel names the model a request without one goes to: the only ready instance's, or for a
+// multi-model host the only model it holds.
+func (g *Gateway) soleModel(ctx context.Context, api string) (string, error) {
+	if ins, _ := g.ready(ctx, "", api); len(ins) == 1 {
+		in := ins[0]
+		if !in.Hosting {
+			return in.Name, nil
+		}
+		if held := g.hosted(ctx, in); len(held) == 1 {
+			return held[0], nil
+		}
+	}
+	return "", errs.New(errs.Usage, "request has no model, and not exactly one model is ready")
 }
 
 // ready lists ready instances for model and api, rotated round-robin; an error

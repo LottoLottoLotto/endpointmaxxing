@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"sort"
@@ -50,7 +49,8 @@ func (g *Gateway) settingsRoutes(mux *http.ServeMux) {
 
 // settingsWrite guards a settings change. On top of an admin key it needs the settings API enabled
 // (gateway.disable_settings_api), an HTTPS or loopback connection (requests and answers carry key secrets),
-// and a JSON body of at most maxSettingsBody bytes; answers are never cached.
+// and a body of at most maxSettingsBody bytes (authed has checked that it is declared as JSON); answers
+// are never cached.
 func (g *Gateway) settingsWrite(h http.HandlerFunc) http.HandlerFunc {
 	return g.authed(roleAdmin, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -65,12 +65,6 @@ func (g *Gateway) settingsWrite(h http.HandlerFunc) http.HandlerFunc {
 		if r.TLS == nil && !loopback(clientIP(r)) {
 			deny(http.StatusForbidden, "permission_error", "settings changes need HTTPS (gateway.tls) or a loopback connection: they carry key secrets")
 			return
-		}
-		if r.ContentLength != 0 && r.Method != http.MethodDelete {
-			if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
-				deny(http.StatusUnsupportedMediaType, "invalid_request_error", "settings changes take a JSON body (Content-Type: application/json)")
-				return
-			}
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxSettingsBody)
 		h(w, r)

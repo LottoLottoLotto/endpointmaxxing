@@ -133,6 +133,7 @@ func TestStreamIsMeteredAndUsageRequested(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := New(a, log.New(io.Discard, "", 0))
+	g.AllowOpen = true
 	srv := httptest.NewServer(g.Handler())
 	defer srv.Close()
 
@@ -162,5 +163,24 @@ func TestStreamIsMeteredAndUsageRequested(t *testing.T) {
 	if r.PromptTokens == nil || *r.PromptTokens != 12 || *r.CompletionTokens != 3 || r.UsageSource != "usage" ||
 		r.Client != "agent-7" || r.Engine != "fake" || !r.Stream || r.Status != 200 || r.TTFTMS == nil {
 		t.Fatalf("recorded %+v", r)
+	}
+}
+
+// Streamed tokens are only metered from the final usage chunk: a client may not turn it off.
+func TestStreamUsageIsForced(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	b := newRecordingBackend()
+	defer b.Close()
+	instance(t, "m.fake", "m", b.URL)
+	_, srv := newGateway(t)
+	for _, opts := range []string{`{"include_usage":false}`, `null`, `"none"`, `{"include_usage":true,"x":1}`} {
+		body := `{"model":"m","stream":true,"stream_options":` + opts + `,"messages":[]}`
+		if got := call(t, "POST", srv.URL+"/v1/chat/completions", "", body); got != 200 {
+			t.Fatalf("stream_options %s: status %d", opts, got)
+		}
+		seen, _ := b.last()
+		if so, _ := seen["stream_options"].(map[string]any); so["include_usage"] != true {
+			t.Fatalf("stream_options %s reached the engine as %v", opts, seen["stream_options"])
+		}
 	}
 }

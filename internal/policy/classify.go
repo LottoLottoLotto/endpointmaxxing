@@ -2,8 +2,10 @@ package policy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -18,15 +20,129 @@ type Prompt struct {
 type part struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
-}
-
-type message struct {
-	Role    string          `json:"role"`
+	// Anthropic tool_use (name, input) and tool_result (content) blocks.
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
 	Content json.RawMessage `json:"content"`
 }
 
-// ExtractPrompt pulls text from an OpenAI chat/completions/responses/embeddings or Anthropic messages body.
-// Images and other non-text parts are skipped.
+type toolCall struct {
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type message struct {
+	Role      string          `json:"role"`
+	Content   json.RawMessage `json:"content"`
+	ToolCalls []toolCall      `json:"tool_calls"`
+	// Responses API function_call / function_call_output items.
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"`
+	Output    json.RawMessage `json:"output"`
+}
+
+// tool is a tool definition: OpenAI chat ({function: {name, description}}), or Anthropic and the Responses
+// API ({name, description}).
+type tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Function    struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"function"`
+}
+
+// toolText is what a message carries beside its plain text: tool call names and arguments, and
+// Anthropic tool_use inputs and tool_result contents.
+func (m *message) toolText() string {
+	out := []string{m.Name, argText(m.Arguments), deepText(m.Output)}
+	for _, c := range m.ToolCalls {
+		out = append(out, c.Function.Name, argText(c.Function.Arguments))
+	}
+	var parts []part
+	if lenient(m.Content, &parts) {
+		for _, p := range parts {
+			switch p.Type {
+			case "tool_use":
+				out = append(out, p.Name, deepText(p.Input))
+			case "tool_result": // a string or content parts; any other shape is read whole
+				t := text(p.Content)
+				if t == "" {
+					t = deepText(p.Content)
+				}
+				out = append(out, t)
+			}
+		}
+	}
+	return joinText(out)
+}
+
+func joinText(ss []string) string {
+	out := ss[:0]
+	for _, s := range ss {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// argText is a tool call's arguments: the strings inside when it is JSON (as it should be), else the text itself.
+func argText(s string) string {
+	if t := deepText(json.RawMessage(s)); t != "" {
+		return t
+	}
+	return s
+}
+
+// lenient decodes raw into v and reports whether it is JSON at all: a field of an unexpected type is left
+// zero rather than hiding the rest of the value from the scan.
+func lenient(raw []byte, v any) bool {
+	err := json.Unmarshal(raw, v)
+	var typeErr *json.UnmarshalTypeError
+	return err == nil || errors.As(err, &typeErr)
+}
+
+// deepText joins every string (object keys included, in key order) inside a JSON value, at any depth.
+func deepText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return ""
+	}
+	var out []string
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			out = append(out, x)
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				out = append(out, k)
+				walk(x[k])
+			}
+		}
+	}
+	walk(v)
+	return joinText(out)
+}
+
+// ExtractPrompt pulls text from an OpenAI chat/completions/responses/embeddings/rerank or Anthropic messages
+// body: prompts and messages of every role, tool definitions (name, description), tool call arguments and
+// tool results, and a rerank request's query and documents. Images and other non-text parts are skipped.
 func ExtractPrompt(body []byte) Prompt {
 	var req struct {
 		Messages []message       `json:"messages"`
@@ -34,8 +150,11 @@ func ExtractPrompt(body []byte) Prompt {
 		Prompt   json.RawMessage `json:"prompt"`
 		Input    json.RawMessage `json:"input"`
 		Instr    string          `json:"instructions"`
+		Tools    []tool          `json:"tools"`
+		Query    json.RawMessage `json:"query"`
+		Docs     json.RawMessage `json:"documents"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if !lenient(body, &req) {
 		return Prompt{}
 	}
 	var all []string
@@ -47,9 +166,14 @@ func ExtractPrompt(body []byte) Prompt {
 	last := ""
 	add(req.Instr)
 	add(text(req.System))
-	for _, m := range req.Messages {
+	for _, t := range req.Tools {
+		add(joinText([]string{t.Name, t.Description, t.Function.Name, t.Function.Description}))
+	}
+	for i := range req.Messages {
+		m := &req.Messages[i]
 		t := text(m.Content)
 		add(t)
+		add(m.toolText())
 		if m.Role == "user" && strings.TrimSpace(t) != "" {
 			last = t
 		}
@@ -60,10 +184,13 @@ func ExtractPrompt(body []byte) Prompt {
 		}
 		// Responses API input: a string, or items like messages.
 		var items []message
-		if json.Unmarshal(raw, &items) == nil && len(items) > 0 && (items[0].Role != "" || len(items[0].Content) > 0) {
-			for _, m := range items {
+		if lenient(raw, &items) && len(items) > 0 &&
+			(items[0].Role != "" || len(items[0].Content) > 0 || items[0].Arguments != "" || len(items[0].Output) > 0) {
+			for i := range items {
+				m := &items[i]
 				t := text(m.Content)
 				add(t)
+				add(m.toolText())
 				if (m.Role == "user" || m.Role == "") && strings.TrimSpace(t) != "" {
 					last = t
 				}
@@ -75,6 +202,12 @@ func ExtractPrompt(body []byte) Prompt {
 			last = t
 		}
 	}
+	// Rerank: the query is the ask; documents are strings or {text} objects.
+	if q := text(req.Query); strings.TrimSpace(q) != "" {
+		add(q)
+		last = q
+	}
+	add(text(req.Docs))
 	return Prompt{All: strings.Join(all, "\n"), Last: strings.TrimSpace(last)}
 }
 
@@ -98,7 +231,7 @@ func text(raw json.RawMessage) string {
 			continue
 		}
 		var pt part
-		if json.Unmarshal(p, &pt) == nil && pt.Text != "" && (pt.Type == "" || strings.HasSuffix(pt.Type, "text")) {
+		if lenient(p, &pt) && pt.Text != "" && (pt.Type == "" || strings.HasSuffix(pt.Type, "text")) {
 			out = append(out, pt.Text)
 		}
 	}

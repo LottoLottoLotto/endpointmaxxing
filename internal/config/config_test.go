@@ -58,4 +58,24 @@ func TestStrictFiles(t *testing.T) {
 	}
 }
 
+func TestBodyLimits(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	os.MkdirAll(dirOf(ConfigPath()), 0o755)
+	if c, err := Load(); err != nil || c.Gateway.MaxBodyMB != 64 || c.Gateway.MaxBufferedMB != 1024 {
+		t.Fatalf("defaults: %+v %v", c.Gateway, err)
+	}
+	for yaml, ok := range map[string]bool{
+		"gateway:\n  max_body_mb: 256\n":                      true,
+		"gateway:\n  max_body_mb: 257\n":                      false, // over the hard bound
+		"gateway:\n  max_body_mb: 0\n":                        false,
+		"gateway:\n  max_body_mb: 8\n  max_buffered_mb: 4\n":  false, // no body of the allowed size would fit
+		"gateway:\n  max_body_mb: 8\n  max_buffered_mb: 64\n": true,
+	} {
+		os.WriteFile(ConfigPath(), []byte(yaml), 0o644)
+		if _, err := Load(); (err == nil) != ok {
+			t.Errorf("%q: %v, want accepted=%v", yaml, err, ok)
+		}
+	}
+}
+
 func dirOf(p string) string { return p[:strings.LastIndexByte(p, '/')] }

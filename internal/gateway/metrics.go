@@ -30,6 +30,9 @@ type metrics struct {
 	cost      map[[2]string]float64 // model, team
 	gpus      []gpu.GPU
 	instances []store.InstanceSample
+
+	// unstoredDenials counts refused-key (401) requests over the stored-per-minute limit.
+	unstoredDenials int64
 }
 
 var latencyBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300}
@@ -99,6 +102,12 @@ func (m *metrics) observe(r *store.Request) {
 	}
 	hist(m.ttft, r.TTFTMS)
 	hist(m.duration, r.DurationMS)
+}
+
+func (m *metrics) denialUnstored() {
+	m.mu.Lock()
+	m.unstoredDenials++
+	m.mu.Unlock()
 }
 
 func (m *metrics) failover(in *runtime.Instance) {
@@ -323,6 +332,13 @@ func (g *Gateway) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	p.head("substrate_usage_log_dropped_total", "counter", "Usage records dropped because the writer fell behind.")
 	p.sample("substrate_usage_log_dropped_total", nil, float64(dropped))
+	m.mu.Lock()
+	unstored := m.unstoredDenials
+	m.mu.Unlock()
+	p.head("substrate_auth_denials_unstored_total", "counter", "Refused-key (401) requests not recorded because more than 60 arrived in a minute.")
+	p.sample("substrate_auth_denials_unstored_total", nil, float64(unstored))
+	p.head("substrate_request_body_buffered_bytes", "gauge", "Request bodies held in memory by in-flight requests (bounded by gateway.max_buffered_mb).")
+	p.sample("substrate_request_body_buffered_bytes", nil, float64(g.buffered.used.Load()))
 
 	db, _ := g.App.DB()
 	if teams, err := TeamStatuses(g.App.Config(), db, nil); err == nil {

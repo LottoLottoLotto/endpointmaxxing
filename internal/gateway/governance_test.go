@@ -173,3 +173,40 @@ func TestPolicyClassificationErrorsAndAudit(t *testing.T) {
 		t.Fatalf("audit line types %v, want 4 request + 1 access_denied", types)
 	}
 }
+
+// A request longer than policy.scan_max_bytes cannot be inspected whole: where a blocking rule applies
+// it is refused, with that reason, and never reaches the engine.
+func TestRequestsTooLargeToInspectAreBlocked(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	b := newRecordingBackend()
+	defer b.Close()
+	instance(t, "m.fake", "m", b.URL)
+	instance(t, "free.fake", "free", b.URL)
+	a, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Config().Policy = policy.Config{Enabled: true, ScanMaxBytes: 64, Rules: []policy.Rule{
+		{Name: "codenames", Action: policy.ActionBlock, Keywords: []string{"Project Falcon"}, Models: []string{"m"}},
+	}}
+	g := New(a, log.New(io.Discard, "", 0))
+	g.AllowOpen = true
+	defer g.Close()
+	h := g.Handler()
+	body := func(model string, words int) string {
+		return `{"model":"` + model + `","messages":[{"role":"user","content":"` + strings.Repeat("harmless ", words) + `"}]}`
+	}
+	w := direct(h, "POST", "/v1/chat/completions", "", body("m", 50))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "too large to inspect") || !strings.Contains(w.Body.String(), "codenames") {
+		t.Fatalf("long request where a blocking rule applies: %d %s", w.Code, w.Body)
+	}
+	if len(b.bodies) != 0 {
+		t.Fatal("the uninspected request reached the engine")
+	}
+	if w := direct(h, "POST", "/v1/chat/completions", "", body("m", 2)); w.Code != 200 {
+		t.Fatalf("short request: %d %s", w.Code, w.Body)
+	}
+	if w := direct(h, "POST", "/v1/chat/completions", "", body("free", 50)); w.Code != 200 {
+		t.Fatalf("long request where no blocking rule applies: %d %s", w.Code, w.Body)
+	}
+}

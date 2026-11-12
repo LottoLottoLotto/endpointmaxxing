@@ -26,7 +26,8 @@ var Severities = []string{"low", "medium", "high", "critical"}
 type Config struct {
 	// Enabled scans every proxied request's prompt against Rules.
 	Enabled bool `yaml:"enabled" json:"enabled"`
-	// ScanMaxBytes bounds how much prompt text one request is scanned for (the rest is skipped).
+	// ScanMaxBytes bounds how much prompt text one request is scanned for. Longer requests are refused
+	// where a blocking rule applies (the rest could not be inspected); elsewhere the rest is skipped.
 	ScanMaxBytes int `yaml:"scan_max_bytes" json:"scan_max_bytes"`
 	// Rules are evaluated in order; every matching rule is recorded.
 	Rules []Rule `yaml:"rules,omitempty" json:"rules,omitempty"`
@@ -63,11 +64,15 @@ type Rule struct {
 	Unless Terms `yaml:"unless,omitempty" json:"unless,omitempty"`
 }
 
+// DetectorTooLarge is the Flag.Detector of a request refused because its text exceeds ScanMaxBytes
+// where a blocking rule applies: the part beyond the limit could not be inspected.
+const DetectorTooLarge = "too_large"
+
 // Flag is one rule's matches in one prompt. Sample is a redacted example of the
 // matched text (never the full secret).
 type Flag struct {
 	Rule     string `json:"rule"`
-	Detector string `json:"detector"` // detector name, "keyword" or "pattern"
+	Detector string `json:"detector"` // detector name, "keyword", "pattern" or DetectorTooLarge
 	Severity string `json:"severity"`
 	Action   string `json:"action"`
 	Count    int    `json:"count"`
@@ -269,14 +274,24 @@ func (r *compiledRule) applies(s Scope) bool {
 const maxSampleMatches = 1000
 
 // Scan returns one Flag per matching (rule, matcher), in rule order, and whether any of them blocks.
+// Text longer than ScanMaxBytes is scanned up to there; when a blocking rule applies to s the request is
+// blocked (one DetectorTooLarge flag under the first such rule) rather than let through uninspected.
 func (p *Policy) Scan(text string, s Scope) (flags []Flag, blocked bool) {
 	if p == nil || len(p.rules) == 0 || text == "" {
 		return nil, false
 	}
-	if len(text) > p.maxBytes {
+	tooLarge := len(text) > p.maxBytes
+	if tooLarge {
 		text = text[:p.maxBytes]
 		for len(text) > 0 && !utf8.ValidString(text) { // never split a rune
 			text = text[:len(text)-1]
+		}
+	}
+	for i := range p.rules {
+		r := &p.rules[i]
+		if tooLarge && r.Action == ActionBlock && r.applies(s) {
+			flags = append(flags, Flag{Rule: r.Name, Detector: DetectorTooLarge, Severity: r.Severity, Action: ActionBlock, Count: 1})
+			blocked, tooLarge = true, false
 		}
 	}
 	for i := range p.rules {
