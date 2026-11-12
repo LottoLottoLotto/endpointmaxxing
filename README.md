@@ -150,23 +150,28 @@ Project files: [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md),
 ## Security defaults
 
 - **Loopback by default.** The gateway listens on `127.0.0.1:7777`. With no
-  keys and no master key it is open, and only on loopback. Binding to another
-  address requires at least one key, or `--insecure`, and warns while the
-  gateway serves plain HTTP.
+  keys and no master key it is open (every caller is admin), only when it
+  was started on loopback, and only for requests addressed to a loopback
+  host that do not come from another web origin. Binding to another address
+  requires at least one key, or `--insecure`, and warns while the gateway
+  serves plain HTTP. Removing the last key does not open such a gateway.
 - **Keys and roles.** Once any key exists, every request needs one. `user`
   keys do inference on the models they are allowed, `auditor` keys are
   read-only, `admin` keys do everything. Keys are stored only as SHA-256
   hashes; the master key comes from `$SUBSTRATE_API_KEY` or a file of mode
   0600, never from an argument.
 - **Guarded settings API.** Changes over HTTP are refused from anything but
-  loopback unless the gateway serves HTTPS, cannot set host command lines,
-  and are recorded in the admin trail. `gateway.disable_settings_api: true`
-  turns them off.
+  loopback unless the gateway serves HTTPS, must be JSON, cannot set host
+  command lines, host-only flags or environment references, and are
+  recorded in the admin trail. `gateway.disable_settings_api: true` turns
+  them off.
 - **Private files.** Config and state directories are `0700`; keys, config,
   the usage database, the audit file and engine logs are `0600`. Prompts and
-  outputs are not stored unless `logging.bodies` is turned on.
+  outputs are not stored unless `logging.bodies` is turned on. The audit
+  file is hash-chained and can be keyed (`gateway.audit_key_file`).
 - **Engines are not exposed.** The client's key is never forwarded to an
   engine, and only traffic through the gateway is metered and checked.
+  Instance listings mask environment values and secret arguments.
 
 `substrate doctor` reports security findings for the current setup. Details:
 [Keys and access](docs/access.md#keys-and-access),

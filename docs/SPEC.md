@@ -60,6 +60,7 @@ launch:
   env: {PATH: "{bin_dir}:{env.PATH}"}  # optional
   stop_signal: SIGTERM           # SIGTERM (default) | SIGINT | SIGQUIT | SIGHUP
   stop_timeout: 30s              # default 30s
+  api_key_env: MY_ENGINE_API_KEY # optional: pass the unified --api-key in this environment variable, not in the command
   prepare: [[mkdir, -p, "{cache}"]]                 # optional: run before each launch; failure aborts it
   cleanup: [[docker, rm, -f, "substrate-{instance}"]] # optional: run after every stop and after a crash
 
@@ -141,9 +142,20 @@ install can override the block in `config.yaml`, under
 model's `--pre-arg` list. It is used for options that must sit
 mid-command, such as docker options before the image name.
 
+`launch.api_key_env` names the environment variable the engine reads its API
+key from. When set, the unified `--api-key` value is passed to the engine in
+that variable and is not placed on the command line, where the host's
+process list would show it; it takes precedence over `flags.api_key`. It
+must be a valid environment variable name (`[A-Za-z_][A-Za-z0-9_]*`) and is
+not allowed in a multi-model host manifest. Of the builtin engines, `vllm`
+uses `VLLM_API_KEY`, and `llama.cpp` and `buun-llama-cpp` use
+`LLAMA_API_KEY`; `sglang`, `strata` and `tt-vllm` map `flags.api_key` to
+`--api-key` and so receive the key on the command line.
+
 Validation rejects an unknown placeholder, an unknown field, an unknown
 format or API, a flag that is not in the unified vocabulary, a non-bool flag
-without `{value}`, and a command without `{port}`.
+without `{value}`, a `launch.api_key_env` that is not an environment
+variable name, and a command without `{port}`.
 
 ### Multi-model hosts
 
@@ -161,27 +173,35 @@ The gateway routes a request to the host when `models` lists the requested
 model, and calls `load` otherwise. Requests carry the served name in their
 `model` field. Because the launch serves no single model, it may not use
 `{model}`, `{model_path}`, `{name}` or `{pre_args}`, and `flags` must be
-empty. Each load sends the model's `--ctx`.
+empty and `launch.api_key_env` unset. Each load sends the model's `--ctx`.
 
 ## Unified flags
 
-`substrate flags` prints the vocabulary and each engine's mapping.
+`substrate flags` prints the vocabulary and each engine's mapping. With
+`--json`, each flag carries `host_only`, and an engine using
+`launch.api_key_env` shows its `api_key` mapping as
+`{"env": {"VLLM_API_KEY": "{value}"}}`.
 
-| Key (manifest) | CLI | Type |
-| --- | --- | --- |
-| `ctx` | `--ctx` | int |
-| `gpus` | `--gpus` | string |
-| `tp` | `--tp` | int |
-| `gpu_layers` | `--gpu-layers` | string |
-| `parallel` | `--parallel` | int |
-| `mem_fraction` | `--mem-fraction` | float (0,1] |
-| `kv_cache_type` | `--kv-cache` | string (`f16`, `bf16`, `fp8`, `q8_0`, `q4_0`, or engine-specific) |
-| `quantization` | `--quant` | string |
-| `dtype` | `--dtype` | string |
-| `api_key` | `--api-key` | string |
-| `trust_remote_code` | `--trust-remote-code` | bool |
-| `flash_attn` | `--flash-attn` | bool |
-| `embeddings` | `--embeddings` | bool |
+| Key (manifest) | CLI | Type | Host only |
+| --- | --- | --- | --- |
+| `ctx` | `--ctx` | int | no |
+| `gpus` | `--gpus` | string | no |
+| `tp` | `--tp` | int | no |
+| `gpu_layers` | `--gpu-layers` | string | no |
+| `parallel` | `--parallel` | int | no |
+| `mem_fraction` | `--mem-fraction` | float (0,1] | no |
+| `kv_cache_type` | `--kv-cache` | string (`f16`, `bf16`, `fp8`, `q8_0`, `q4_0`, or engine-specific) | no |
+| `quantization` | `--quant` | string | no |
+| `dtype` | `--dtype` | string | no |
+| `api_key` | `--api-key` | string | no |
+| `trust_remote_code` | `--trust-remote-code` | bool | yes |
+| `flash_attn` | `--flash-attn` | bool | no |
+| `embeddings` | `--embeddings` | bool | no |
+
+A host-only flag (`host_only`) lets its value choose code the engine runs or
+files it reads on the host. Only the CLI on the host sets it; the settings
+API refuses it (see [Settings API](admin-api.md#settings-api)). Every flag
+in the vocabulary states the property.
 
 If a launch uses a flag that the engine does not map, the launch fails. Pass
 `--lenient` to drop such flags with a warning, or pass engine arguments

@@ -14,12 +14,47 @@
   model, through [placement](#placement). The start keeps going even if the
   client that triggered it disconnects. Starts of different models run in
   parallel; starts of the same model are serialized.
-- A request without a `model` goes to the only ready instance, if exactly one
-  is ready.
+- A request without a `model` goes to the only ready model. The key's and
+  team's model globs and model-scoped policy rules apply to that model, and
+  the engine receives it as `model`. If not exactly one model is ready, the
+  request gets 400.
 - A request for an API the engine doesn't implement is rejected before
   anything is loaded.
 - `model add`, `engine set` and `key add`/`key rm` take effect without
   restarting the gateway.
+
+## Requests
+
+- **Order of checks.** A key's `rpm` and the token and cost budgets of the
+  key and its team are checked before the body is read, so a key over its
+  limits gets 429 without the gateway buffering anything. Every request of a
+  key counts toward `rpm`, including ones refused later (for example 403 for
+  a model outside the key's globs).
+- **Body size.** A body larger than `gateway.max_body_mb` (default 64 MiB,
+  allowed 1-256) gets 413; a declared `Content-Length` over the limit is
+  refused without reading. All in-flight requests together may hold
+  `gateway.max_buffered_mb` (default 1024 MiB, at least `max_body_mb`) of
+  request bodies in memory; a request that would exceed it gets 503 with
+  `Retry-After: 1` (`error_kind` `no_capacity`). The body must arrive within
+  5 minutes.
+- **One JSON object.** The body must be exactly one JSON object, with
+  nothing after it. A top-level field given more than once is refused with
+  400. `model`, `messages`, `prompt`, `input`, `stream`, `stream_options`,
+  `tools`, `system`, `instructions`, `query` and `documents` are accepted
+  only in lower case (`"Model"` gets 400), so the gateway and the engine
+  always read the same value. `user` is read only in lower case.
+- **Stream usage.** With `gateway.stream_usage` on (the default), streamed
+  chat and completions requests are sent to the engine with
+  `stream_options.include_usage: true`, whatever the client sent. The client
+  therefore always receives the final usage chunk, even if it asked for
+  `false`.
+- **Request ids.** The gateway generates the id of every request and
+  returns it as `X-Substrate-Request-Id` and `X-Request-Id`; the engine
+  receives the same id as `X-Request-Id`, and an engine's own `X-Request-Id`
+  response header is dropped. An `X-Request-Id` sent by the client (its
+  first 128 characters) is stored with the record as `client_request_id`
+  and need not be unique. `substrate requests --id` and
+  `GET /substrate/v1/requests?id=` match either id.
 
 ## Limits, timeouts, health
 
@@ -33,6 +68,8 @@
 | `health_interval` | 15s | ready instances are probed; after 3 consecutive failures an instance gets no more traffic |
 | `restart_crashed` | true | instances the gateway started are restarted after a crash or 3 failed health checks, at most 3 times in 10 minutes |
 | `idle_unload` | 0 (never) | stops evictable instances idle this long; a model can override it (`model add --idle-unload 15m`) |
+| `max_body_mb` | 64 | largest request body on inference endpoints, in MiB (1-256); larger bodies get 413 |
+| `max_buffered_mb` | 1024 | request-body memory held by all in-flight requests together, in MiB (at least `max_body_mb`); beyond it the gateway answers 503 with `Retry-After: 1` |
 
 ## Placement
 

@@ -6,17 +6,22 @@
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/substrate/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts` |
+| `~/.config/substrate/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`, `audit_key_file`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts` |
 | `~/.config/substrate/keys.yaml` | gateway API keys (hashes only, mode 0600) |
 | `~/.config/substrate/models.yaml` | model registry: source, format, pinned engine, default flags, engine args |
 | `~/.config/substrate/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |
-| `~/.local/state/substrate/instances/` | one JSON record per instance |
+| `~/.local/state/substrate/instances/` | one JSON record per instance (mode 0600; the only place holding unmasked environment and arguments) |
 | `~/.local/state/substrate/logs/` | engine logs (kept after stop) |
-| `~/.local/state/substrate/usage.db` | usage database |
+| `~/.local/state/substrate/usage.db` | usage database (schema version 6) |
 | `~/.local/state/substrate/audit.jsonl` | audit log, when `logging.audit_file` is set |
+| `~/.local/state/substrate/audit.jsonl.head` | the audit log's head anchor (see [Audit file integrity](governance.md#audit-file-integrity)) |
 | `~/.local/share/substrate/` | engines installed by `substrate engine install` |
 
 Set `SUBSTRATE_HOME` to keep all of these under one directory.
+
+The usage database is migrated when a newer substrate first opens it.
+Schema version 6 adds the column `requests.client_request_id`; an older
+substrate binary refuses a database that this version has migrated.
 
 Here is a `config.yaml` with every setting at its default:
 
@@ -37,6 +42,8 @@ gateway:
   upstream_idle_timeout: 5m
   metrics_public: false
   stream_usage: true
+  max_body_mb: 64            # largest inference request body, MiB (1-256); larger bodies get 413
+  max_buffered_mb: 1024      # request bodies held in memory by all in-flight requests, MiB (>= max_body_mb); beyond it 503
   swap:
     min_residency: 30s       # a model keeps its chips at least this long once ready
     max_residency: 10m       # ...and yields after this long when others wait, even with its own demand
@@ -88,7 +95,9 @@ substrate backup --out /backups/substrate-$(date +%F).tar.gz [--audit] [--no-db]
 The archive (mode 0600) holds `config/` (`config.yaml`, `models.yaml`,
 `keys.yaml`, `engines/`) and `state/usage.db`, a consistent snapshot taken
 with SQLite `VACUUM INTO` while the gateway keeps running; `--audit` adds the
-audit log. To restore, stop the gateway and copy `config/` and `state/` back
+audit log and its head anchor (`<audit file>.head`). The audit key file
+(`gateway.audit_key_file`) is not in the archive: keep a copy of it
+separately. To restore, stop the gateway and copy `config/` and `state/` back
 into `~/.config/substrate` and `~/.local/state/substrate`. Key secrets are
 only stored hashed, but the archive may hold prompts (`logging.bodies`):
 keep it as private as the state directory.
@@ -103,10 +112,20 @@ Prometheus text:
 - instance status, in-flight requests and queue depth;
 - GPU memory and utilization, and per-instance GPU memory and RSS;
 - failovers, restarts, and dropped usage records;
+- refused-key (401) requests over the stored-per-minute limit
+  (`substrate_auth_denials_unstored_total`, a counter; these are not in
+  `substrate_requests_total`) and request-body memory held by in-flight
+  requests (`substrate_request_body_buffered_bytes`, a gauge bounded by
+  `gateway.max_buffered_mb`);
 - policy matches per rule (`substrate_policy_flags_total`), requests per prompt category
   (`substrate_requests_by_category_total`) and failures per error kind (`substrate_errors_total`);
 - cost per model and team (`substrate_cost_total`), team budget use
   (`substrate_team_budget_used_ratio`), key expiry (`substrate_key_expiry_seconds`) and config reloads.
+
+The `model` label is `invalid` for requests that were not routed to a model
+and whose model name is not a valid one, and `other` for unrouted model
+names beyond the first 200 distinct ones (see
+[Governance](governance.md#prompt-policy-classification-and-errors)).
 
 ```sh
 substrate service install --enable -- --port 7777   # systemd user unit; PATH captured from this shell
@@ -135,4 +154,8 @@ before exiting.
   - The previous three logs of each instance are kept as `<id>.log.1` to
     `.3`.
 - **Secrets:** instance records are mode 0600. API keys are removed from
-  `ps`/`run --dry-run` output, logs and events.
+  `ps`/`run --dry-run` output, logs and events. `ps`, `inspect` and the
+  management API also show every environment value and every
+  secret-looking argument value as `***` (see
+  [Management API](admin-api.md#management-api)); `start` events and
+  instance log headers mask arguments the same way.

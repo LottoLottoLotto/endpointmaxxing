@@ -212,6 +212,13 @@ func backup(a *app.App, out string, withDB, withAudit bool) ([]string, error) {
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(paths.State(), p)
 		}
+		// The head anchor goes in first: a line written in between leaves the file ahead of its anchor,
+		// which verifies; the other order could leave it behind, which reads as truncation.
+		if _, err := os.Stat(p + ".head"); err == nil {
+			if err := add(p+".head", "state/"+filepath.Base(p)+".head"); err != nil {
+				return nil, err
+			}
+		}
 		if err := add(p, "state/"+filepath.Base(p)); err != nil {
 			return nil, err
 		}

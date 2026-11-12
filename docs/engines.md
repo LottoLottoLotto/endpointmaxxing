@@ -18,6 +18,18 @@ describes how Tenstorrent accelerators are handled.
 | `tt-vllm` | safetensors (opt-in with `--engine tt-vllm`) | tt-metal vLLM in docker, one image per model (`--var image=...`), whole Tenstorrent chips |
 | `tt-multihost` | safetensors, bf16 (opt-in with `--engine tt-multihost`) | one tt-metal container keeps several `tt_transformers` models loaded on its chips; its server ships with substrate (`engine set tt-multihost --var image=... --var models=...`) |
 
+**Engine API keys.** The unified `--api-key` sets the key an engine requires
+from its clients (the gateway sends it; a client's own key is never
+forwarded). How the engine receives it depends on its manifest
+(`launch.api_key_env`, see [SPEC.md](SPEC.md#fields)):
+
+| Engine | Key passed as |
+| --- | --- |
+| `vllm` | environment variable `VLLM_API_KEY` |
+| `llama.cpp`, `buun-llama-cpp` | environment variable `LLAMA_API_KEY` |
+| `sglang`, `strata`, `tt-vllm` | `--api-key` on the command line, visible in the host's process list |
+| `tt-multihost` | no key (a multi-model host takes no flags) |
+
 ## Tenstorrent
 
 Today's Tenstorrent runtimes require each chip to be owned by one process.

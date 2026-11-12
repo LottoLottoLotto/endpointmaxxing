@@ -15,8 +15,22 @@ substrate key disable alice              # refused at once, history kept (key en
 substrate key rm alice
 ```
 
-- **Open mode:** with no keys and no master key, the gateway is open, and
-  only on loopback.
+- **Open mode:** with no keys and no master key, the gateway is open: every
+  caller is admin. Whether it may run open is decided when `serve` starts:
+  only on a loopback listen address, or with `--insecure`. An open gateway
+  answers 403 unless the request
+  - is addressed to `localhost`, `::1` or a `127.0.0.0/8` address in its
+    `Host` header (`--insecure` lifts this rule only);
+  - carries no `Origin` other than the gateway's own scheme, host and port
+    (`Origin: null` is refused);
+  - does not carry `Sec-Fetch-Site: cross-site`.
+
+  So a web page open in the operator's browser cannot use an open gateway.
+- **Removing the last key:** `substrate key rm` and `substrate key disable`
+  print a warning on stderr when no usable key is left. A gateway that was
+  not permitted to run open (a non-loopback address without `--insecure`)
+  does not become open: it answers 401 to everything until a key exists or
+  it is restarted with a master key.
 - **Once any key exists,** every request needs one, sent as
   `Authorization: Bearer` or `x-api-key`.
 - **`user` keys:** inference and `/v1/models`, limited to their (and their
@@ -33,6 +47,8 @@ substrate key rm alice
   one keeps working until `--grace` ends. `key list` shows when each key was
   last used, from the usage database; Prometheus exports
   `substrate_key_expiry_seconds`.
+  At most 60 `auth_failed` (401) records are stored per minute; see
+  [Governance](governance.md#prompt-policy-classification-and-errors).
 - **Quotas:** going over `rpm` or `tokens-per-day` (or a team limit) returns
   429 with `Retry-After` set to when the limit frees up (the oldest request
   leaving the minute window; local midnight or the first of the month for
@@ -49,9 +65,14 @@ substrate key rm alice
 - **Storage:** keys are stored only as SHA-256 hashes in
   `~/.config/substrate/keys.yaml` (mode 0600).
 - **Exposure:** binding to an address other than loopback requires at least
-  one key, or `--insecure`, and warns while the gateway serves plain HTTP.
+  one key or a master key, or `--insecure`, and warns while the gateway
+  serves plain HTTP. `--insecure` allows open mode on that address and lets
+  open-mode requests be addressed to any host name.
 - **Engine keys:** the client's key is never forwarded. The engine receives
-  its own key, set with `--api-key` at launch.
+  its own key, set with `--api-key` at launch. Engines whose manifest sets
+  `launch.api_key_env` get it in their environment; the others get it on
+  their command line, where the host's process list shows it (see
+  [Builtin engines](engines.md#builtin-engines)).
 
 ## Teams, prices and budgets
 
