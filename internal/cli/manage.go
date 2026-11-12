@@ -310,7 +310,7 @@ func engineShowCmd() *command {
 						strings.Join(en.Capabilities.APIs, ", "), strings.Join(en.Capabilities.Features, ", "))
 					var fl []string
 					for _, f := range spec.Unified {
-						if _, ok := en.Flags[f.Key]; ok {
+						if _, ok := en.FlagMapFor(f.Key); ok {
 							fl = append(fl, "--"+f.CLI)
 						}
 					}
@@ -570,7 +570,7 @@ func cmdFlags() *command {
 					r := row{UnifiedFlag: f, Engines: map[string]spec.FlagMap{}}
 					for _, id := range ids {
 						m, _ := a.Engines.Get(id)
-						if fm, ok := m.Flags[f.Key]; ok {
+						if fm, ok := m.FlagMapFor(f.Key); ok {
 							r.Engines[id] = fm
 						}
 					}

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"sync"
@@ -64,6 +66,11 @@ func sendWebhooks(cfg *config.Config, kind, detail, actor string, logf func(stri
 				if err = postWebhook(w, body); err == nil {
 					return
 				}
+			}
+			// A *url.Error's text holds the whole URL, and the path of an incoming webhook is its secret.
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				err = ue.Err
 			}
 			logf("webhook %s (%s): %v", redactURL(w.URL), kind, err)
 		}(w)

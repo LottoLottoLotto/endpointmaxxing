@@ -23,6 +23,8 @@ launch:
   command: ["{bin}", -m, "{model_path}", --host, "{host}", --port, "{port}", --alias, "{name}"]
   stop_signal: SIGTERM
   stop_timeout: 30s
+  # The key travels in the environment, not on the command line (the process list is readable by every user).
+  api_key_env: LLAMA_API_KEY
 
 health:
   path: /health
@@ -37,7 +39,6 @@ flags:
   kv_cache_type:
     args: [-ctk, "{value}", -ctv, "{value}"]
     values: {fp8: q8_0, bf16: bf16, f16: f16}
-  api_key: [--api-key, "{value}"]
   flash_attn: [-fa, "on"]
   embeddings: [--embeddings]
 

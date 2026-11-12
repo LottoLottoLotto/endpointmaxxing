@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LottoLottoLotto/substrate/internal/config"
 	"github.com/LottoLottoLotto/substrate/internal/errs"
 	"github.com/LottoLottoLotto/substrate/internal/gpu"
 	"github.com/LottoLottoLotto/substrate/internal/lock"
@@ -127,18 +128,50 @@ func (in *Instance) HasAPI(api string) bool {
 	return false
 }
 
-// Redacted returns a copy safe to print: the API key is removed from the record, argv and env.
+// Redacted returns a copy safe to show to others: the API key is removed from the record and argv, every
+// environment value is masked (the names stay) and so are argv values of secret-looking options.
 func (in *Instance) Redacted() *Instance {
 	c := *in
 	c.APIKey = ""
-	c.Argv = Redact(in.Argv, in.APIKey)
-	if in.APIKey != "" && len(in.Env) > 0 {
-		c.Env = map[string]string{}
-		for k, v := range in.Env {
-			c.Env[k] = strings.ReplaceAll(v, in.APIKey, "***")
+	c.Argv = redactArgv(Redact(in.Argv, in.APIKey))
+	if len(in.Env) > 0 {
+		c.Env = make(map[string]string, len(in.Env))
+		for k := range in.Env {
+			c.Env[k] = "***"
 		}
 	}
 	return &c
+}
+
+// secretName reports whether an option or variable name suggests its value is a credential.
+func secretName(name string) bool {
+	name = strings.ToLower(name)
+	for _, w := range []string{"key", "token", "secret", "password"} {
+		if strings.Contains(name, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactArgv masks the values of secret-looking options: the argument after `--api-key`, and the value
+// in `--api-key=value` or `HF_TOKEN=value` (docker -e).
+func redactArgv(argv []string) []string {
+	out := make([]string, len(argv))
+	mask := false
+	for i, a := range argv {
+		name, _, valued := strings.Cut(a, "=")
+		switch {
+		case mask:
+			out[i], mask = "***", false
+		case valued && secretName(name):
+			out[i] = name + "=***"
+		default:
+			out[i] = a
+			mask = strings.HasPrefix(a, "-") && secretName(a)
+		}
+	}
+	return out
 }
 
 // Redact replaces every occurrence of secret in argv.
@@ -181,7 +214,8 @@ func List() ([]*Instance, error) {
 			continue
 		}
 		var in Instance
-		if json.Unmarshal(data, &in) == nil {
+		// A record must sit in the file its id names: paths are built from ids.
+		if json.Unmarshal(data, &in) == nil && in.ID+".json" == filepath.Base(f) && config.NameRe.MatchString(in.ID) {
 			out = append(out, &in)
 		}
 	}
@@ -189,17 +223,31 @@ func List() ([]*Instance, error) {
 	return out, nil
 }
 
-// Get returns the instance with id.
+func noInstance(ref string) error {
+	return errs.New(errs.NotFound, "no instance %q (see `substrate ps`)", ref)
+}
+
+// Get returns the instance with id. An id that is not a valid name (it would escape the instances
+// directory) or a file that records another id is no instance.
 func Get(id string) (*Instance, error) {
+	if !config.NameRe.MatchString(id) {
+		return nil, noInstance(id)
+	}
 	data, err := os.ReadFile(filepath.Join(instancesDir(), id+".json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, errs.New(errs.NotFound, "no instance %q (see `substrate ps`)", id)
+		return nil, noInstance(id)
 	}
 	if err != nil {
 		return nil, err
 	}
 	var in Instance
-	return &in, json.Unmarshal(data, &in)
+	if err := json.Unmarshal(data, &in); err != nil {
+		return nil, err
+	}
+	if in.ID != id {
+		return nil, noInstance(id)
+	}
+	return &in, nil
 }
 
 // Find resolves an instance by ID, or by served name when exactly one matches.
@@ -219,7 +267,7 @@ func Find(ref string) (*Instance, error) {
 	}
 	switch len(hits) {
 	case 0:
-		return nil, errs.New(errs.NotFound, "no instance %q (see `substrate ps`)", ref)
+		return nil, noInstance(ref)
 	case 1:
 		return hits[0], nil
 	}
@@ -335,6 +383,9 @@ func rotateLog(path string) {
 // Start launches plan in its own session, logging to state/logs/<id>.log.
 // The instance lock makes concurrent starts of one id (CLI and gateway) safe.
 func Start(p *Plan, id, owner string) (*Instance, error) {
+	if !config.NameRe.MatchString(id) {
+		return nil, errs.New(errs.Usage, "instance id %q must match %s", id, config.NameRe)
+	}
 	var in *Instance
 	err := lock.With(lockFor(id), func() error {
 		var err error
@@ -344,7 +395,7 @@ func Start(p *Plan, id, owner string) (*Instance, error) {
 	if err != nil {
 		return nil, err
 	}
-	record("start", in, nil, ShellJoin(Redact(in.Argv, in.APIKey)))
+	record("start", in, nil, ShellJoin(in.Redacted().Argv))
 	return in, nil
 }
 
@@ -399,9 +450,13 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		return nil, err
 	}
 	defer logf.Close()
-	fmt.Fprintf(logf, "# substrate %s: %s\n# cwd: %s\n", time.Now().Format(time.RFC3339), ShellJoin(Redact(p.Argv, p.apiKey)), p.Cwd)
+	fmt.Fprintf(logf, "# substrate %s: %s\n# cwd: %s\n", time.Now().Format(time.RFC3339), ShellJoin(redactArgv(Redact(p.Argv, p.apiKey))), p.Cwd)
 	for _, k := range sortedKeys(p.Env) {
-		if k != "PATH" {
+		switch {
+		case k == "PATH":
+		case secretName(k):
+			fmt.Fprintf(logf, "# env: %s=***\n", k)
+		default:
 			fmt.Fprintf(logf, "# env: %s=%s\n", k, Redact([]string{p.Env[k]}, p.apiKey)[0])
 		}
 	}

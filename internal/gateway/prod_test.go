@@ -133,6 +133,68 @@ func TestKeysRolesAllowlistAndRate(t *testing.T) {
 	}
 }
 
+// A stop request names an instance, never a file: an id that leaves the instances directory is unknown,
+// and the record it points at is neither loaded nor are its cleanup commands run.
+func TestStopRefusesIDsOutsideTheInstancesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SUBSTRATE_HOME", home)
+	marker := filepath.Join(home, "cleanup-ran")
+	data, _ := json.Marshal(runtime.Instance{ID: "../evil", Name: "evil", PID: 1 << 30, Cleanup: [][]string{{"touch", marker}}})
+	os.MkdirAll(paths.State(), 0o700)
+	os.WriteFile(filepath.Join(paths.State(), "evil.json"), data, 0o600)
+	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
+	_, srv := newGateway(t)
+	for _, id := range []string{"../evil", "../../state/evil", "evil"} {
+		if got := call(t, "POST", srv.URL+"/substrate/v1/stop", admin, `{"id":"`+id+`"}`); got != http.StatusNotFound {
+			t.Fatalf("stop %q: %d", id, got)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the cleanup command of a record outside the instances directory ran")
+	}
+}
+
+// The instances listing is open to auditors: it shows which variables an engine got, never their values,
+// and no credential passed as an argument.
+func TestInstancesListingMasksEnvAndSecretArguments(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	in := runtime.Instance{ID: "m.fake", Name: "m", Engine: "fake", APIKey: "sk-engine-key",
+		Argv: []string{"server", "--hf-token", "hf_argvsecret", "--password=pw-secret", "-e", "HF_TOKEN=hf_dockersecret", "--port", "9000"},
+		Env:  map[string]string{"HF_TOKEN": "hf_envsecret", "LLAMA_API_KEY": "sk-engine-key", "CUDA_VISIBLE_DEVICES": "3"}}
+	data, _ := json.Marshal(in)
+	dir := filepath.Join(paths.State(), "instances")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "m.fake.json"), data, 0o600)
+	auditor, _ := keys.Add(keys.Key{Name: "audit", Role: keys.RoleAuditor})
+	_, srv := newGateway(t)
+	req, _ := http.NewRequest("GET", srv.URL+"/substrate/v1/instances", nil)
+	req.Header.Set("Authorization", "Bearer "+auditor)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out []struct {
+		Instance runtime.Instance `json:"instance"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || resp.StatusCode != http.StatusOK || len(out) != 1 {
+		t.Fatalf("instances: %d %v %s", resp.StatusCode, err, raw)
+	}
+	for _, secret := range []string{"hf_argvsecret", "pw-secret", "hf_dockersecret", "hf_envsecret", "sk-engine-key"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("listing discloses %q: %s", secret, raw)
+		}
+	}
+	got := out[0].Instance
+	if len(got.Env) != 3 || got.Env["HF_TOKEN"] != "***" || got.Env["CUDA_VISIBLE_DEVICES"] != "***" {
+		t.Errorf("env names must stay, values masked: %v", got.Env)
+	}
+	if len(got.Argv) != 8 || got.Argv[0] != "server" || got.Argv[7] != "9000" {
+		t.Errorf("argv: %v", got.Argv)
+	}
+}
+
 func TestFailoverToAnotherReplica(t *testing.T) {
 	t.Setenv("SUBSTRATE_HOME", t.TempDir())
 	good := okBackend()

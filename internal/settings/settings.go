@@ -416,7 +416,7 @@ func AddModel(a *app.App, s ModelSpec) (Added, Result, error) {
 	}
 	info, err := model.Inspect(s.Source)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return out, res, errs.Wrap(errs.NotFound, err)
 		}
 		return out, res, errs.Wrap(errs.Usage, err)

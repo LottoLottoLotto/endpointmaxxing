@@ -4,7 +4,9 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,6 +47,11 @@ func Inspect(source string) (*Info, error) {
 	if err != nil {
 		if os.IsNotExist(err) && repoRe.MatchString(source) && !strings.HasPrefix(source, ".") {
 			return inspectRepo(source)
+		}
+		// Name the source as the caller wrote it: the expanded path may hold values of environment variables.
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			return nil, fmt.Errorf("%s: %w", source, pe.Err)
 		}
 		return nil, err
 	}

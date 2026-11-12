@@ -23,23 +23,27 @@ type UnifiedFlag struct {
 	CLI  string   `json:"cli"`  // CLI flag, e.g. gpu-layers
 	Type FlagType `json:"type"` //
 	Help string   `json:"help"`
+	// HostOnly marks a flag that lets its value choose code the engine runs or files it reads on the host.
+	// Only the CLI on the host sets such a flag; the settings API refuses it. Every flag states it explicitly:
+	// a new flag that takes a host path or enables code execution must say true.
+	HostOnly bool `json:"host_only"`
 }
 
 // Unified is the complete unified flag vocabulary, in display order.
 var Unified = []UnifiedFlag{
-	{"ctx", "ctx", TypeInt, "context length in tokens"},
-	{"gpus", "gpus", TypeString, "GPU indices to use, comma separated (as nvidia-smi numbers them)"},
-	{"tp", "tp", TypeInt, "tensor-parallel degree"},
-	{"gpu_layers", "gpu-layers", TypeString, "layers to offload to the GPU (number or \"all\")"},
-	{"parallel", "parallel", TypeInt, "concurrent sequences / server slots"},
-	{"mem_fraction", "mem-fraction", TypeFloat, "fraction of GPU memory the engine may claim (0-1)"},
-	{"kv_cache_type", "kv-cache", TypeString, "KV cache type: f16, bf16, fp8, q8_0, q4_0 (engine-specific values pass through)"},
-	{"quantization", "quant", TypeString, "weight quantization method to force (engine-specific names)"},
-	{"dtype", "dtype", TypeString, "activation/weight dtype: auto, float16, bfloat16"},
-	{"api_key", "api-key", TypeString, "API key the engine requires from clients"},
-	{"trust_remote_code", "trust-remote-code", TypeBool, "allow model repositories to run custom code"},
-	{"flash_attn", "flash-attn", TypeBool, "force flash attention on"},
-	{"embeddings", "embeddings", TypeBool, "serve the model as an embedding model"},
+	{"ctx", "ctx", TypeInt, "context length in tokens", false},
+	{"gpus", "gpus", TypeString, "GPU indices to use, comma separated (as nvidia-smi numbers them)", false},
+	{"tp", "tp", TypeInt, "tensor-parallel degree", false},
+	{"gpu_layers", "gpu-layers", TypeString, "layers to offload to the GPU (number or \"all\")", false},
+	{"parallel", "parallel", TypeInt, "concurrent sequences / server slots", false},
+	{"mem_fraction", "mem-fraction", TypeFloat, "fraction of GPU memory the engine may claim (0-1)", false},
+	{"kv_cache_type", "kv-cache", TypeString, "KV cache type: f16, bf16, fp8, q8_0, q4_0 (engine-specific values pass through)", false},
+	{"quantization", "quant", TypeString, "weight quantization method to force (engine-specific names)", false},
+	{"dtype", "dtype", TypeString, "activation/weight dtype: auto, float16, bfloat16", false},
+	{"api_key", "api-key", TypeString, "API key the engine requires from clients", false},
+	{"trust_remote_code", "trust-remote-code", TypeBool, "allow model repositories to run custom code", true},
+	{"flash_attn", "flash-attn", TypeBool, "force flash attention on", false},
+	{"embeddings", "embeddings", TypeBool, "serve the model as an embedding model", false},
 }
 
 // FlagByKey returns the unified flag with the manifest key k.

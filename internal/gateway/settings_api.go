@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/LottoLottoLotto/substrate/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/keys"
 	"github.com/LottoLottoLotto/substrate/internal/model"
 	"github.com/LottoLottoLotto/substrate/internal/settings"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
 )
 
 // maxSettingsBody bounds a settings request body.
@@ -389,8 +391,10 @@ func (g *Gateway) listRegistry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// addModel registers a model. Engine arguments, placeholders (vars) and container pre-args are not accepted
-// here: they reach engine command lines and container options on the host, so only the CLI sets them.
+// addModel registers a model. Engine arguments, placeholders (vars), container pre-args and host-only
+// flags (trust_remote_code) are not accepted here: they reach engine command lines and container options or
+// let a model run code on the host, so only the CLI sets them. Nor is "$" in a source: environment
+// variables are expanded for the CLI only, never for a caller who would read the host's environment with them.
 func (g *Gateway) addModel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name           string            `json:"name"`
@@ -410,6 +414,18 @@ func (g *Gateway) addModel(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" || req.Source == "" {
 		writeErr(w, errs.New(errs.Usage, `body must give "name" and "source" (a local path or an org/repo id)`))
 		return
+	}
+	if strings.Contains(req.Source, "$") {
+		writeErr(w, errs.New(errs.Usage, `source %q: "$" is not accepted over the API (environment variables are expanded only by `+
+			"`substrate model add` on the host)", req.Source))
+		return
+	}
+	for _, f := range spec.Unified {
+		if _, set := req.Flags[f.Key]; set && f.HostOnly {
+			writeErr(w, errs.New(errs.Usage, "flags.%s is not accepted over the API: it lets a model run code or read files on the host; "+
+				"set it there with `substrate model add ... --%s`", f.Key, f.CLI))
+			return
+		}
 	}
 	var idle time.Duration
 	if req.IdleUnload != "" {
