@@ -14,8 +14,10 @@ go build -o bin/substrate ./cmd/substrate
 bin/substrate doctor
 ```
 
-Linux (x86-64, arm64) and macOS (Apple silicon) are supported; on Windows use
-WSL2.
+Linux, macOS and Windows are supported; CI runs the tests and
+`scripts/smoke.sh` (start, serve and stop an engine with the built binary) on
+all three. Code that depends on the operating system lives in per-platform
+files (`internal/proc`, `internal/lock`); keep it there.
 
 ## Test
 

@@ -11,6 +11,9 @@ The initial public feature set, to be released as 0.1.0.
 
 ### Added
 
+- Release binaries for Linux, macOS and Windows (amd64 and arm64), built and
+  run on each system by the release workflow before publishing.
+
 - Engine manifests: engines join through a YAML manifest
   ([docs/SPEC.md](docs/SPEC.md)) that declares how to find, install, launch
   and health-check them; builtin manifests for `llama.cpp`, `buun-llama-cpp`,

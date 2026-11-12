@@ -139,6 +139,25 @@ leaves running engines alone, and the new gateway picks them up again. On
 SIGINT or SIGTERM, the gateway waits up to 30 seconds for in-flight streams
 before exiting.
 
+## Platforms
+
+substrate runs on Linux, macOS and Windows. Linux is where it is run with real
+engines and accelerators; on macOS and Windows the tests and an engine
+start/serve/stop run pass on every change, but real engines have not been
+exercised there yet.
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Processes of an engine are found by | session (`/proc`) | process group (`ps`) | process tree |
+| Stopping an engine | the manifest's stop signal, then a kill after the stop timeout | same | always a forced termination of the process tree: Windows cannot deliver a signal to another process |
+| File locks | `flock` | `flock` | `LockFileEx` |
+| Owner-only files (0600/0700) | enforced, checked by `doctor` and for key files | same | not checked: access is governed by the ACL of your profile directory, where the files live by default |
+| `substrate engine install` | runs the manifest's shell steps | same | needs a POSIX `sh` on `PATH` (Git for Windows has one); otherwise install the engine yourself and `substrate engine set <id> --bin <path>` |
+| Tenstorrent engines | supported | not available | not available |
+
+On Windows, keep `SUBSTRATE_HOME` (if you set it) inside a directory only you
+can read: keys, prompts and request records are stored there.
+
 ## Reliability
 
 - **Concurrent use:** config and registry writes, and instance starts, take

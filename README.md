@@ -15,25 +15,34 @@ instead of one launch script and one port per engine.
 
 ## Platforms
 
-- **Linux** (x86-64, arm64) and **macOS** (Apple silicon) are supported.
-- **Windows** is not supported natively (file locking and process-group
-  handling are POSIX-only). Use WSL2.
-- Building from source requires **Go 1.26+**.
+| System | Architectures | How it is tested |
+|---|---|---|
+| **Linux** | x86-64, arm64 | Unit tests, and live runs with real engines on NVIDIA and Tenstorrent hardware |
+| **macOS** | Apple silicon, Intel | Unit tests and an engine start/serve/stop run on every change; not yet with real engines |
+| **Windows** | x86-64, arm64 | Same as macOS |
+
+Differences on macOS and Windows are listed in
+[docs/operations.md](docs/operations.md#platforms). Building from source
+requires **Go 1.26+**.
 
 ## Install
 
 Pick one:
 
 1. **Release binary.** Download the archive for your platform from
-   [GitHub Releases](https://github.com/LottoLottoLotto/substrate/releases)
-   (`substrate_<version>_<os>_<arch>.tar.gz`), check it against
-   `checksums.txt`, and put `substrate` on your `PATH`:
+   [GitHub Releases](https://github.com/LottoLottoLotto/substrate/releases):
+   `substrate_<version>_<os>_<arch>.tar.gz` for Linux and macOS (`darwin`),
+   `.zip` for Windows. Check it against `checksums.txt` and put the binary on
+   your `PATH`:
 
    ```sh
    sha256sum -c checksums.txt --ignore-missing     # macOS: shasum -a 256 -c checksums.txt --ignore-missing
    tar -xzf substrate_*_linux_amd64.tar.gz
    install -m 0755 substrate ~/.local/bin/substrate
    ```
+
+   On Windows, unpack the `.zip` and put `substrate.exe` in a folder on
+   `PATH`.
 
 2. **`go install`:**
 
