@@ -16,16 +16,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/lock"
-	"github.com/lotto/substrate/internal/model"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/route"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/spec"
-	"github.com/lotto/substrate/internal/store"
-	"github.com/lotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/lock"
+	"github.com/LottoLottoLotto/substrate/internal/model"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/route"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
 )
 
 // App is one loaded view of the user's substrate setup.

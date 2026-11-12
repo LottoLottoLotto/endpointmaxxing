@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/gateway"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/settings"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/gateway"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/settings"
 )
 
 // ---- key ----

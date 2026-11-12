@@ -18,13 +18,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/gpu"
-	"github.com/lotto/substrate/internal/lock"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/spec"
-	"github.com/lotto/substrate/internal/store"
-	"github.com/lotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/gpu"
+	"github.com/LottoLottoLotto/substrate/internal/lock"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
 )
 
 // Instance is a launched engine process, persisted as state/instances/<id>.json (mode 0600: it may hold an API key).

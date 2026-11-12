@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // send makes a JSON request and decodes the answer.

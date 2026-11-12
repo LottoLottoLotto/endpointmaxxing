@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // errBudget refuses a request whose team spent a token or cost budget (429, error_kind budget_exceeded).

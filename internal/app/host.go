@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/model"
-	"github.com/lotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/model"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
 )
 
 // A multi-model host (manifest `host:`) is one instance per engine, with the

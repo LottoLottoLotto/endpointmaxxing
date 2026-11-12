@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
 )
 
 // A multi-model host serves exactly the models it holds now: requests for them go to it

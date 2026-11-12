@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/config"
 )
 
 // certReloader serves the certificate in cert/key, re-reading the files when either changes

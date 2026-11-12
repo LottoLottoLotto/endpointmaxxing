@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lotto/substrate/internal/gpu"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/gpu"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // metrics keeps Prometheus counters and histograms in memory (reset when the gateway restarts,

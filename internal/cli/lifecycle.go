@@ -14,13 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/gateway"
-	"github.com/lotto/substrate/internal/meter"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/store"
-	"github.com/lotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/gateway"
+	"github.com/LottoLottoLotto/substrate/internal/meter"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
 )
 
 // launchFlags are shared by run and ensure.

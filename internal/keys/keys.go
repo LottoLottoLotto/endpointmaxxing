@@ -14,9 +14,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/lock"
-	"github.com/lotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/lock"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 

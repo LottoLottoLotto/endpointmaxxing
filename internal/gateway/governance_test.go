@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/policy"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/policy"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // TestPolicyClassificationErrorsAndAudit drives flagged, blocked, failed and unauthenticated requests

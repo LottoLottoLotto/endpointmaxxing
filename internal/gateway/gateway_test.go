@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // selfStartTick is this process's /proc starttime, so a recorded instance pointing at it counts as alive.

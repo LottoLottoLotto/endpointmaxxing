@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
 
 func i64(v int64) *int64 { return &v }

@@ -8,16 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/gpu"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/placement"
-	"github.com/lotto/substrate/internal/route"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/spec"
-	"github.com/lotto/substrate/internal/store"
-	"github.com/lotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/gpu"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/placement"
+	"github.com/LottoLottoLotto/substrate/internal/route"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
 )
 
 // Evictor stops the instances placement chose to make room.

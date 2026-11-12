@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/lotto/substrate/internal/cli"
+	"github.com/LottoLottoLotto/substrate/internal/cli"
 )
 
 func main() { os.Exit(cli.Main(os.Args[1:])) }

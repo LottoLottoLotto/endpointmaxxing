@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/config"
 )
 
 func git(t *testing.T, dir string, args ...string) string {

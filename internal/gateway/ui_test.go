@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
 )
 
 func TestWhoamiReportsRoleAndTeam(t *testing.T) {

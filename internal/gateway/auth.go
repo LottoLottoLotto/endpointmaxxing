@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // errQuota is answered with 429.

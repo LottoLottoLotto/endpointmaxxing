@@ -12,13 +12,13 @@ import (
 	"sort"
 	"time"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/audit"
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/settings"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/audit"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/settings"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // ---- alias ----

@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
 )
 
 // instance records an instance id serving model at url, alive as this test process.

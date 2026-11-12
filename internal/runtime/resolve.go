@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
 )
 
 // Engine is a manifest with the user's overrides applied and its binary resolved.

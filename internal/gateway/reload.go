@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lotto/substrate/internal/audit"
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/audit"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // live is what the gateway derives from one config snapshot. Requests take the current one and keep it

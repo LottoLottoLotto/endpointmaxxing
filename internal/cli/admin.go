@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"github.com/lotto/substrate/internal/gateway"
-	"github.com/lotto/substrate/internal/settings"
+	"github.com/LottoLottoLotto/substrate/internal/gateway"
+	"github.com/LottoLottoLotto/substrate/internal/settings"
 )
 
 // recordAdmin records an administrative change made by this command (events table, audit log, webhooks).

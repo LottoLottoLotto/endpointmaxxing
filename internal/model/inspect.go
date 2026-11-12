@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
 
 // Info is what substrate knows about a model source.

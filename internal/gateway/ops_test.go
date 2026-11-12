@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // recordingBackend answers chat requests and remembers each request's body and X-Request-Id.

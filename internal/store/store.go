@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lotto/substrate/internal/paths"
-	"github.com/lotto/substrate/internal/policy"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/policy"
 	_ "modernc.org/sqlite"
 )
 

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/lotto/substrate/internal/audit"
-	"github.com/lotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/audit"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
 )
 
 func cmdAudit() *command {

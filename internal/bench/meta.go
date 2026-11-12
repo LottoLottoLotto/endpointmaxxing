@@ -14,10 +14,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/gpu"
-	"github.com/lotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/gpu"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
 )
 
 // Meta is everything a submission says about the setup, with where each value came from.

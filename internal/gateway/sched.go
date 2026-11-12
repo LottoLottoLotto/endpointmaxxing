@@ -8,15 +8,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/audit"
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/gpu"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/spec"
-	"github.com/lotto/substrate/internal/store"
-	"github.com/lotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/audit"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/gpu"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
 )
 
 // Run starts the background loops until ctx ends: exit monitor (and crash

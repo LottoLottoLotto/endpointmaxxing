@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
 )
 
 // Model is what routing needs to know about a model.

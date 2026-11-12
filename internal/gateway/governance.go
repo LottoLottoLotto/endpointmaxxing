@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/audit"
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/policy"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/audit"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/policy"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 // Inspector applies config.yaml's policy and classify sections to request bodies.

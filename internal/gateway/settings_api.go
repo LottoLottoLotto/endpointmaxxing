@@ -11,11 +11,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/lotto/substrate/internal/config"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/model"
-	"github.com/lotto/substrate/internal/settings"
+	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/model"
+	"github.com/LottoLottoLotto/substrate/internal/settings"
 )
 
 // maxSettingsBody bounds a settings request body.

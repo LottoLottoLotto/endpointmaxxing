@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lotto/substrate/internal/lock"
-	"github.com/lotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/substrate/internal/lock"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
 
 // DefaultMaxMB is the rotation size when logging.audit_max_mb is unset.

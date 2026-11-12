@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/gateway"
-	"github.com/lotto/substrate/internal/policy"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/gateway"
+	"github.com/LottoLottoLotto/substrate/internal/policy"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 func cmdFlagged() *command {

@@ -15,12 +15,12 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/lotto/substrate/internal/app"
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/spec"
 )
 
-// Version is set at build time with -ldflags "-X github.com/lotto/substrate/internal/cli.Version=...".
+// Version is set at build time with -ldflags "-X github.com/LottoLottoLotto/substrate/internal/cli.Version=...".
 var Version = "dev"
 
 // env is what every command receives.

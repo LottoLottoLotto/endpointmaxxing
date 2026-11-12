@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lotto/substrate/internal/errs"
-	"github.com/lotto/substrate/internal/keys"
-	"github.com/lotto/substrate/internal/policy"
-	"github.com/lotto/substrate/internal/runtime"
-	"github.com/lotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/policy"
+	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/substrate/internal/store"
 )
 
 func (g *Gateway) mgmtInstances(w http.ResponseWriter, r *http.Request) {

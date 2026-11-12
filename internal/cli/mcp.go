@@ -16,7 +16,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/lotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
 )
 
 // MCP (Model Context Protocol) over stdio: newline-delimited JSON-RPC 2.0.
