@@ -1,0 +1,23 @@
+spec: substrate.engine/v1
+id: pyhttp
+name: Python http.server (smoke test)
+description: Stands in for an engine, so launch, readiness, listing and stop can be exercised wherever Python runs.
+
+binary:
+  candidates: [python3, python]
+  version: [--version]
+
+launch:
+  command: ["{bin}", -m, http.server, "{port}", --bind, "{host}"]
+  stop_timeout: 5s
+
+health:
+  path: /
+  timeout: 1m
+
+capabilities:
+  formats: [safetensors]
+  quantizations: ["*"]
+  apis: [chat]
+
+memory: {mode: none}

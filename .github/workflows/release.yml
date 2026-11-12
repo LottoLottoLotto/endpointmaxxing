@@ -74,11 +74,12 @@ jobs:
       run:
         shell: bash
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
-      - name: Unpack and run
+      - name: Unpack, check and run
         env:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
@@ -87,14 +88,11 @@ jobs:
           file="substrate_${TAG#v}_${{ matrix.archive }}"
           grep " $file\$" checksums.txt | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -)
           case "$file" in
-            *.zip) unzip -q "$file" ;;
-            *) tar -xzf "$file" ;;
+            *.zip) unzip -q "$file"; bin=substrate.exe ;;
+            *) tar -xzf "$file"; bin=substrate ;;
           esac
-          export SUBSTRATE_HOME="$PWD/home"
-          ./substrate version | tee version.txt
-          grep -q "$TAG" version.txt
-          ./substrate doctor
-          ./substrate engines
+          "./$bin" version | grep "$TAG"
+          ../scripts/smoke.sh "./$bin"
 
   release:
     if: github.ref_type == 'tag'

@@ -37,6 +37,11 @@ jobs:
       - name: go test
         if: runner.os != 'Linux'
         run: go test ./...
+      - name: Start, serve and stop an engine with the built binary
+        shell: bash
+        run: |
+          go build -o substrate-ci.exe ./cmd/substrate
+          scripts/smoke.sh ./substrate-ci.exe
 
   # Every release target compiles, without cgo.
   build:
