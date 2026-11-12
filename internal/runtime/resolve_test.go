@@ -140,6 +140,9 @@ func TestTTVLLMPlanPlacesPreArgsVarsAndChips(t *testing.T) {
 // The multi-model host launches without a model: its required vars come from the
 // engine's config, its server files are shipped to {assets} and mounted into the container.
 func TestMultiHostPlanShipsItsServer(t *testing.T) {
+	if paths.Windows {
+		t.Skip("a Linux-only engine: the manifest's container paths are POSIX paths")
+	}
 	t.Setenv("SUBSTRATE_HOME", t.TempDir())
 	r := Request{ID: "tt-multihost", Name: "tt-multihost", Host: "127.0.0.1", Port: 9000, Devices: []int{0}}
 	if _, err := engine(t, "tt-multihost", config.EngineOverride{}).Build(r); err == nil ||
@@ -170,6 +173,9 @@ func TestMultiHostPlanShipsItsServer(t *testing.T) {
 }
 
 func TestStrataVarsOverride(t *testing.T) {
+	if paths.Windows {
+		t.Skip("compares POSIX paths")
+	}
 	e := engine(t, "strata", config.EngineOverride{Vars: map[string]string{"server": "tt/serve/server_tt.py"}})
 	r := req(nil)
 	r.Model.Format = "strata-config"
@@ -254,6 +260,9 @@ func TestAPIKeyTravelsInTheEnvironmentWhereTheEngineReadsIt(t *testing.T) {
 		if p.Env[env] != "sk-engine" || strings.Contains(strings.Join(p.Argv, " "), "sk-engine") {
 			t.Fatalf("%s: key must be in $%s only: env %v argv %v", id, env, p.Env, p.Argv)
 		}
+	}
+	if paths.Windows {
+		return // sglang is detected by running its Python, and the fake is a shell script
 	}
 	// An engine without launch.api_key_env still takes the key as an argument.
 	p, err := engine(t, "sglang", config.EngineOverride{}).Build(req(map[string]string{"api_key": "sk-engine"}))
