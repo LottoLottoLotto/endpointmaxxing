@@ -62,7 +62,7 @@ func TestBodyLimits(t *testing.T) {
 	t.Setenv("SUBSTRATE_HOME", t.TempDir())
 	os.MkdirAll(dirOf(ConfigPath()), 0o755)
 	if c, err := Load(); err != nil || c.Gateway.MaxBodyMB != 64 || c.Gateway.MaxBufferedMB != 1024 {
-		t.Fatalf("defaults: %+v %v", c.Gateway, err)
+		t.Fatalf("defaults: %+v %v", c, err)
 	}
 	for yaml, ok := range map[string]bool{
 		"gateway:\n  max_body_mb: 256\n":                      true,
