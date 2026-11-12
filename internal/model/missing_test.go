@@ -1,8 +1,10 @@
 package model
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,5 +22,18 @@ func TestMissingLocalSeparatesGoneFilesFromRepoIDs(t *testing.T) {
 		if got := MissingLocal(source); got != want {
 			t.Errorf("MissingLocal(%q) = %v, want %v", source, got, want)
 		}
+	}
+}
+
+// A missing source is reported as the caller wrote it: the expanded path would disclose the environment.
+func TestInspectMissingSourceIsReportedAsWritten(t *testing.T) {
+	t.Setenv("SUBSTRATE_T_SECRET", "hunter2")
+	const source = "/nope/$SUBSTRATE_T_SECRET/m.gguf"
+	_, err := Inspect(source)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("want a not-exist error, got %v", err)
+	}
+	if msg := err.Error(); strings.Contains(msg, "hunter2") || !strings.Contains(msg, source) {
+		t.Fatalf("error must name the source as written: %s", msg)
 	}
 }

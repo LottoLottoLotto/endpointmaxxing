@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 	"github.com/LottoLottoLotto/substrate/internal/spec"
 )
 
@@ -177,5 +180,87 @@ func TestStrataVarsOverride(t *testing.T) {
 	root := filepath.Dir(filepath.Dir(filepath.Dir(e.Bin)))
 	if p.Argv[1] != filepath.Join(root, "tt/serve/server_tt.py") || p.Cwd != root {
 		t.Fatalf("argv[1]=%s cwd=%s root=%s", p.Argv[1], p.Cwd, root)
+	}
+}
+
+// An instance id is a file name: a reference that leaves the instances directory, or a file that records
+// another id, is no instance, so a planted record is never loaded and its cleanup commands never run.
+func TestLookupsStayInsideTheInstancesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SUBSTRATE_HOME", home)
+	marker := filepath.Join(home, "cleanup-ran")
+	plant := func(path, id string) {
+		t.Helper()
+		data, _ := json.Marshal(Instance{ID: id, Name: "evil", Cleanup: [][]string{{"touch", marker}}})
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant(filepath.Join(paths.State(), "evil.json"), "../evil")   // outside the directory, reached with ../
+	plant(filepath.Join(instancesDir(), "alias.json"), "../evil") // inside it, but recording another id
+	for _, ref := range []string{"../evil", "../../state/evil", "alias", "evil", ""} {
+		if _, err := Get(ref); errs.CodeOf(err) != errs.NotFound {
+			t.Errorf("Get(%q): want not_found, got %v", ref, err)
+		}
+		in, err := Find(ref)
+		if errs.CodeOf(err) != errs.NotFound {
+			t.Errorf("Find(%q): want not_found, got %+v, %v", ref, in, err)
+		}
+		if in != nil {
+			runCleanup(in.Cleanup, in) // what stopping it would do
+		}
+	}
+	if all, _ := List(); len(all) != 0 {
+		t.Errorf("List returned planted records: %+v", all[0])
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a planted record's cleanup command ran")
+	}
+	if _, err := Start(&Plan{}, "../evil", "cli"); errs.CodeOf(err) != errs.Usage {
+		t.Fatalf("Start with an id outside the directory: %v", err)
+	}
+}
+
+// What others see of an instance holds no credential: env values are masked (names stay), and so are
+// the values of secret-looking arguments.
+func TestRedactedMasksEnvValuesAndSecretArguments(t *testing.T) {
+	in := &Instance{APIKey: "sk-engine",
+		Argv: []string{"server", "--api-key", "sk-engine", "--hf-token=hf_argv", "-e", "HF_TOKEN=hf_docker", "--port", "9000"},
+		Env:  map[string]string{"HF_TOKEN": "hf_env", "LLAMA_API_KEY": "sk-engine", "CUDA_VISIBLE_DEVICES": "0"}}
+	r := in.Redacted()
+	wantArgv := []string{"server", "--api-key", "***", "--hf-token=***", "-e", "HF_TOKEN=***", "--port", "9000"}
+	if !reflect.DeepEqual(r.Argv, wantArgv) {
+		t.Fatalf("argv = %v, want %v", r.Argv, wantArgv)
+	}
+	wantEnv := map[string]string{"HF_TOKEN": "***", "LLAMA_API_KEY": "***", "CUDA_VISIBLE_DEVICES": "***"}
+	if !reflect.DeepEqual(r.Env, wantEnv) || r.APIKey != "" {
+		t.Fatalf("env = %v, api key %q", r.Env, r.APIKey)
+	}
+	if in.Env["HF_TOKEN"] != "hf_env" || in.Argv[2] != "sk-engine" {
+		t.Fatalf("Redacted changed the instance itself: %+v", in)
+	}
+}
+
+// Engines that read their API key from the environment get it there: the process list shows no key.
+func TestAPIKeyTravelsInTheEnvironmentWhereTheEngineReadsIt(t *testing.T) {
+	for id, env := range map[string]string{"vllm": "VLLM_API_KEY", "llama.cpp": "LLAMA_API_KEY", "buun-llama-cpp": "LLAMA_API_KEY"} {
+		p, err := engine(t, id, config.EngineOverride{}).Build(req(map[string]string{"api_key": "sk-engine"}))
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if p.Env[env] != "sk-engine" || strings.Contains(strings.Join(p.Argv, " "), "sk-engine") {
+			t.Fatalf("%s: key must be in $%s only: env %v argv %v", id, env, p.Env, p.Argv)
+		}
+	}
+	// An engine without launch.api_key_env still takes the key as an argument.
+	p, err := engine(t, "sglang", config.EngineOverride{}).Build(req(map[string]string{"api_key": "sk-engine"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(p.Argv, " "), "--api-key sk-engine") {
+		t.Fatalf("sglang argv %v", p.Argv)
 	}
 }

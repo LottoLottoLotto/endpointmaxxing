@@ -253,6 +253,34 @@ func TestSettingsAPIConfigChangesApplyAtOnce(t *testing.T) {
 	}
 }
 
+// The settings API never lets its caller choose code the host runs or read the host's environment:
+// host-only flags and "$" in a source are refused, and a missing source is named as the caller wrote it.
+func TestSettingsAPIModelAddTakesNoHostCodeOrEnvironment(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("SUBSTRATE_T_SECRET", "hunter2-env-value")
+	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
+	g, srv := newGateway(t)
+	ckpt := filepath.Join(t.TempDir(), "tiny")
+	os.MkdirAll(ckpt, 0o755)
+	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
+
+	s, out := send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"t","source":"`+ckpt+`","flags":{"trust_remote_code":"true"}}`)
+	if msg := fmt.Sprint(out); s != http.StatusBadRequest || !strings.Contains(msg, "trust_remote_code") || !strings.Contains(msg, "substrate model add") {
+		t.Fatalf("trust_remote_code over HTTP: %d %v", s, out)
+	}
+	s, out = send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"t","source":"/nope/$SUBSTRATE_T_SECRET"}`)
+	if s != http.StatusBadRequest || strings.Contains(fmt.Sprint(out), "hunter2") {
+		t.Fatalf("source with an environment variable: %d %v", s, out)
+	}
+	s, out = send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"t","source":"~/nope-substrate-test/m.gguf"}`)
+	if msg := fmt.Sprint(out); s != http.StatusNotFound || !strings.Contains(msg, "~/nope-substrate-test/m.gguf") || strings.Contains(msg, "stat ") {
+		t.Fatalf("missing source: %d %v", s, out)
+	}
+	if _, ok := g.App.RegisteredModel("t"); ok {
+		t.Fatal("a refused model was registered")
+	}
+}
+
 func TestSettingsAPIErasesOneClient(t *testing.T) {
 	t.Setenv("SUBSTRATE_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})

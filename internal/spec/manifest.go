@@ -82,6 +82,10 @@ type Launch struct {
 	Env         map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	StopSignal  string            `yaml:"stop_signal,omitempty" json:"stop_signal,omitempty"`
 	StopTimeout Duration          `yaml:"stop_timeout,omitempty" json:"stop_timeout,omitempty"`
+	// APIKeyEnv names the environment variable the engine reads its API key from. When set, the unified
+	// api_key flag is passed in that variable of the engine process instead of flags.api_key, so the key
+	// never shows in the host's process list.
+	APIKeyEnv string `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
 	// Cleanup commands run after every stop and after an unexpected exit (errors ignored),
 	// e.g. removing a container the engine's client process left behind.
 	Cleanup [][]string `yaml:"cleanup,omitempty" json:"cleanup,omitempty"`
@@ -109,6 +113,15 @@ func (f *FlagMap) UnmarshalYAML(n *yaml.Node) error {
 	}
 	type plain FlagMap
 	return n.Decode((*plain)(f))
+}
+
+// FlagMapFor returns how the engine takes the unified flag key. launch.api_key_env wins over flags.api_key.
+func (m *Manifest) FlagMapFor(key string) (FlagMap, bool) {
+	if key == "api_key" && m.Launch.APIKeyEnv != "" {
+		return FlagMap{Env: map[string]string{m.Launch.APIKeyEnv: "{value}"}}, true
+	}
+	fm, ok := m.Flags[key]
+	return fm, ok
 }
 
 // Capabilities is what routing and the gateway match against.
@@ -251,6 +264,7 @@ func contains(xs []string, s string) bool {
 
 var (
 	idRe          = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+	envNameRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	placeholderRe = regexp.MustCompile(`\{([a-zA-Z0-9_.]+)\}`)
 )
 
@@ -355,6 +369,9 @@ func (m *Manifest) Validate() []string {
 	for k, v := range m.Launch.Env {
 		check("launch.env."+k, v)
 	}
+	if v := m.Launch.APIKeyEnv; v != "" && !envNameRe.MatchString(v) {
+		bad("launch.api_key_env: %q is not an environment variable name", v)
+	}
 	for _, c := range m.Binary.Candidates {
 		check("binary.candidates", c)
 	}
@@ -455,6 +472,9 @@ func (m *Manifest) Validate() []string {
 		}
 		if len(m.Flags) > 0 {
 			bad("flags: a multi-model host takes no per-model flags (ctx is sent with each load)")
+		}
+		if m.Launch.APIKeyEnv != "" {
+			bad("launch.api_key_env: a multi-model host takes no per-model flags")
 		}
 	}
 	return errs

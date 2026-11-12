@@ -23,6 +23,8 @@ launch:
   env: {PATH: "{bin_dir}:{env.PATH}"}
   stop_signal: SIGINT
   stop_timeout: 60s
+  # The key travels in the environment, not on the command line (the process list is readable by every user).
+  api_key_env: VLLM_API_KEY
 
 health:
   path: /health
@@ -40,7 +42,6 @@ flags:
     values: {f16: auto, bf16: auto, q8_0: fp8}
   quantization: [--quantization, "{value}"]
   dtype: [--dtype, "{value}"]
-  api_key: [--api-key, "{value}"]
   trust_remote_code: [--trust-remote-code]
   embeddings: [--runner, pooling]
 

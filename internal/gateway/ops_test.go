@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LottoLottoLotto/substrate/internal/config"
 	"github.com/LottoLottoLotto/substrate/internal/keys"
 	"github.com/LottoLottoLotto/substrate/internal/store"
 )
@@ -235,6 +237,21 @@ teams:
 	}
 	if redactURL(hook.URL+"/slack/T000/SECRET") != hook.URL+"/..." {
 		t.Fatalf("webhook URLs must be logged without their secret path: %s", redactURL(hook.URL+"/slack/T000/SECRET"))
+	}
+}
+
+// A failed delivery is logged with its cause and the webhook's host: the transport's own error text
+// would repeat the whole URL, whose path is the secret.
+func TestWebhookFailureLogsNoSecretPath(t *testing.T) {
+	hook := httptest.NewServer(http.NotFoundHandler())
+	base := hook.URL
+	hook.Close() // nothing listens there now
+	cfg := &config.Config{}
+	cfg.Alerts.Webhooks = []config.Webhook{{URL: base + "/slack/T000/SECRET"}}
+	var logged []string
+	sendWebhooks(cfg, "admin", "reload configuration", "", func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) })
+	if len(logged) != 1 || strings.Contains(logged[0], "SECRET") || !strings.Contains(logged[0], base+"/...") {
+		t.Fatalf("webhook failure log: %q", logged)
 	}
 }
 

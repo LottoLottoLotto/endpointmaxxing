@@ -59,6 +59,12 @@ func TestParseRejects(t *testing.T) {
 		"host with per-model flags": {
 			minimal + host + "flags: {ctx: [-c, \"{value}\"]}\n", "takes no per-model flags",
 		},
+		"api_key_env that is no variable name": {
+			strings.Replace(minimal, `"{port}"]`, `"{port}"], api_key_env: "TOY KEY"`, 1), "launch.api_key_env",
+		},
+		"host with api_key_env": {
+			strings.Replace(minimal, `"{port}"]`, `"{port}"], api_key_env: TOY_API_KEY`, 1) + host, "launch.api_key_env: a multi-model host",
+		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -94,5 +100,36 @@ func TestExpand(t *testing.T) {
 	}
 	if _, err := Expand("{missing}", nil); err == nil {
 		t.Fatal("unknown placeholder accepted")
+	}
+}
+
+// launch.api_key_env moves the engine API key from the command line to the engine's environment.
+func TestAPIKeyEnvReplacesTheArgumentMapping(t *testing.T) {
+	y := minimal + "flags: {api_key: [--api-key, \"{value}\"]}\n"
+	m, err := Parse([]byte(y), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm, ok := m.FlagMapFor("api_key"); !ok || len(fm.Args) != 2 || len(fm.Env) != 0 {
+		t.Fatalf("argv mapping: %+v %v", fm, ok)
+	}
+	m, err = Parse([]byte(strings.Replace(y, `"{port}"]`, `"{port}"], api_key_env: TOY_API_KEY`, 1)), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fm, ok := m.FlagMapFor("api_key"); !ok || len(fm.Args) != 0 || fm.Env["TOY_API_KEY"] != "{value}" {
+		t.Fatalf("env mapping: %+v %v", fm, ok)
+	}
+	if _, ok := m.FlagMapFor("ctx"); ok {
+		t.Fatal("a flag the manifest does not map was reported as supported")
+	}
+}
+
+// Flags that let their value pick code or files on the host are marked, so the settings API can refuse them.
+func TestHostOnlyFlags(t *testing.T) {
+	for _, f := range Unified {
+		if want := f.Key == "trust_remote_code"; f.HostOnly != want {
+			t.Errorf("%s: HostOnly = %v, want %v", f.Key, f.HostOnly, want)
+		}
 	}
 }

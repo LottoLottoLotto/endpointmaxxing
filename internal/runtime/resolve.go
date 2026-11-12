@@ -348,7 +348,7 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 		if !set {
 			continue
 		}
-		fm, ok := e.Flags[f.Key]
+		fm, ok := e.FlagMapFor(f.Key)
 		if !ok {
 			unsupported = append(unsupported, "--"+f.CLI)
 			continue
