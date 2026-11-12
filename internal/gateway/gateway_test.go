@@ -54,6 +54,7 @@ func TestProxyRoutesByModelAndAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.Close)
 	g := New(a, log.New(io.Discard, "", 0))
 	g.APIKey = "client-key"
 	srv := httptest.NewServer(g.Handler())
@@ -132,6 +133,7 @@ func TestStreamIsMeteredAndUsageRequested(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.Close)
 	g := New(a, log.New(io.Discard, "", 0))
 	g.AllowOpen = true
 	srv := httptest.NewServer(g.Handler())

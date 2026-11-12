@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LottoLottoLotto/substrate/internal/lock"
 	"github.com/LottoLottoLotto/substrate/internal/paths"
 	"github.com/LottoLottoLotto/substrate/internal/policy"
 	_ "modernc.org/sqlite"
@@ -157,7 +158,9 @@ func Open() (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := migrate(db); err != nil {
+	// Two openers of a new database (the gateway and a CLI command, two tests) would both start migrating,
+	// and the one that lost would fail with "database is locked" instead of waiting: one at a time.
+	if err := lock.With(Path()+".lock", func() error { return migrate(db) }); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("%s: %w", Path(), err)
 	}

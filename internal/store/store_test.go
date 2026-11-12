@@ -187,7 +187,7 @@ func TestDatabaseIsPrivate(t *testing.T) {
 	}
 	for p, want := range map[string]os.FileMode{paths.State(): 0o700, Path(): 0o600, Path() + "-wal": 0o600} {
 		st, err := os.Stat(p)
-		if err != nil || st.Mode().Perm() != want {
+		if err != nil || (!paths.Windows && st.Mode().Perm() != want) {
 			t.Errorf("%s: %v %v, want %v", p, st.Mode().Perm(), err, want)
 		}
 	}

@@ -52,7 +52,7 @@ func newGateway(t *testing.T) (*Gateway, *httptest.Server) {
 	g := New(a, log.New(io.Discard, "", 0))
 	g.AllowOpen = true // as serve decides for a loopback address
 	srv := httptest.NewServer(g.Handler())
-	t.Cleanup(func() { srv.Close(); g.Close() })
+	t.Cleanup(func() { srv.Close(); g.Close(); a.Close() }) // an open database cannot be removed on Windows
 	return g, srv
 }
 
@@ -369,6 +369,7 @@ func TestRemovingTheLastKeyDoesNotOpenTheGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.Close)
 	g := New(a, log.New(io.Discard, "", 0)) // AllowOpen unset: as serve leaves it for a non-loopback address
 	defer g.Close()
 	h := g.Handler()

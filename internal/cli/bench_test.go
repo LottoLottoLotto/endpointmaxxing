@@ -22,6 +22,9 @@ import (
 // fakeLMXScript answers like lmx; verified decides the server's verdict. It returns the arguments file.
 func fakeLMXScript(t *testing.T, dir string, verified bool) string {
 	t.Helper()
+	if paths.Windows {
+		t.Skip("the fake lmx is a shell script")
+	}
 	v := map[bool]string{true: "true", false: "false"}[verified]
 	args := filepath.Join(dir, "args")
 	script := `#!/bin/sh

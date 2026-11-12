@@ -16,6 +16,7 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/app"
 	"github.com/LottoLottoLotto/substrate/internal/config"
 	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 	"github.com/LottoLottoLotto/substrate/internal/store"
 	_ "modernc.org/sqlite"
 )
@@ -51,7 +52,7 @@ func TestBackupHoldsConfigKeysAndAConsistentDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := os.Stat(out); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(out); !paths.OwnerOnly(st.Mode()) {
 		t.Fatalf("archive mode %v: it holds key hashes and possibly prompts", st.Mode().Perm())
 	}
 	f, _ := os.Open(out)

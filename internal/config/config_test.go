@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -36,7 +37,7 @@ func TestConcurrentUpdatesKeepEveryModel(t *testing.T) {
 
 func TestStrictFiles(t *testing.T) {
 	t.Setenv("SUBSTRATE_HOME", t.TempDir())
-	os.MkdirAll(dirOf(ConfigPath()), 0o755)
+	os.MkdirAll(filepath.Dir(ConfigPath()), 0o755)
 
 	os.WriteFile(ConfigPath(), []byte("gateway:\n  prot: 8000\n"), 0o644)
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "prot") {
@@ -60,7 +61,7 @@ func TestStrictFiles(t *testing.T) {
 
 func TestBodyLimits(t *testing.T) {
 	t.Setenv("SUBSTRATE_HOME", t.TempDir())
-	os.MkdirAll(dirOf(ConfigPath()), 0o755)
+	os.MkdirAll(filepath.Dir(ConfigPath()), 0o755)
 	if c, err := Load(); err != nil || c.Gateway.MaxBodyMB != 64 || c.Gateway.MaxBufferedMB != 1024 {
 		t.Fatalf("defaults: %+v %v", c, err)
 	}
@@ -77,5 +78,3 @@ func TestBodyLimits(t *testing.T) {
 		}
 	}
 }
-
-func dirOf(p string) string { return p[:strings.LastIndexByte(p, '/')] }

@@ -22,7 +22,7 @@ func engine(t *testing.T, id string, ov config.EngineOverride) *Engine {
 	}
 	for _, m := range ms {
 		if m.ID == id {
-			bin := filepath.Join(t.TempDir(), "bin", "server")
+			bin := filepath.Join(t.TempDir(), "bin", "server.exe") // the suffix makes it executable on Windows
 			os.MkdirAll(filepath.Dir(bin), 0o755)
 			os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755)
 			ov.Bin = bin

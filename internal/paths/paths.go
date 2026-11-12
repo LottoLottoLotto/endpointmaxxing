@@ -67,17 +67,20 @@ func Private(dirs ...string) error {
 	return nil
 }
 
+// Windows is true where access to a file is not in its mode bits and a rename can meet an open file.
+const Windows = runtime.GOOS == "windows"
+
 // OwnerOnly reports whether mode grants nothing to group or others. Windows does not express access in
 // mode bits (files under the user profile are protected by its ACL), so there it is always true.
 func OwnerOnly(mode os.FileMode) bool {
-	return runtime.GOOS == "windows" || mode.Perm()&0o077 == 0
+	return Windows || mode.Perm()&0o077 == 0
 }
 
 // Replace renames tmp over dst, the last step of an atomic write. On Windows a rename fails while another
 // process has dst open (a reader, for the instant it reads); it is retried for up to a second.
 func Replace(tmp, dst string) error {
 	err := os.Rename(tmp, dst)
-	for i := 0; err != nil && runtime.GOOS == "windows" && i < 50; i++ {
+	for i := 0; err != nil && Windows && i < 50; i++ {
 		time.Sleep(20 * time.Millisecond)
 		err = os.Rename(tmp, dst)
 	}

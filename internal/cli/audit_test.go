@@ -12,6 +12,7 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/audit"
 	"github.com/LottoLottoLotto/substrate/internal/config"
 	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
 
 // audit verify reports the chain's head, holds the chain to a head kept elsewhere (--expect-head,
@@ -63,6 +64,9 @@ func TestAuditVerifyHeadAndKey(t *testing.T) {
 	}
 	if err := execute(e, []string{"audit", "verify", "--key-file", other}); errs.CodeOf(err) != errs.Conflict {
 		t.Fatalf("another key: %v", err)
+	}
+	if paths.Windows {
+		return // access is not in the mode bits there
 	}
 	if err := os.Chmod(keyFile, 0o644); err != nil {
 		t.Fatal(err)

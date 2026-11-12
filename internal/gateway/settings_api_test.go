@@ -197,7 +197,7 @@ func TestSettingsAPIConfigChangesApplyAtOnce(t *testing.T) {
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, srv := newGateway(t)
 
-	ckpt := filepath.Join(t.TempDir(), "tiny")
+	ckpt := filepath.ToSlash(filepath.Join(t.TempDir(), "tiny")) // pasted into JSON below: no backslashes
 	os.MkdirAll(ckpt, 0o755)
 	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
 	s, out := send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"tiny","source":"`+ckpt+`","flags":{"ctx":"4096"}}`)
@@ -260,7 +260,7 @@ func TestSettingsAPIModelAddTakesNoHostCodeOrEnvironment(t *testing.T) {
 	t.Setenv("SUBSTRATE_T_SECRET", "hunter2-env-value")
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, srv := newGateway(t)
-	ckpt := filepath.Join(t.TempDir(), "tiny")
+	ckpt := filepath.ToSlash(filepath.Join(t.TempDir(), "tiny")) // pasted into JSON below: no backslashes
 	os.MkdirAll(ckpt, 0o755)
 	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
 

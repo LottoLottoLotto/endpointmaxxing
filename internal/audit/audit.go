@@ -285,7 +285,7 @@ func (l *Log) open() error {
 	if err != nil {
 		return err
 	}
-	l.f, err = os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	l.f, err = openAppend(l.path)
 	if err == nil {
 		err = os.Chmod(l.path, 0o600) // a file created by an older version may be wider
 	}
@@ -378,11 +378,11 @@ func (l *Log) rotate() error {
 	l.f = nil
 	ext := filepath.Ext(l.path)
 	dst := strings.TrimSuffix(l.path, ext) + "-" + time.Now().UTC().Format("20060102T150405.000000000Z") + ext
-	if err := os.Rename(l.path, dst); err != nil {
+	if err := paths.Replace(l.path, dst); err != nil {
 		return err
 	}
 	var err error
-	l.f, err = os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	l.f, err = openAppend(l.path)
 	return err
 }
 

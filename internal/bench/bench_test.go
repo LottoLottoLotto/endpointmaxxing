@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -57,6 +58,9 @@ func TestGitProvenanceNamesTheRemoteThatHasTheCommit(t *testing.T) {
 // fakeLMX writes a shell script that records its arguments and answers like lmx.
 func fakeLMX(t *testing.T, verified bool) (*LMX, string) {
 	t.Helper()
+	if paths.Windows {
+		t.Skip("the fake lmx is a shell script")
+	}
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
 	v := "false"
@@ -112,6 +116,9 @@ func TestLMXArgumentsAndVerdicts(t *testing.T) {
 // lmx prints the server's response, then fails to record the receipt in its run files (exit 1): the run was
 // uploaded, so Submit must report it rather than fail and invite a duplicate upload.
 func TestSubmitSucceedsWhenOnlyTheReceiptWriteFails(t *testing.T) {
+	if paths.Windows {
+		t.Skip("the fake lmx is a shell script")
+	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "lmx")
 	script := `#!/bin/sh

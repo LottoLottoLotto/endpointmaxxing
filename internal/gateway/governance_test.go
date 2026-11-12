@@ -49,6 +49,7 @@ func TestPolicyClassificationErrorsAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.Close)
 	a.Config().Policy = policy.Config{Enabled: true, Rules: []policy.Rule{
 		{Name: "secrets", Severity: "high", Detectors: []string{"api_key"}},
 		{Name: "codenames", Severity: "critical", Action: policy.ActionBlock, Keywords: []string{"Project Falcon"}},
@@ -186,6 +187,7 @@ func TestRequestsTooLargeToInspectAreBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.Close)
 	a.Config().Policy = policy.Config{Enabled: true, ScanMaxBytes: 64, Rules: []policy.Rule{
 		{Name: "codenames", Action: policy.ActionBlock, Keywords: []string{"Project Falcon"}, Models: []string{"m"}},
 	}}

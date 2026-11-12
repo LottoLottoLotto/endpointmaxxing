@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
 
 func open(t *testing.T, p string, maxMB int, keyFile string) *Log {
@@ -68,7 +70,7 @@ func TestChainSurvivesRotationAndDetectsTampering(t *testing.T) {
 	for _, f := range []string{p, headPath(p)} {
 		if st, err := os.Stat(f); err != nil {
 			t.Error(err)
-		} else if st.Mode().Perm() != 0o600 {
+		} else if !paths.OwnerOnly(st.Mode()) {
 			t.Errorf("%s: mode %v", f, st.Mode().Perm())
 		}
 	}
@@ -116,7 +118,7 @@ func TestLegacyLinesThenChain(t *testing.T) {
 	if !r.OK || r.Unchained != 2 || r.Lines != 4 || r.Head.Count != 2 {
 		t.Fatalf("%+v", r)
 	}
-	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(p); !paths.OwnerOnly(st.Mode()) {
 		t.Errorf("an existing wider file was not tightened: %v", st.Mode().Perm())
 	}
 	// Editing the last legacy line breaks the first chained line's link.
@@ -365,14 +367,16 @@ func TestKeyedChainSurvivesRotation(t *testing.T) {
 func TestKeyFileRefused(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "audit.jsonl")
 	kf, _ := keyFile(t)
-	if err := os.Chmod(kf, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(p, 0, kf, t.Logf); err == nil || !strings.Contains(err.Error(), "group or others") {
-		t.Fatalf("key file readable by its group: %v", err)
-	}
-	if err := os.Chmod(kf, 0o600); err != nil {
-		t.Fatal(err)
+	if !paths.Windows { // access is not in the mode bits there
+		if err := os.Chmod(kf, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(p, 0, kf, t.Logf); err == nil || !strings.Contains(err.Error(), "group or others") {
+			t.Fatalf("key file readable by its group: %v", err)
+		}
+		if err := os.Chmod(kf, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	os.WriteFile(kf, []byte(strings.Repeat("k", MinKeyBytes-1)+"\n"), 0o600)
 	if _, err := Open(p, 0, kf, t.Logf); err == nil || !strings.Contains(err.Error(), "at least 32") {

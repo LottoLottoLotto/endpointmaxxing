@@ -237,6 +237,7 @@ func TestHotReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(a.Close)
 	g := New(a, log.New(io.Discard, "", 0))
 	g.AllowOpen = true
 	defer g.Close()
