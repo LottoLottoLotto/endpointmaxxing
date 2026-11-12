@@ -143,11 +143,16 @@ func (in *Instance) Redacted() *Instance {
 	return &c
 }
 
-// secretName reports whether an option or variable name suggests its value is a credential.
+// secretName reports whether an option or variable name suggests its value is a credential: one of its
+// words (split on anything but letters and digits) is key, apikey, token, secret, password or passwd.
+// Whole words only, so --max-tokens and --tokenizer stay readable.
 func secretName(name string) bool {
-	name = strings.ToLower(name)
-	for _, w := range []string{"key", "token", "secret", "password"} {
-		if strings.Contains(name, w) {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	for _, w := range words {
+		switch w {
+		case "key", "apikey", "token", "secret", "password", "passwd":
 			return true
 		}
 	}
