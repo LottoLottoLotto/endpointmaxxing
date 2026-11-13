@@ -21,10 +21,42 @@ func stat(pid int) []string {
 	return strings.Fields(s[i+1:])
 }
 
+// running reports whether the process whose stat fields are f still runs. A process whose main thread has
+// exited is shown as a zombie ("Z") while its other threads go on, still holding what the process holds
+// (an engine worker releasing GPU memory after SIGTERM is in this state for seconds): it is gone only when
+// no thread is left.
+func running(pid int, f []string) bool {
+	if len(f) == 0 {
+		return false
+	}
+	if f[0] != "Z" {
+		return true
+	}
+	threads, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
+	if err != nil {
+		return false
+	}
+	for _, t := range threads {
+		if t.Name() == strconv.Itoa(pid) {
+			continue
+		}
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/stat", pid, t.Name()))
+		if err != nil {
+			continue
+		}
+		if i := strings.LastIndexByte(string(data), ')'); i >= 0 {
+			if tf := strings.Fields(string(data)[i+1:]); len(tf) > 0 && tf[0] != "Z" && tf[0] != "X" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Start is the process start time in clock ticks.
 func Start(pid int) uint64 {
 	f := stat(pid)
-	if len(f) < 20 || f[0] == "Z" {
+	if len(f) < 20 || !running(pid, f) {
 		return 0
 	}
 	t, _ := strconv.ParseUint(f[19], 10, 64)
@@ -46,7 +78,7 @@ func Members(leader int, _ uint64) []int {
 			continue
 		}
 		// Fields after ')': state ppid pgrp session ...
-		if f := stat(pid); len(f) > 3 && f[3] == want && f[0] != "Z" {
+		if f := stat(pid); len(f) > 3 && f[3] == want && running(pid, f) {
 			out = append(out, pid)
 		}
 	}
