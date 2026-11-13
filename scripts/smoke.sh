@@ -41,7 +41,8 @@ url="$(sed -n 's/.*"base_url": "\(.*\)",/\1/p' "$work/ps.json")"
 curl -fsS -o /dev/null "$url/" || fail "the engine does not answer at $url"
 
 step "a second command still sees the same running process"
-"$bin" ps --json | grep -q '"status": "ready"' || fail "instance was lost between commands"
+"$bin" ps --json > "$work/ps2.json"
+grep -q '"status": "ready"' "$work/ps2.json" || fail "instance was lost between commands"
 
 step "gateway serves and lists the instance"
 "$bin" serve --port "$port" > "$work/serve.log" 2>&1 &
@@ -50,9 +51,12 @@ for _ in $(seq 1 50); do
   curl -fsS -o /dev/null "http://127.0.0.1:$port/substrate/v1/whoami" 2>/dev/null && break
   sleep 0.2
 done
-curl -fsS "http://127.0.0.1:$port/substrate/v1/instances" | grep -q '"smoke.pyhttp"' || fail "gateway does not list the instance: $(cat "$work/serve.log")"
+# Responses go to a file first: grep -q stops reading at its first match, which curl reports as a failure.
+curl -fsS -o "$work/instances.json" "http://127.0.0.1:$port/substrate/v1/instances"
+grep -q '"smoke.pyhttp"' "$work/instances.json" || fail "gateway does not list the instance: $(cat "$work/serve.log")"
 curl -fsS -o /dev/null "http://127.0.0.1:$port/admin/" || fail "admin UI is not served"
-curl -fsS "http://127.0.0.1:$port/metrics" | grep -q '^substrate_' || fail "no metrics"
+curl -fsS -o "$work/metrics.txt" "http://127.0.0.1:$port/metrics"
+grep -q '^substrate_' "$work/metrics.txt" || fail "no metrics"
 kill "$serve_pid" 2>/dev/null || true
 wait "$serve_pid" 2>/dev/null || true
 serve_pid=""
