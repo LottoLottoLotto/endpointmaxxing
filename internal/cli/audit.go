@@ -26,18 +26,19 @@ func auditKey(c *config.Config, file string) ([]byte, error) {
 }
 
 func auditVerifyCmd() *command {
-	return &command{name: "verify", synopsis: "[--key-file F] [--expect-head HASH [--expect-count N]]",
+	return &command{name: "verify", synopsis: "[--key-file F] [--expect-head HASH [--expect-count N]] [--expect-first N]",
 		summary: "check that no audit line was changed, inserted, removed or reordered and that the file still ends at its recorded head (exit 6 otherwise)", tool: true,
 		build: func(fs *flag.FlagSet) action {
 			keyFile := fs.String("key-file", "", "file holding the audit key of a keyed chain, mode 0600 (default: config gateway.audit_key_file)")
 			expectHead := fs.String("expect-head", "", "head hash printed by an earlier verify and kept elsewhere: fail unless the chain still contains that line (nothing up to it was removed or rewritten)")
 			expectCount := fs.Int64("expect-count", 0, "head count printed with that hash: fail unless the line has this number; without --expect-head, fail if the chain ends before it")
+			expectFirst := fs.Int64("expect-first", 0, "first record number printed by an earlier verify: fail if the chain now starts later (old lines were removed)")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("audit verify", pos, 0, 0); err != nil {
 					return err
 				}
-				if *expectCount < 0 {
-					return errs.New(errs.Usage, "audit verify: --expect-count must be >= 0")
+				if *expectCount < 0 || *expectFirst < 0 {
+					return errs.New(errs.Usage, "audit verify: --expect-count and --expect-first must be >= 0")
 				}
 				a, err := e.app()
 				if err != nil {
@@ -51,7 +52,7 @@ func auditVerifyCmd() *command {
 				if err != nil {
 					return err
 				}
-				r, err := audit.Verify(p, audit.Check{Key: key, ExpectHead: strings.ToLower(strings.TrimSpace(*expectHead)), ExpectCount: *expectCount})
+				r, err := audit.Verify(p, audit.Check{Key: key, ExpectHead: strings.ToLower(strings.TrimSpace(*expectHead)), ExpectCount: *expectCount, ExpectFirst: *expectFirst})
 				if err != nil {
 					return err
 				}
@@ -79,7 +80,7 @@ func auditVerifyCmd() *command {
 						fmt.Fprintf(w, "expected head: count %d, %d line(s) written since\n", r.ExpectedAt, r.Head.Count-r.ExpectedAt)
 					}
 					if r.Lines > 0 {
-						fmt.Fprintf(w, "head: count %d hash %s\n", r.Head.Count, r.Head.Hash)
+						fmt.Fprintf(w, "head: count %d hash %s (first record kept: %d)\n", r.Head.Count, r.Head.Hash, r.First)
 					}
 				}); err != nil {
 					return err

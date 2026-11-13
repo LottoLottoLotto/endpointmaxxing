@@ -21,9 +21,13 @@ func Signal(leader int, sig syscall.Signal) error {
 	return nil
 }
 
-// Kill SIGKILLs the engine's group and every member, including ones that left the group.
-func Kill(leader int) {
-	victims := append(Members(leader), leader)
+// Kill SIGKILLs the engine's group and every member, including ones that left the group. The leader's own
+// process id is signalled only while it is still the engine (started), not a later process with that id.
+func Kill(leader int, started uint64) {
+	victims := Members(leader, started)
+	if now := Start(leader); now != 0 && (started == 0 || now == started) {
+		victims = append(victims, leader)
+	}
 	syscall.Kill(-leader, syscall.SIGKILL)
 	for _, p := range victims {
 		syscall.Kill(p, syscall.SIGKILL)

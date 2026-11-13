@@ -15,6 +15,7 @@ import (
 	"github.com/LottoLottoLotto/substrate/internal/app"
 	"github.com/LottoLottoLotto/substrate/internal/audit"
 	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
 	"github.com/LottoLottoLotto/substrate/internal/keys"
 	"github.com/LottoLottoLotto/substrate/internal/paths"
 	"github.com/LottoLottoLotto/substrate/internal/settings"
@@ -123,7 +124,6 @@ func cmdBackup() *command {
 				}
 				files, err := backup(a, *out, !*noDB, *withAudit)
 				if err != nil {
-					os.Remove(*out)
 					return err
 				}
 				return e.out(map[string]any{"archive": *out, "files": files}, func(w io.Writer) {
@@ -139,10 +139,20 @@ func cmdBackup() *command {
 // any captured prompts: it is written mode 0600.
 func backup(a *app.App, out string, withDB, withAudit bool) ([]string, error) {
 	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return nil, errs.New(errs.Conflict, "%s exists and is left as it is; choose another --out", out)
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	// From here the file is this run's: an archive that could not be completed is removed.
+	done := false
+	defer func() {
+		f.Close()
+		if !done {
+			os.Remove(out)
+		}
+	}()
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
 	var names []string
@@ -214,9 +224,12 @@ func backup(a *app.App, out string, withDB, withAudit bool) ([]string, error) {
 		}
 		// The head anchor goes in first: a line written in between leaves the file ahead of its anchor,
 		// which verifies; the other order could leave it behind, which reads as truncation.
-		if _, err := os.Stat(p + ".head"); err == nil {
-			if err := add(p+".head", "state/"+filepath.Base(p)+".head"); err != nil {
-				return nil, err
+		// Its pruning record (.first) goes along: without it the restored chain looks cut at the start.
+		for _, side := range []string{".head", ".first"} {
+			if _, err := os.Stat(p + side); err == nil {
+				if err := add(p+side, "state/"+filepath.Base(p)+side); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if err := add(p, "state/"+filepath.Base(p)); err != nil {
@@ -229,7 +242,11 @@ func backup(a *app.App, out string, withDB, withAudit bool) ([]string, error) {
 	if err := gz.Close(); err != nil {
 		return nil, err
 	}
-	return names, f.Close()
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	done = true
+	return names, nil
 }
 
 // ---- security checks (doctor) ----

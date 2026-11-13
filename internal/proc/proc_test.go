@@ -46,7 +46,7 @@ func TestEngineIsTrackedAndKilledAsAWhole(t *testing.T) {
 	}
 	go cmd.Wait() // reap, as the launcher does
 	leader := cmd.Process.Pid
-	t.Cleanup(func() { Kill(leader) })
+	t.Cleanup(func() { Kill(leader, 0) })
 
 	var start uint64
 	waitFor(t, "the engine to be seen", func() bool { start = Start(leader); return start != 0 })
@@ -54,7 +54,7 @@ func TestEngineIsTrackedAndKilledAsAWhole(t *testing.T) {
 		t.Fatalf("start token changed for a running process: %d then %d", start, again)
 	}
 	var members []int
-	waitFor(t, "the engine and its worker to be listed", func() bool { members = Members(leader); return len(members) >= 2 })
+	waitFor(t, "the engine and its worker to be listed", func() bool { members = Members(leader, start); return len(members) >= 2 })
 	if !slices.Contains(members, leader) {
 		t.Fatalf("members %v do not include the leader %d", members, leader)
 	}
@@ -65,9 +65,9 @@ func TestEngineIsTrackedAndKilledAsAWhole(t *testing.T) {
 		t.Fatalf("no resident memory reported for %v", members)
 	}
 
-	Kill(leader)
+	Kill(leader, start)
 	waitFor(t, "the engine to be gone", func() bool { return Start(leader) == 0 })
-	waitFor(t, "its worker to be gone", func() bool { return len(Members(leader)) == 0 })
+	waitFor(t, "its worker to be gone", func() bool { return len(Members(leader, start)) == 0 })
 }
 
 func TestStartOfAMissingProcessIsZero(t *testing.T) {

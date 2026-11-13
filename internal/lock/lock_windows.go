@@ -37,3 +37,6 @@ func Unlock(f *os.File) {
 	var ol syscall.Overlapped
 	unlockFileEx.Call(f.Fd(), 0, 0xFFFFFFFF, 0xFFFFFFFF, uintptr(unsafe.Pointer(&ol)))
 }
+
+// NoFollow is the Unix open flag that refuses a symbolic link; Windows has no such flag for os.OpenFile.
+const NoFollow = 0

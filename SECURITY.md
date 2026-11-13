@@ -118,8 +118,9 @@ Out of scope:
   alone: someone who can write both the audit file and its `.head` rolling
   both back to an earlier state, or truncating the file and deleting the
   anchor (a warning only); without a key, a consistent rewrite of the whole
-  file. These are caught only by `audit verify --expect-head` /
-  `--expect-count` with a head stored off the host. Someone who holds the
+  file, or deleting the oldest lines together with the pruning record.
+  These are caught only by `audit verify --expect-head` / `--expect-count` /
+  `--expect-first` with the printed values stored off the host. Someone who holds the
   audit key can produce lines that verify.
 
 `substrate doctor` reports security findings for a given setup. The details

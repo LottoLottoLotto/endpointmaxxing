@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/LottoLottoLotto/substrate/internal/paths"
 )
@@ -42,6 +43,29 @@ func MissingLocal(source string) bool {
 // Inspect identifies source: a .gguf file, a directory of GGUF shards or of a
 // Hugging Face checkpoint, a Strata config, or a Hugging Face repo id.
 func Inspect(source string) (*Info, error) {
+	info, err := inspect(source)
+	if info != nil {
+		// These come out of the model's own files and are shown in terminals and stored in models.yaml.
+		info.Arch, info.Quant = label(info.Arch), label(info.Quant)
+	}
+	return info, err
+}
+
+// label makes text taken from a model file safe to print and store: printable characters only, at most 64.
+func label(s string) string {
+	out := make([]rune, 0, min(len(s), 64))
+	for _, r := range s {
+		if len(out) == 64 {
+			break
+		}
+		if unicode.IsPrint(r) {
+			out = append(out, r)
+		}
+	}
+	return string(out)
+}
+
+func inspect(source string) (*Info, error) {
 	p := paths.Expand(source)
 	st, err := os.Stat(p)
 	if err != nil {

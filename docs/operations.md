@@ -95,7 +95,9 @@ substrate backup --out /backups/substrate-$(date +%F).tar.gz [--audit] [--no-db]
 The archive (mode 0600) holds `config/` (`config.yaml`, `models.yaml`,
 `keys.yaml`, `engines/`) and `state/usage.db`, a consistent snapshot taken
 with SQLite `VACUUM INTO` while the gateway keeps running; `--audit` adds the
-audit log and its head anchor (`<audit file>.head`). The audit key file
+audit log, its head anchor (`<audit file>.head`) and its pruning record
+(`<audit file>.first`). `backup` never overwrites or removes a file that is
+already at `--out`: it stops and leaves it as it is. The audit key file
 (`gateway.audit_key_file`) is not in the archive: keep a copy of it
 separately. To restore, stop the gateway and copy `config/` and `state/` back
 into `~/.config/substrate` and `~/.local/state/substrate`. Key secrets are

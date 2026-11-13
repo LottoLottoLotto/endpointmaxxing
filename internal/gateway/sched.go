@@ -728,7 +728,7 @@ func (g *Gateway) sample() {
 		if !in.Alive() {
 			continue
 		}
-		pids := proc.Members(in.PID)
+		pids := proc.Members(in.PID, in.StartTick)
 		s := store.InstanceSample{TS: now, Instance: in.ID, Engine: in.Engine, Model: in.Name,
 			RSSMiB: proc.RSSMiB(pids), Processes: int64(len(pids))}
 		for _, m := range usage.Of(pids) {

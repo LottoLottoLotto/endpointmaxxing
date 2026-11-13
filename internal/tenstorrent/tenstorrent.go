@@ -74,11 +74,12 @@ func Users(n int) []int {
 	return out
 }
 
-// Held reports whether another process holds chip n's lock (a non-blocking probe).
+// Held reports whether another process holds chip n's lock (a non-blocking probe). A lock file that cannot
+// be opened counts as held: a chip is never taken for free on a guess.
 func (c Config) Held(n int) bool {
 	f, err := c.open(n)
 	if err != nil {
-		return false
+		return true
 	}
 	defer f.Close()
 	if err := lock.Try(f); err != nil {
@@ -93,10 +94,17 @@ func (c Config) open(n int) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o777); err != nil {
 		return nil, err
 	}
-	// Other teams' jobs share these files: keep them group/world writable as their scripts expect.
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o666)
+	// Other teams' jobs share these files: keep them group/world writable as their scripts expect. The
+	// directory is therefore writable by every user of the host, who could plant a link in a lock's place:
+	// a link is not followed (it would create or lock a file of that user's choosing), and only a regular
+	// file is a lock.
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR|lock.NoFollow, 0o666)
 	if err != nil {
 		return nil, fmt.Errorf("chip %d lock %s: %w", n, p, err)
+	}
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("chip %d lock %s is not a regular file", n, p)
 	}
 	return f, nil
 }
@@ -146,11 +154,21 @@ func (c Config) Check(chips []int) error {
 	return err
 }
 
-// Reset resets chips with tt-smi (after a hung or killed engine left them in an unknown state).
+// Reset resets chips with tt-smi (after a hung or killed engine left them in an unknown state). It holds
+// the chips' locks meanwhile and refuses when another job has one: a chip is never reset under a job.
 func (c Config) Reset(chips []int) error {
 	if len(chips) == 0 {
 		return nil
 	}
+	locks, err := c.Acquire(chips)
+	if err != nil {
+		return fmt.Errorf("not reset: %w", err)
+	}
+	defer func() {
+		for _, f := range locks {
+			f.Close()
+		}
+	}()
 	bin := c.TTSmi
 	if bin == "" {
 		bin = "tt-smi"

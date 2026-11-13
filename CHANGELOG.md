@@ -131,6 +131,21 @@ Entries marked "breaking" can break existing clients.
   requires `Content-Type: application/json` on POST, answers only when
   addressed by IP address or as localhost, and caps bodies at 64 MiB.
 - `substrate logs` no longer reads files outside the logs directory.
+- A model file with endlessly nested metadata arrays is refused instead of
+  crashing the process; names taken from model files are cut to 64 printable
+  characters.
+- Human-readable output shows control characters as `\xNN` instead of
+  sending them to the terminal, and `--csv` output prefixes cells that a
+  spreadsheet would run as formulas with an apostrophe.
+- `substrate backup` never removes or overwrites an existing file at `--out`.
+- Tenstorrent chip locks: a symbolic link in a lock's place is not followed,
+  an unreadable lock counts as held, and a chip reset holds the chip's lock.
+- `audit verify` fails when the oldest lines were deleted (retention records
+  what it removed in `<audit file>.first`); new `--expect-first`.
+- Windows: stopping an engine whose main process already exited no longer
+  reaches processes that later reused its process id.
+- Release workflow: actions pinned to commits, tag names validated and passed
+  through the environment.
 - Open mode is decided when `serve` starts (loopback listen address or
   `--insecure`): removing the last key from any other gateway makes it
   answer 401 instead of opening it.

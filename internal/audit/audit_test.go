@@ -386,3 +386,37 @@ func TestKeyFileRefused(t *testing.T) {
 		t.Fatal("missing key file was accepted")
 	}
 }
+
+// Deleting the oldest lines leaves what retention leaves, a chain that starts in the middle: only lines
+// retention recorded as removed may be missing.
+func TestDeletedOldestLinesAreDetected(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "audit.jsonl")
+	l := open(t, p, 0, "")
+	write(t, l, 10, "change")
+	l.Close()
+	whole := mustVerify(t, p, Check{})
+	if !whole.OK || whole.First != 1 {
+		t.Fatalf("intact chain: %+v", whole)
+	}
+	data, _ := os.ReadFile(p)
+	cut := func(n int) { os.WriteFile(p, bytes.Join(bytes.SplitAfter(data, []byte("\n"))[n:], nil), 0o600) }
+
+	cut(3)
+	if r := mustVerify(t, p, Check{}); r.OK || !strings.Contains(r.Problem, "oldest lines were deleted") {
+		t.Fatalf("three oldest lines deleted: %+v", r)
+	}
+	// Retention recorded that everything from record 4 was kept: that much may be missing, no more.
+	os.WriteFile(firstPath(p), []byte(`{"first":4}`+"\n"), 0o600)
+	if r := mustVerify(t, p, Check{}); !r.OK || r.First != 4 {
+		t.Fatalf("lines removed by retention: %+v", r)
+	}
+	cut(5)
+	if r := mustVerify(t, p, Check{}); r.OK || !strings.Contains(r.Problem, "2 line(s) were deleted from the start") {
+		t.Fatalf("lines deleted beyond what retention removed: %+v", r)
+	}
+	// A first record noted elsewhere catches it even when the pruning record was rewritten too.
+	os.WriteFile(firstPath(p), []byte(`{"first":6}`+"\n"), 0o600)
+	if r := mustVerify(t, p, Check{ExpectFirst: 4}); r.OK || !strings.Contains(r.Problem, "after the expected 4") {
+		t.Fatalf("expected first record: %+v", r)
+	}
+}

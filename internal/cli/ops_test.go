@@ -15,6 +15,7 @@ import (
 
 	"github.com/LottoLottoLotto/substrate/internal/app"
 	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/substrate/internal/errs"
 	"github.com/LottoLottoLotto/substrate/internal/keys"
 	"github.com/LottoLottoLotto/substrate/internal/paths"
 	"github.com/LottoLottoLotto/substrate/internal/store"
@@ -169,5 +170,21 @@ func TestAdminChangesAreRecorded(t *testing.T) {
 	audit, _ := os.ReadFile(filepath.Join(os.Getenv("SUBSTRATE_HOME"), "state", "audit.jsonl"))
 	if strings.Count(string(audit), `"type":"admin"`) != 3 || strings.Contains(string(audit), "sk-sub-") {
 		t.Fatalf("audit log: %s", audit)
+	}
+}
+
+// A backup never touches a file that was already there: the previous archive survives a repeated command.
+func TestBackupLeavesAnExistingFileAlone(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	a := openApp(t)
+	out := filepath.Join(t.TempDir(), "b.tar.gz")
+	if err := os.WriteFile(out, []byte("yesterday's backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup(a, out, true, false); errs.CodeOf(err) != errs.Conflict {
+		t.Fatalf("backup over an existing file: %v", err)
+	}
+	if data, _ := os.ReadFile(out); string(data) != "yesterday's backup" {
+		t.Fatalf("the existing file was changed or removed: %q", data)
 	}
 }

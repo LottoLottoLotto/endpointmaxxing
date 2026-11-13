@@ -1,0 +1,11 @@
+# Actions are pinned to commits (a tag can be moved); this keeps the pins and the Go modules current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly

@@ -192,7 +192,7 @@ GPU and memory samples are taken only while the gateway runs.
 - **Verifying.**
 
   ```sh
-  substrate audit verify [--key-file F] [--expect-head HASH [--expect-count N]]
+  substrate audit verify [--key-file F] [--expect-head HASH [--expect-count N]] [--expect-first N]
   ```
 
   | Flag | Effect |
@@ -200,10 +200,18 @@ GPU and memory samples are taken only while the gateway runs.
   | `--key-file F` | audit key file, mode 0600 (default: `gateway.audit_key_file`); verification fails if the chain has keyed lines and no key is given |
   | `--expect-head HASH` | a head hash printed by an earlier verify and stored elsewhere (SIEM, ticket); fails (exit 6) unless the chain still contains the line with that hash, that is, nothing up to it was removed or rewritten. The chain may have grown since |
   | `--expect-count N` | default 0 (not checked). With `--expect-head`: the line must be record N. Alone: fails if the chain ends before record N |
+  | `--expect-first N` | default 0 (not checked). The first record number printed by an earlier verify: fails if the chain now starts later, that is, old lines were removed since |
 
-  On success it prints `head: count N hash H`, where `count` is the head
-  line's `seq`; warnings are printed as `warning: ...`. `--json` adds `head`
-  (`file`, `count`, `hash`), `keyed`, `warnings` and `expected_head_count`.
+  **Missing oldest lines.** A chain that does not start at record 1 is what
+  retention leaves when it prunes old rotated files, and also what deleting
+  the oldest lines leaves. Retention therefore records the oldest record it
+  kept in `<audit file>.first`; verify fails when the chain starts later than
+  that, or starts after record 1 without such a record.
+
+  On success it prints `head: count N hash H (first record kept: F)`, where
+  `count` is the head line's `seq`; warnings are printed as `warning: ...`.
+  `--json` adds `head` (`file`, `count`, `hash`), `first`, `keyed`, `warnings`
+  and `expected_head_count`.
   If the file holding a recorded head has been pruned by audit retention,
   `--expect-head` fails: record heads more often than
   `logging.audit_retention_days`. `doctor` reports a broken chain but not
@@ -211,9 +219,10 @@ GPU and memory samples are taken only while the gateway runs.
 - **What it does not detect.** Someone who can write both the audit file
   and its `.head` can roll both back to an earlier state, or truncate the
   file and delete the anchor (a warning only). Without a key, they can also
-  rewrite the whole file with a consistent chain. Each of these is caught
-  only by `--expect-head` / `--expect-count` with a head stored off the
-  host, so record the printed head regularly (or ship the file, or the
+  rewrite the whole file with a consistent chain, or delete the oldest lines
+  and rewrite `.first` to match. Each of these is caught only by
+  `--expect-head` / `--expect-count` / `--expect-first` with the printed
+  values stored off the host, so record the printed head regularly (or ship the file, or the
   `admin` webhook, to a SIEM). Someone who also holds the audit key can
   produce lines that verify.
 

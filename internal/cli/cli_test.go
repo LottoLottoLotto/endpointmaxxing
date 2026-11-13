@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -174,4 +175,28 @@ func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
 func text(res map[string]any) string {
 	return res["content"].([]any)[0].(map[string]any)["text"].(string)
+}
+
+// Text other people chose (a model name in a request, a name inside a model file) reaches the operator's
+// terminal and spreadsheets as text: no control sequences, no extra rows, no formulas.
+func TestOutputNeutralisesControlSequencesAndFormulas(t *testing.T) {
+	var out bytes.Buffer
+	e := &env{stdout: &out}
+	e.table("MODEL\tERROR", [][]string{{"m\x1b[2J", "bad\nFAKE\trow \u009b1A"}})
+	got := out.String()
+	if strings.ContainsAny(got, "\x1b\u009b") || strings.Count(got, "\n") != 2 || !strings.Contains(got, `m\x1b[2J`) {
+		t.Fatalf("table output: %q", got)
+	}
+	out.Reset()
+	e.out(nil, func(w io.Writer) { fmt.Fprintf(w, "arch: %s\n", "llama\x07\x1b]0;title\x07") })
+	if got := out.String(); strings.ContainsAny(got, "\x1b\x07") || !strings.HasSuffix(got, "\n") {
+		t.Fatalf("human output: %q", got)
+	}
+	out.Reset()
+	e.csv = true
+	e.table("CLIENT\tTOKENS", [][]string{{`=HYPERLINK("http://x","y")`, "-12"}, {"@cmd", "+3.5"}, {"-x", "7"}})
+	want := "CLIENT,TOKENS\n\"'=HYPERLINK(\"\"http://x\"\",\"\"y\"\")\",-12\n'@cmd,+3.5\n'-x,7\n"
+	if out.String() != want {
+		t.Fatalf("csv:\n%s\nwant:\n%s", out.String(), want)
+	}
 }

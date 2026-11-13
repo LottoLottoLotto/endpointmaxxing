@@ -34,7 +34,7 @@ func Start(pid int) uint64 {
 }
 
 // Members lists live processes in the process group leader leads (Detach made the engine a group leader).
-func Members(leader int) []int {
+func Members(leader int, _ uint64) []int {
 	var out []int
 	for _, line := range strings.Split(ps("-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="), "\n") {
 		f := strings.Fields(line)

@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -69,21 +71,82 @@ func (e *env) out(v any, human func(w io.Writer)) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(v)
 	}
-	human(e.stdout)
+	human(plain{e.stdout})
 	return nil
+}
+
+// plain is where human-readable output goes: what substrate prints includes text other people chose (model
+// names and paths of requests, client names, user agents, error messages, names inside model files), and a
+// terminal would obey control sequences in it (clear the screen, rewrite earlier lines). Control characters
+// other than newline and tab are shown as \xNN instead.
+type plain struct{ w io.Writer }
+
+func (p plain) Write(b []byte) (int, error) {
+	clean := true
+	for _, c := range b {
+		if c < 0x20 && c != '\n' && c != '\t' || c == 0x7f {
+			clean = false
+			break
+		}
+	}
+	// U+0080..U+009F (C1 controls, among them a one-character CSI) are the bytes C2 80..9F in UTF-8.
+	if clean && !bytes.Contains(b, []byte{0xc2}) {
+		return p.w.Write(b)
+	}
+	out := make([]byte, 0, len(b)+16)
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		switch {
+		case c < 0x20 && c != '\n' && c != '\t' || c == 0x7f:
+			out = fmt.Appendf(out, `\x%02x`, c)
+		case c == 0xc2 && i+1 < len(b) && b[i+1] >= 0x80 && b[i+1] <= 0x9f:
+			out = fmt.Appendf(out, `\u%04x`, b[i+1])
+			i++
+		default:
+			out = append(out, c)
+		}
+	}
+	if _, err := p.w.Write(out); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+// csvCell keeps a spreadsheet from running a cell as a formula: text that starts like one gets a leading
+// apostrophe. Numbers (also negative ones) stay as they are.
+func csvCell(s string) string {
+	if s == "" || !strings.ContainsRune("=+-@\t\r", rune(s[0])) {
+		return s
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return s
+	}
+	return "'" + s
 }
 
 func (e *env) table(header string, rows [][]string) {
 	if e.csv {
 		cw := csv.NewWriter(e.stdout)
 		cw.Write(strings.Split(header, "\t"))
-		cw.WriteAll(rows)
+		for _, r := range rows {
+			cells := make([]string, len(r))
+			for i, c := range r {
+				cells[i] = csvCell(c)
+			}
+			cw.Write(cells)
+		}
+		cw.Flush()
 		return
 	}
-	tw := tabwriter.NewWriter(e.stdout, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(plain{e.stdout}, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, header)
+	oneLine := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ") // a cell cannot start a row or a column
 	for _, r := range rows {
-		fmt.Fprintln(tw, strings.Join(r, "\t"))
+		cells := make([]string, len(r))
+		for i, c := range r {
+			cells[i] = oneLine.Replace(c)
+		}
+		fmt.Fprintln(tw, strings.Join(cells, "\t"))
 	}
 	tw.Flush()
 }

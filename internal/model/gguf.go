@@ -80,7 +80,7 @@ func ReadGGUFHeader(path string) (*GGUFHeader, error) {
 		case key == "general.file_type" && (t == gU32 || t == gI32):
 			ftype, haveFtype = r.u32(), true
 		default:
-			r.skip(t)
+			r.skip(t, 0)
 		}
 		if h.Arch != "" && h.Name != "" && haveFtype {
 			break
@@ -149,7 +149,11 @@ func (g *ggufReader) strLen() int64 {
 
 func (g *ggufReader) str() string { return string(g.read(g.strLen())) }
 
-func (g *ggufReader) skip(t uint32) {
+// maxArrayDepth bounds arrays of arrays. Real files do not nest them; a crafted one with millions of levels
+// would otherwise overflow the stack, which no recover catches.
+const maxArrayDepth = 4
+
+func (g *ggufReader) skip(t uint32, depth int) {
 	if sz, ok := scalarSize[t]; ok {
 		g.discard(sz)
 		return
@@ -158,13 +162,19 @@ func (g *ggufReader) skip(t uint32) {
 	case gString:
 		g.discard(g.strLen())
 	case gArray:
+		if depth == maxArrayDepth {
+			if g.err == nil {
+				g.err = fmt.Errorf("metadata arrays nested more than %d deep", maxArrayDepth)
+			}
+			return
+		}
 		et, n := g.u32(), g.u64()
 		if sz, ok := scalarSize[et]; ok {
 			g.discard(sz * int64(n))
 			return
 		}
 		for i := uint64(0); i < n && g.err == nil; i++ {
-			g.skip(et)
+			g.skip(et, depth+1)
 		}
 	default:
 		if g.err == nil {

@@ -33,7 +33,7 @@ func Start(pid int) uint64 {
 
 // Members lists live processes whose session id is leader (an engine and all its workers, also ones that
 // left its process group).
-func Members(leader int) []int {
+func Members(leader int, _ uint64) []int {
 	ents, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil

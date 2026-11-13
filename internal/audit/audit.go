@@ -407,7 +407,9 @@ func Rotated(path string) []string {
 	return matches
 }
 
-// PruneRotated deletes rotated files last written before cutoff and returns them.
+// PruneRotated deletes rotated files last written before cutoff and returns them. It records the sequence
+// number of the oldest line it left (in <audit file>.first), so Verify can tell lines retention removed
+// from lines someone else deleted.
 func PruneRotated(path string, cutoff time.Time) ([]string, error) {
 	var gone []string
 	for _, p := range Rotated(path) {
@@ -420,7 +422,69 @@ func PruneRotated(path string, cutoff time.Time) ([]string, error) {
 		}
 		gone = append(gone, p)
 	}
-	return gone, nil
+	if len(gone) == 0 {
+		return nil, nil
+	}
+	first, err := firstSeq(append(Rotated(path), path))
+	if err != nil || first == 0 {
+		return gone, err // nothing numbered is left to anchor
+	}
+	data, _ := json.Marshal(pruned{First: first})
+	tmp := firstPath(path) + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return gone, err
+	}
+	return gone, paths.Replace(tmp, firstPath(path))
+}
+
+// pruned is the record PruneRotated leaves: the sequence number of the oldest line retention kept.
+type pruned struct {
+	First int64 `json:"first"`
+}
+
+func firstPath(path string) string { return path + ".first" }
+
+// readPruned returns the pruning record of the audit file at path; 0 when retention never removed lines.
+func readPruned(path string) (int64, error) {
+	data, err := os.ReadFile(firstPath(path))
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var p pruned
+	err = json.Unmarshal(data, &p)
+	return p.First, err
+}
+
+// firstSeq is the sequence number of the first line in files (in order); 0 when it has none.
+func firstSeq(files []string) (int64, error) {
+	for _, fp := range files {
+		f, err := os.Open(fp)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1<<20), 64<<20)
+		for sc.Scan() {
+			if len(sc.Bytes()) == 0 {
+				continue
+			}
+			var lk link
+			err := json.Unmarshal(sc.Bytes(), &lk)
+			f.Close()
+			if err != nil || lk.Seq == nil {
+				return 0, err
+			}
+			return *lk.Seq, nil
+		}
+		f.Close()
+	}
+	return 0, nil
 }
 
 // Check is what Verify holds the chain to besides its own links.
@@ -432,6 +496,8 @@ type Check struct {
 	// ExpectCount is the count reported with ExpectHead (0: not checked); without ExpectHead, a count the
 	// chain must reach.
 	ExpectCount int64
+	// ExpectFirst is the First an earlier Verify reported (0: not checked): the chain must not start later.
+	ExpectFirst int64
 }
 
 // Report is the outcome of Verify.
@@ -442,6 +508,8 @@ type Report struct {
 	Unchained int `json:"unchained"`
 	// Anchored says the oldest retained line links to a file no longer present (pruned by retention).
 	Anchored bool `json:"anchored_to_pruned_file"`
+	// First is the sequence number of the oldest line present (0 while lines carry none).
+	First int64 `json:"first,omitempty"`
 	// Keyed says the chain ends in lines made with the audit key.
 	Keyed bool `json:"keyed"`
 	// Head is the chain's end; its count is 0 while no line carries a sequence number (older files).
@@ -521,6 +589,9 @@ func Verify(path string, c Check) (*Report, error) {
 			started = true
 		}
 		if lk.Seq != nil {
+			if !numbered {
+				r.First = *lk.Seq
+			}
 			numbered, seq = true, *lk.Seq
 		}
 		prev = sum
@@ -582,6 +653,22 @@ func Verify(path string, c Check) (*Report, error) {
 			seq, headPath(path), anchor.Count, anchor.Count-seq)
 	default:
 		return fail("the chain does not contain the line its head anchor %s names (record %d, hash %s): the tail was rewritten", headPath(path), anchor.Count, anchor.Hash)
+	}
+	// A chain that does not start at its beginning is what retention leaves, and also what deleting the
+	// oldest lines leaves: only the pruning record tells them apart.
+	if r.Anchored && r.First > 0 {
+		kept, err := readPruned(path)
+		switch {
+		case err != nil:
+			return fail("the chain starts at record %d and its pruning record %s is unreadable: %v", r.First, firstPath(path), err)
+		case kept == 0:
+			return fail("the chain starts at record %d, not at its beginning, and retention never removed lines (no %s): the oldest lines were deleted", r.First, firstPath(path))
+		case r.First > kept:
+			return fail("the chain starts at record %d but retention kept everything from record %d: %d line(s) were deleted from the start", r.First, kept, r.First-kept)
+		}
+	}
+	if c.ExpectFirst > 0 && r.First > c.ExpectFirst {
+		return fail("the chain starts at record %d, after the expected %d: lines were removed from the start", r.First, c.ExpectFirst)
 	}
 	switch {
 	case c.ExpectHead != "" && !atExpected:

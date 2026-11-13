@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -100,5 +101,35 @@ func TestInspectUncachedRepo(t *testing.T) {
 	}
 	if info.Path != "" || info.Ref != "org/model-x" || info.Format != "safetensors" {
 		t.Fatalf("got %+v", info)
+	}
+}
+
+// A file whose metadata nests arrays without end is refused; it used to recurse until the stack overflowed,
+// which ends the process (the gateway, when a registered file was swapped for such a one).
+func TestDeeplyNestedArraysAreRefused(t *testing.T) {
+	var b bytes.Buffer
+	b.WriteString("GGUF")
+	binary.Write(&b, binary.LittleEndian, uint32(3)) // version
+	binary.Write(&b, binary.LittleEndian, uint64(0)) // tensors
+	binary.Write(&b, binary.LittleEndian, uint64(1)) // one key
+	binary.Write(&b, binary.LittleEndian, uint64(1))
+	b.WriteString("a")
+	binary.Write(&b, binary.LittleEndian, uint32(gArray))
+	for range 100_000 {
+		binary.Write(&b, binary.LittleEndian, uint32(gArray))
+		binary.Write(&b, binary.LittleEndian, uint64(1))
+	}
+	p := filepath.Join(t.TempDir(), "nested.gguf")
+	if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadGGUFHeader(p); err == nil || !strings.Contains(err.Error(), "nested") {
+		t.Fatalf("deeply nested arrays: %v", err)
+	}
+}
+
+func TestLabelsFromModelFilesArePrintableAndShort(t *testing.T) {
+	if got := label("llama\x1b[2J\n" + strings.Repeat("x", 500)); strings.ContainsAny(got, "\x1b\n") || len(got) != 64 || !strings.HasPrefix(got, "llama[2J") {
+		t.Fatalf("label: %q", got)
 	}
 }

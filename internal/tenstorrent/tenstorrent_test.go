@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -53,5 +54,67 @@ func TestAcquireHoldsUntilClosedAndSeesUsers(t *testing.T) {
 	}
 	if c.Held(0) {
 		t.Fatal("failed acquire leaked a lock")
+	}
+}
+
+// The lock directory is writable by every user of the host. A link planted where a lock belongs is not
+// followed (no file is created or locked where it points), the chip counts as held, and nothing is reset.
+func TestPlantedLinkIsNotALock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Tenstorrent hosts are Linux; creating links needs privileges on Windows")
+	}
+	c := fakeHost(t, 0)
+	target := filepath.Join(t.TempDir(), "victim")
+	os.MkdirAll(filepath.Dir(c.LockPath(0)), 0o777)
+	if err := os.Symlink(target, c.LockPath(0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Acquire([]int{0}); err == nil {
+		t.Fatal("a symbolic link was taken as the chip's lock")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("the link's target was created: %v", err)
+	}
+	if !c.Held(0) {
+		t.Fatal("a chip whose lock cannot be opened was reported free")
+	}
+	marker := filepath.Join(t.TempDir(), "reset-ran")
+	script := filepath.Join(t.TempDir(), "tt-smi")
+	os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755)
+	c.TTSmi = script
+	if err := c.Reset([]int{0}); err == nil {
+		t.Fatal("reset went ahead without the chip's lock")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("tt-smi ran although the lock could not be taken")
+	}
+}
+
+// A reset holds the chip's lock, so it never runs under another job.
+func TestResetRefusesAChipAnotherJobHolds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake tt-smi is a shell script")
+	}
+	c := fakeHost(t, 0)
+	marker := filepath.Join(t.TempDir(), "reset-ran")
+	script := filepath.Join(t.TempDir(), "tt-smi")
+	os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755)
+	c.TTSmi = script
+	held, err := c.Acquire([]int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Reset([]int{0}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("reset of a held chip: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("tt-smi ran on a chip another job holds")
+	}
+	held[0].Close()
+	if err := c.Reset([]int{0}); err != nil {
+		t.Fatalf("reset of a free chip: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("tt-smi did not run on a free chip")
 	}
 }

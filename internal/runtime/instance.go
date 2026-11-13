@@ -550,8 +550,8 @@ func (in *Instance) noteExit() {
 	// The leader is gone, but its workers (vLLM EngineCore, SGLang scheduler) may still hold
 	// the GPU. Skip when the pid was reused: that process leads somebody else's session.
 	if proc.Start(in.PID) == 0 {
-		if orphans := proc.Members(in.PID); len(orphans) > 0 {
-			killSession(in.PID)
+		if orphans := proc.Members(in.PID, in.StartTick); len(orphans) > 0 {
+			killSession(in.PID, in.StartTick)
 			detail = fmt.Sprintf("killed %d orphaned worker(s)\n%s", len(orphans), detail)
 		}
 	}
@@ -595,13 +595,13 @@ func (in *Instance) stop(reason string) error {
 		}
 		forced := in.Alive()
 		if forced {
-			proc.Kill(in.PID)
+			proc.Kill(in.PID, in.StartTick)
 			for i := 0; i < 50 && in.Alive(); i++ {
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
 		// Children that left the group (or a group that outlived its leader) still hold the GPU.
-		killSession(in.PID)
+		killSession(in.PID, in.StartTick)
 		up := time.Since(in.StartedAt)
 		detail := reason
 		if forced {
@@ -676,14 +676,14 @@ func (in *Instance) reset(why string) string {
 	return fmt.Sprintf("chips %s reset after %s\n", tenstorrent.Join(in.Devices), why)
 }
 
-// killSession force-kills every process left of the engine started as sid.
-func killSession(sid int) {
-	victims := append(proc.Members(sid), sid)
-	proc.Kill(sid)
+// killSession force-kills every process left of the engine started as sid at started.
+func killSession(sid int, started uint64) {
+	victims := append(proc.Members(sid, started), sid)
+	proc.Kill(sid, started)
 	// Wait (up to 10s) until they are gone and the driver no longer lists them, so their
 	// GPU memory is free before anyone re-plans (a restart would otherwise evict needlessly).
 	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) && len(proc.Members(sid)) > 0 {
+	for time.Now().Before(deadline) && len(proc.Members(sid, started)) > 0 {
 		time.Sleep(100 * time.Millisecond)
 	}
 	for time.Now().Before(deadline) && holdsGPU(victims) {
