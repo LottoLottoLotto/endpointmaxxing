@@ -119,3 +119,10 @@ substrate model add qwen2.5-coder-0.5b ~/models/tt/Qwen2.5-Coder-0.5B-Instruct -
 
 Measured on one P150: a warm host start plus first load takes about 7s, a warm
 load 1–3s, and switching between loaded models adds no time to a request.
+
+The host's server is reached only through substrate, on a port published on
+the host. It refuses what a web page open on that host could forge: requests
+addressed by a name other than `localhost` (answer 403) and POSTs that are not
+`application/json` (415). In `chat_template_kwargs` it accepts only
+`enable_thinking` and `thinking`; a request cannot supply its own chat
+template.

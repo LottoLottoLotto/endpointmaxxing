@@ -22,6 +22,11 @@ import (
 // MCP (Model Context Protocol) over stdio: newline-delimited JSON-RPC 2.0.
 // Every command marked tool:true becomes a tool whose arguments mirror its
 // flags; calls run the command in --json mode and return its JSON output.
+//
+// An agent acts on what it reads, and what it reads may be written by someone else. So by default the tools
+// leave out every input that chooses what this host runs or which of its files are read (host-only commands
+// and flags, engine arguments): an agent can start, stop, measure and inspect models, but cannot be talked
+// into running a program. `substrate mcp --allow-host` offers everything the CLI does.
 
 const mcpProtocol = "2025-06-18"
 
@@ -40,13 +45,14 @@ type rpcErr struct {
 func cmdMCP() *command {
 	return &command{name: "mcp", summary: "serve substrate's commands as MCP tools over stdio (for agents)",
 		build: func(fs *flag.FlagSet) action {
+			allowHost := fs.Bool("allow-host", false, "also offer the inputs that choose what this host runs or reads (engine manifests and overrides, engine arguments, manifest vars, file paths): the agent then has the access of a shell")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("mcp", pos, 0, 0); err != nil {
 					return err
 				}
 				ctx, stop := signal.NotifyContext(e.ctx, os.Interrupt, syscall.SIGTERM)
 				defer stop()
-				return serveMCP(ctx, os.Stdin, e.stdout, e.stderr)
+				return serveMCP(ctx, os.Stdin, e.stdout, e.stderr, *allowHost)
 			}
 		}}
 }
@@ -71,13 +77,15 @@ func jsonType(t string) map[string]any {
 	return map[string]any{"type": "string"}
 }
 
-// tools derives MCP tools from the command schema.
-func tools() []mcpTool {
+// tools derives MCP tools from the command schema; without allowHost, host-only commands, flags and
+// engine arguments are left out (and refused when sent anyway).
+func tools(allowHost bool) []mcpTool {
 	var out []mcpTool
 	for _, s := range schemas() {
-		if s.MCPTool == "" {
+		if s.MCPTool == "" || (s.HostOnly && !allowHost) {
 			continue
 		}
+		s.EngineArgs = s.EngineArgs && allowHost
 		s := s
 		props := map[string]any{
 			"args": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
@@ -85,6 +93,9 @@ func tools() []mcpTool {
 		}
 		types := map[string]string{}
 		for _, f := range s.Flags {
+			if f.HostOnly && !allowHost {
+				continue
+			}
 			p := jsonType(f.Type)
 			desc := f.Usage
 			if f.Default != "" && f.Default != "false" && f.Default != "0" {
@@ -114,6 +125,9 @@ func tools() []mcpTool {
 					v := in[k]
 					switch k {
 					case "args", "engine_args":
+						if k == "engine_args" && !s.EngineArgs {
+							return nil, fmt.Errorf("unknown argument %q", k)
+						}
 						list, err := stringList(k, v)
 						if err != nil {
 							return nil, err
@@ -204,8 +218,8 @@ func jsonText(v any) string {
 	return string(b)
 }
 
-func serveMCP(ctx context.Context, in io.Reader, out, logw io.Writer) error {
-	ts := tools()
+func serveMCP(ctx context.Context, in io.Reader, out, logw io.Writer, allowHost bool) error {
+	ts := tools(allowHost)
 	byName := map[string]mcpTool{}
 	for _, t := range ts {
 		byName[t.Name] = t

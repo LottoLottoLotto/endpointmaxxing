@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -429,9 +431,10 @@ func engineValidateCmd() *command {
 }
 
 func engineAddCmd() *command {
-	return &command{name: "add", synopsis: "<manifest.yaml> [--force]", summary: "install a manifest into the user engines dir", tool: true,
+	return &command{name: "add", synopsis: "<manifest.yaml> --trust [--force]", summary: "install a manifest into the user engines dir (it names programs substrate will run: see them without --trust)", tool: true, host: true,
 		build: func(fs *flag.FlagSet) action {
 			force := fs.Bool("force", false, "replace an existing user manifest with the same id")
+			trust := fs.Bool("trust", false, "accept that substrate runs the manifest's commands; without it the command lists them and installs nothing")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("engine add", pos, 1, 1); err != nil {
 					return err
@@ -443,6 +446,19 @@ func engineAddCmd() *command {
 				m, err := spec.Parse(data, pos[0])
 				if err != nil {
 					return errs.Wrap(errs.Usage, err)
+				}
+				// A manifest is a program: its probe runs whenever engines are looked up (route, run, doctor,
+				// the gateway starting a model), not only when this engine is chosen. Installing one is the
+				// moment to read what it runs.
+				if !*trust {
+					runs := manifestCommands(m)
+					e.out(map[string]any{"engine": m.ID, "installed": false, "runs": runs}, func(w io.Writer) {
+						fmt.Fprintf(w, "%s is not installed. Once it is, substrate runs these as you:\n", m.ID)
+						for _, r := range runs {
+							fmt.Fprintf(w, "  %-22s %s\n", r.When, r.Command)
+						}
+					})
+					return errs.New(errs.Usage, "engine add: read the commands above, then repeat with --trust")
 				}
 				dst := filepath.Join(config.EnginesDir(), m.ID+".yaml")
 				if _, err := os.Stat(dst); err == nil && !*force {
@@ -470,9 +486,45 @@ func engineAddCmd() *command {
 		}}
 }
 
+// manifestCommand is one thing a manifest makes substrate run, and when.
+type manifestCommand struct {
+	When    string `json:"when"`
+	Command string `json:"command"`
+}
+
+// manifestCommands lists everything m makes substrate execute, in the order it would happen.
+func manifestCommands(m *spec.Manifest) []manifestCommand {
+	var out []manifestCommand
+	add := func(when string, argv ...string) { out = append(out, manifestCommand{when, strings.Join(argv, " ")}) }
+	bin := "<" + strings.Join(m.Binary.Candidates, " | ") + ">"
+	if m.Binary.Env != "" {
+		bin = "<$" + m.Binary.Env + " | " + strings.Join(m.Binary.Candidates, " | ") + ">"
+	}
+	if len(m.Binary.Probe) > 0 {
+		add("any engine lookup", append([]string{bin}, m.Binary.Probe...)...)
+	}
+	if len(m.Binary.Version) > 0 {
+		add("engines --versions", append([]string{bin}, m.Binary.Version...)...)
+	}
+	for _, s := range m.Install.Steps {
+		add("engine install", "sh -c", s)
+	}
+	for _, c := range m.Launch.Prepare {
+		add("before each launch", c...)
+	}
+	add("launch", m.Launch.Command...)
+	for _, c := range m.Launch.Cleanup {
+		add("after each stop", c...)
+	}
+	for _, format := range slices.Sorted(maps.Keys(m.Routing.Priority)) {
+		add("routing", fmt.Sprintf("serves %s models with priority %d (builtin engines use up to 100)", format, m.Routing.Priority[format]))
+	}
+	return out
+}
+
 func engineSetCmd() *command {
 	return &command{name: "set", synopsis: "<id> [--bin PATH] [--var K=V]... [--env K=V]... [--arg A]... [--clear]",
-		summary: "set local overrides for an engine (binary, vars, env, args)", tool: true,
+		summary: "set local overrides for an engine (binary, vars, env, args)", tool: true, host: true,
 		build: func(fs *flag.FlagSet) action {
 			bin := fs.String("bin", "", "entry point binary (skips discovery)")
 			var vars, envs, eargs multi

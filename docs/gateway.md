@@ -34,9 +34,11 @@
   allowed 1-256) gets 413; a declared `Content-Length` over the limit is
   refused without reading. All in-flight requests together may hold
   `gateway.max_buffered_mb` (default 1024 MiB, at least `max_body_mb`) of
-  request bodies in memory; a request that would exceed it gets 503 with
-  `Retry-After: 1` (`error_kind` `no_capacity`). The body must arrive within
-  5 minutes.
+  request bodies in memory, and one key at most half of that (but always one
+  body of the allowed size); a request that would exceed either gets 503 with
+  `Retry-After: 1` (`error_kind` `no_capacity`). Memory is counted as the
+  bytes arrive, so a client that announces a large body and sends nothing
+  holds nothing. The body must arrive within 5 minutes.
 - **One JSON object.** The body must be exactly one JSON object, with
   nothing after it. A top-level field given more than once is refused with
   400. `model`, `messages`, `prompt`, `input`, `stream`, `stream_options`,

@@ -114,6 +114,23 @@ Entries marked "breaking" can break existing clients.
 
 ### Security
 
+- `substrate mcp` no longer offers inputs that choose what the host runs or
+  reads (`engine add`, `engine set`, engine arguments, `--var`, `--pre-arg`,
+  `--trust-remote-code`, file-path flags) unless started with `--allow-host`.
+  Breaking for agents that used them.
+- `substrate engine add` lists the commands a manifest makes substrate run
+  and installs it only with `--trust`. Breaking: scripts must add the flag.
+- `bench run` passes the model's API key to `lmx` in `LMX_MODEL_API_KEY`
+  instead of on its command line; an `lmx` without that feature is refused
+  unless `--key-in-args` is given.
+- Request-body memory is counted as bytes arrive and one key may hold at most
+  half of `gateway.max_buffered_mb`, so idle uploads or one key cannot make
+  the gateway answer 503 to everyone.
+- The `tt-multihost` server accepts only `enable_thinking` and `thinking` in
+  `chat_template_kwargs` (a client can no longer supply a chat template),
+  requires `Content-Type: application/json` on POST, answers only when
+  addressed by IP address or as localhost, and caps bodies at 64 MiB.
+- `substrate logs` no longer reads files outside the logs directory.
 - Open mode is decided when `serve` starts (loopback listen address or
   `--insecure`): removing the last key from any other gateway makes it
   answer 401 instead of opening it.

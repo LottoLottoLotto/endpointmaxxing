@@ -9,8 +9,16 @@ written against this spec.
 
 ```sh
 substrate engine validate my-engine.yaml   # check against the spec
-substrate engine add my-engine.yaml        # install into ~/.config/substrate/engines/
+substrate engine add my-engine.yaml        # list the commands the manifest makes substrate run
+substrate engine add my-engine.yaml --trust   # install into ~/.config/substrate/engines/
 ```
+
+A manifest is a program. Its probe runs whenever engines are looked up
+(`route`, `run`, `doctor`, the gateway starting a model), not only when that
+engine is chosen, and its launch, prepare, cleanup and install commands run as
+you. `engine add` therefore installs nothing until you pass `--trust`; without
+it, it prints every command the manifest would run and the routing priority it
+claims. Only add manifests you have read.
 
 A user manifest whose `id` matches a builtin engine replaces that builtin.
 

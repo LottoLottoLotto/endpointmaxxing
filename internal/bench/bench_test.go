@@ -68,8 +68,9 @@ func fakeLMX(t *testing.T, verified bool) (*LMX, string) {
 		v = "true"
 	}
 	script := `#!/bin/sh
-echo "$@" >> ` + argsFile + `
+echo "$@ KEYENV=$LMX_MODEL_API_KEY" >> ` + argsFile + `
 case "$1 $2" in
+"version --json") if [ -z "$FAKE_LMX_OLD" ]; then echo '{"features": ["model-api-key-env"]}'; else echo '{"version": "v0.1.60"}'; fi ;;
 "speed-test run")
   while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
   echo '{"tokSOut": 27.5, "tokSPrefill": 159.6, "ttftMs": 2181, "promptTokens": 348, "outputTokens": 1024}' > "$out"
@@ -110,6 +111,42 @@ func TestLMXArgumentsAndVerdicts(t *testing.T) {
 	s, err := l.Submit(context.Background(), out)
 	if err != nil || s.SubmissionID != "run_1" || !s.Verified {
 		t.Fatalf("submit: %+v %v", s, err)
+	}
+}
+
+// The model's key reaches lmx through its environment; an lmx that cannot do that gets it as an argument
+// only when the operator accepts that.
+func TestModelKeyStaysOffTheCommandLine(t *testing.T) {
+	l, argsFile := fakeLMX(t, true)
+	m := &Meta{EngineName: "vllm", HFID: "org/m", Quantization: "BF16"}
+	r := Run{BaseURL: "http://h:1/v1", ServedModel: "m", Concurrency: 1, APIKey: "sk-secret", HardwareFile: "hw.json",
+		Out: filepath.Join(t.TempDir(), "p.json")}
+	measured := func() string {
+		t.Helper()
+		os.Remove(argsFile)
+		if _, err := l.Measure(context.Background(), m, r); err != nil {
+			t.Fatal(err)
+		}
+		args, _ := os.ReadFile(argsFile)
+		for _, line := range strings.Split(string(args), "\n") {
+			if strings.HasPrefix(line, "speed-test run") {
+				return line
+			}
+		}
+		t.Fatalf("lmx speed-test run was not called:\n%s", args)
+		return ""
+	}
+	if line := measured(); strings.Contains(strings.Split(line, " KEYENV=")[0], "sk-secret") || !strings.HasSuffix(line, "KEYENV=sk-secret") {
+		t.Fatalf("key must be in the environment only: %s", line)
+	}
+
+	t.Setenv("FAKE_LMX_OLD", "1")
+	if _, err := l.Measure(context.Background(), m, r); err == nil || !strings.Contains(err.Error(), "--key-in-args") {
+		t.Fatalf("an lmx without the feature must be refused: %v", err)
+	}
+	r.KeyInArgs = true
+	if line := measured(); !strings.Contains(line, "--model-api-key sk-secret") {
+		t.Fatalf("accepted by the operator, the key goes on the command line: %s", line)
 	}
 }
 

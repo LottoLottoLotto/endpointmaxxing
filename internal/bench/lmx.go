@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -33,7 +34,7 @@ func FindLMX() (*LMX, error) {
 
 // run executes lmx with --json --quiet and decodes its stdout into out (when not nil).
 func (l *LMX) run(ctx context.Context, out any, args ...string) error {
-	stdout, err := l.runRaw(ctx, args...)
+	stdout, err := l.runRaw(ctx, nil, args...)
 	if err != nil {
 		return err
 	}
@@ -45,9 +46,13 @@ func (l *LMX) run(ctx context.Context, out any, args ...string) error {
 	return nil
 }
 
-// runRaw executes lmx with --json --quiet and returns its stdout, also when it fails.
-func (l *LMX) runRaw(ctx context.Context, args ...string) ([]byte, error) {
+// runRaw executes lmx with --json --quiet and returns its stdout, also when it fails. env adds variables
+// to lmx's environment.
+func (l *LMX) runRaw(ctx context.Context, env []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, l.Bin, append(args, "--json", "--quiet")...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -67,7 +72,7 @@ func (l *LMX) runRaw(ctx context.Context, args ...string) ([]byte, error) {
 		if msg == "" {
 			msg = strings.TrimSpace(stdout.String())
 		}
-		return stdout.Bytes(), fmt.Errorf("lmx %s: %v: %s", args[0]+" "+args[1], err, lastLines(msg, 6))
+		return stdout.Bytes(), fmt.Errorf("lmx %s: %v: %s", strings.Join(args[:min(2, len(args))], " "), err, lastLines(msg, 6))
 	}
 	return stdout.Bytes(), nil
 }
@@ -85,6 +90,9 @@ type Run struct {
 	BaseURL     string
 	ServedModel string
 	APIKey      string
+	// KeyInArgs accepts passing APIKey on lmx's command line when this lmx cannot take it from its
+	// environment (every user of the host can read a process's arguments).
+	KeyInArgs   bool
 	Concurrency int
 	// CanonicalPrompt is a LocalMaxxing prompt id (verified runs); PromptFile replaces it.
 	CanonicalPrompt string
@@ -116,7 +124,17 @@ func (l *LMX) Measure(ctx context.Context, m *Meta, r Run) (map[string]any, erro
 	add("--engine-version", m.EngineVersion)
 	add("--engine-repository", m.EngineRepository)
 	add("--engine-commit", m.EngineCommit)
-	add("--model-api-key", r.APIKey)
+	var env []string
+	if r.APIKey != "" {
+		switch {
+		case l.keyFromEnv(ctx):
+			env = []string{modelKeyEnv + "=" + r.APIKey}
+		case r.KeyInArgs:
+			add("--model-api-key", r.APIKey)
+		default:
+			return nil, fmt.Errorf("this lmx takes the model's API key only on its command line, where every user of this host can read it: update lmx, or accept that with --key-in-args")
+		}
+	}
 	add("--notes", r.Notes)
 	if r.PromptFile != "" {
 		add("--prompt-file", r.PromptFile)
@@ -135,7 +153,7 @@ func (l *LMX) Measure(ctx context.Context, m *Meta, r Run) (map[string]any, erro
 		}
 		add("--spec-draft-model", s.DraftModel)
 	}
-	if err := l.run(ctx, nil, args...); err != nil {
+	if _, err := l.runRaw(ctx, env, args...); err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(r.Out)
@@ -147,6 +165,22 @@ func (l *LMX) Measure(ctx context.Context, m *Meta, r Run) (map[string]any, erro
 		return nil, fmt.Errorf("payload %s: %w", r.Out, err)
 	}
 	return payload, nil
+}
+
+// modelKeyEnv is the variable a recent lmx reads the model endpoint's key from.
+const modelKeyEnv = "LMX_MODEL_API_KEY"
+
+// keyFromEnv reports whether this lmx reads the model key from its environment (`lmx version --json`
+// lists the feature); older ones take it only as an argument.
+func (l *LMX) keyFromEnv(ctx context.Context) bool {
+	out, err := l.runRaw(ctx, nil, "version")
+	if err != nil {
+		return false
+	}
+	var v struct {
+		Features []string `json:"features"`
+	}
+	return json.Unmarshal(out, &v) == nil && slices.Contains(v.Features, "model-api-key-env")
 }
 
 // Verdict is the server's view of a payload.
@@ -188,7 +222,7 @@ type submitResponse struct {
 // when only that bookkeeping fails, the upload happened, so the response is returned rather than an error
 // (retrying would upload the run twice).
 func (l *LMX) Submit(ctx context.Context, payload string) (*Verdict, error) {
-	stdout, err := l.runRaw(ctx, "speed-test", "submit", payload)
+	stdout, err := l.runRaw(ctx, nil, "speed-test", "submit", payload)
 	var out submitResponse
 	dec := json.NewDecoder(bytes.NewReader(stdout))
 	for {

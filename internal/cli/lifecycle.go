@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LottoLottoLotto/substrate/internal/app"
+	"github.com/LottoLottoLotto/substrate/internal/config"
 	"github.com/LottoLottoLotto/substrate/internal/errs"
 	"github.com/LottoLottoLotto/substrate/internal/gateway"
 	"github.com/LottoLottoLotto/substrate/internal/meter"
@@ -341,7 +342,11 @@ func cmdLogs() *command {
 				}
 				in, err := runtime.Find(pos[0])
 				if err != nil {
-					// The record is gone after stop; the log stays.
+					// The record is gone after stop; the log stays. Only a well-formed id names a log: anything
+					// else (../) would be a path to some other file.
+					if !config.NameRe.MatchString(pos[0]) {
+						return err
+					}
 					path := runtime.LogPath(pos[0])
 					if _, serr := os.Stat(path); serr != nil {
 						return err

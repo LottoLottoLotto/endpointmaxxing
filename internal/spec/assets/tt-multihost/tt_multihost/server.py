@@ -51,8 +51,7 @@ BLOCK = 32  # paged-attention block size
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")  # substrate model names; also the cache dir name
 
 
-class BadRequest(Exception):
-    """The request cannot be served as asked (answered with 400)."""
+from tt_multihost.guard import MAX_BODY_BYTES, BadRequest, host_allowed, is_json, template_kwargs  # noqa: E402
 
 
 class Unloaded(Exception):
@@ -345,9 +344,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
+        if n > MAX_BODY_BYTES:
+            raise BadRequest(f"body of {n} bytes exceeds {MAX_BODY_BYTES}")
         return json.loads(self.rfile.read(n) or b"{}")
 
+    def _refused(self) -> bool:
+        """Answers and returns True for a request a web page could have forged (see guard.py)."""
+        if not host_allowed(self.headers.get("Host")):
+            self._error(403, "this server answers only when addressed by IP address or as localhost", "permission_error")
+            return True
+        if self.command == "POST" and not is_json(self.headers.get("Content-Type")):
+            self._error(415, "send Content-Type: application/json")
+            return True
+        return False
+
     def do_GET(self):
+        if self._refused():
+            return None
         if self.path == "/health":
             return self._json(200 if STATE.device is not None else 503, {"status": "ok"})
         if self.path == "/v1/models":
@@ -367,6 +380,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._error(404, f"no route {self.path}", "not_found_error")
 
     def do_POST(self):
+        if self._refused():
+            return None
         try:
             body = self._body()
         except Exception as e:  # noqa: BLE001
@@ -407,7 +422,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, f"model {name!r} is not loaded (POST /admin/load)", "not_found_error")
         tk = slot.tokenizer
         if chat:
-            kwargs = body.get("chat_template_kwargs") or {}
+            kwargs = template_kwargs(body.get("chat_template_kwargs"))
             text = tk.apply_chat_template(body.get("messages", []), add_generation_prompt=True, tokenize=False, **kwargs)
             ids = tk.encode(text, add_special_tokens=False)
         else:

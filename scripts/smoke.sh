@@ -27,7 +27,7 @@ step "version and doctor"
 "$bin" doctor >/dev/null
 
 step "register a stand-in engine and a model"
-"$bin" engine add "$here/smoke/pyhttp.yaml"
+"$bin" engine add "$here/smoke/pyhttp.yaml" --trust
 mkdir -p "$work/model"
 echo '{"architectures":["Qwen3ForCausalLM"]}' > "$work/model/config.json"
 "$bin" model add smoke "$work/model" --engine pyhttp

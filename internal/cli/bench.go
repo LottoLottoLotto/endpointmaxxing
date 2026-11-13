@@ -98,6 +98,7 @@ func benchRunCmd() *command {
 			validate := fs.Bool("validate", false, "ask LocalMaxxing to check each run (no upload)")
 			submit := fs.Bool("submit", false, "validate, then upload each run")
 			force := fs.Bool("force", false, "upload even when LocalMaxxing would not mark the run verified, or metadata is incomplete")
+			keyInArgs := fs.Bool("key-in-args", false, "with an lmx that cannot read the model's API key from its environment: pass it on lmx's command line, readable by every user of this host")
 			timeout := fs.Duration("start-timeout", 30*time.Minute, "how long to wait for the model to start")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("bench run", pos, 1, 1); err != nil {
@@ -139,7 +140,7 @@ func benchRunCmd() *command {
 
 				run := bench.Run{CanonicalPrompt: *canonical, PromptFile: *promptFile, MaxTokens: *maxTokens,
 					Iterations: *iterations, Warmup: *warmup, BaseURL: in.BaseURL, ServedModel: res.Model, APIKey: in.APIKey,
-					RunsDir: filepath.Join(benchDir(), "lmx-runs")}
+					KeyInArgs: *keyInArgs, RunsDir: filepath.Join(benchDir(), "lmx-runs")}
 				if *via == "gateway" {
 					run.BaseURL, _ = gateway.Client(&a.Config().Gateway)
 					run.ServedModel, run.APIKey = m.Name, os.Getenv("SUBSTRATE_API_KEY")

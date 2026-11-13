@@ -111,6 +111,9 @@ type command struct {
 	sub   []*command
 	// tool exposes the command over MCP.
 	tool bool
+	// host marks a command whose inputs choose programs this host runs (an engine manifest, an engine's
+	// binary, environment and arguments). MCP offers it only with `substrate mcp --allow-host`.
+	host bool
 	// passthrough means args after -- are engine arguments.
 	passthrough bool
 	alias       bool
@@ -382,16 +385,33 @@ type FlagSchema struct {
 	Type    string `json:"type"` // boolean, integer, number, string, duration, string[]
 	Default string `json:"default,omitempty"`
 	Usage   string `json:"usage"`
+	// HostOnly marks an input that chooses what this host runs or which of its files are read; MCP offers
+	// it only with `substrate mcp --allow-host`.
+	HostOnly bool `json:"host_only,omitempty"`
+}
+
+// hostFlags are the flags, on whichever command has them, whose value chooses what this host runs or which
+// of its files are read: manifest placeholders and container arguments, and paths of files to read.
+// Unified flags carry their own mark (spec.UnifiedFlag.HostOnly).
+var hostFlags = map[string]bool{"var": true, "pre-arg": true, "prompt-file": true, "hardware": true, "file": true, "key-file": true}
+
+func hostOnlyFlag(f *flag.Flag) bool {
+	if u, ok := f.Value.(unifiedValue); ok {
+		return u.f.HostOnly
+	}
+	return hostFlags[f.Name]
 }
 
 // CommandSchema describes one runnable command.
 type CommandSchema struct {
-	Command     string       `json:"command"`
-	Synopsis    string       `json:"synopsis"`
-	Summary     string       `json:"summary"`
-	Flags       []FlagSchema `json:"flags"`
-	EngineArgs  bool         `json:"engine_args"` // accepts engine arguments after --
-	MCPTool     string       `json:"mcp_tool,omitempty"`
+	Command    string       `json:"command"`
+	Synopsis   string       `json:"synopsis"`
+	Summary    string       `json:"summary"`
+	Flags      []FlagSchema `json:"flags"`
+	EngineArgs bool         `json:"engine_args"` // accepts engine arguments after --
+	// HostOnly marks a command whose inputs choose programs this host runs.
+	HostOnly    bool   `json:"host_only,omitempty"`
+	MCPTool     string `json:"mcp_tool,omitempty"`
 	exampleArgs []string
 }
 
@@ -441,9 +461,9 @@ func schemas() []CommandSchema {
 			}
 			fs := newFlags(path, c.synopsis)
 			c.build(fs)
-			s := CommandSchema{Command: path, Synopsis: c.synopsis, Summary: c.summary, Flags: []FlagSchema{}, EngineArgs: c.passthrough}
+			s := CommandSchema{Command: path, Synopsis: c.synopsis, Summary: c.summary, Flags: []FlagSchema{}, EngineArgs: c.passthrough, HostOnly: c.host}
 			fs.VisitAll(func(f *flag.Flag) {
-				s.Flags = append(s.Flags, FlagSchema{Name: f.Name, Type: flagType(f), Default: f.DefValue, Usage: f.Usage})
+				s.Flags = append(s.Flags, FlagSchema{Name: f.Name, Type: flagType(f), Default: f.DefValue, Usage: f.Usage, HostOnly: hostOnlyFlag(f)})
 			})
 			if c.tool {
 				s.MCPTool = toolName(path)

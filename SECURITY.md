@@ -95,9 +95,15 @@ Out of scope:
 - **Admin UI.** A client of the management API only; the key is kept in the
   browser tab (`sessionStorage`) and sent as a bearer token, and the page is
   sent with a strict Content-Security-Policy.
+- **Agents.** `substrate mcp` leaves out every input that chooses what the
+  host runs or which files it reads unless started with `--allow-host`; with
+  that flag an agent has the access of a shell.
+- **Engine manifests** are programs: substrate runs their commands as you.
+  `engine add` lists them and installs only with `--trust`.
 - **Request handling.** Rate limits and budgets are checked before a body is
-  read; bodies are bounded per request (`gateway.max_body_mb`) and in total
-  (`gateway.max_buffered_mb`). A body must be one JSON object without
+  read; bodies are bounded per request (`gateway.max_body_mb`), in total
+  (`gateway.max_buffered_mb`) and per key (half the total), counted as bytes
+  arrive. A body must be one JSON object without
   repeated top-level fields, so the gateway and the engine read the same
   `model` and prompt. Model access and policy also apply to requests without
   a `model`. Blocking policy rules refuse a request whose text is too large

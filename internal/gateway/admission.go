@@ -81,18 +81,46 @@ func needsJSON(r *http.Request) bool {
 // bodyLimit is the largest request body c accepts, in bytes.
 func bodyLimit(c *config.Gateway) int64 { return min(int64(c.MaxBodyMB)<<20, maxBody) }
 
-// byteBudget bounds the request bodies all in-flight requests hold in memory together.
-type byteBudget struct{ used atomic.Int64 }
+// byteBudget bounds the request bodies all in-flight requests hold in memory together, and how much of
+// that one key may hold, so a single key cannot starve the others.
+type byteBudget struct {
+	used  atomic.Int64
+	mu    sync.Mutex
+	byKey map[string]int64
+}
 
-func (b *byteBudget) reserve(n, max int64) bool {
+// reserve takes n bytes for key ("" in open mode, where there is nobody to tell apart), which may hold
+// keyMax of the max in all.
+func (b *byteBudget) reserve(key string, n, max, keyMax int64) bool {
+	if key != "" {
+		b.mu.Lock()
+		if b.byKey[key]+n > keyMax {
+			b.mu.Unlock()
+			return false
+		}
+		if b.byKey == nil {
+			b.byKey = map[string]int64{}
+		}
+		b.byKey[key] += n
+		b.mu.Unlock()
+	}
 	if b.used.Add(n) > max {
-		b.used.Add(-n)
+		b.release(key, n)
 		return false
 	}
 	return true
 }
 
-func (b *byteBudget) release(n int64) { b.used.Add(-n) }
+func (b *byteBudget) release(key string, n int64) {
+	b.used.Add(-n)
+	if key != "" && n > 0 {
+		b.mu.Lock()
+		if b.byKey[key] -= n; b.byKey[key] <= 0 {
+			delete(b.byKey, key)
+		}
+		b.mu.Unlock()
+	}
+}
 
 // errBodyTooLarge is answered with 413.
 type errBodyTooLarge struct{ limit int64 }
@@ -104,27 +132,23 @@ func (e errBodyTooLarge) Error() string {
 // errBufferFull is answered with 503 and Retry-After.
 var errBufferFull = errs.New(errs.Capacity, "the gateway is holding too many request bodies in memory (gateway.max_buffered_mb); retry shortly")
 
-// bodyStep is how much of the budget a body of unknown length takes at a time.
+// bodyStep is how much of the budget a body takes at a time, as its bytes arrive: a declared length
+// reserves nothing, or clients that announce large bodies and send nothing would hold the whole budget.
 const bodyStep = 64 << 10
 
 // bodyReadTimeout bounds how long a client may take to send its request body.
 const bodyReadTimeout = 5 * time.Minute
 
-// readBody buffers r's body, of at most limit bytes, within the gateway's memory budget. held is what the
-// body holds of the budget, whether or not reading succeeded: the caller releases it when the request is done.
-func (g *Gateway) readBody(r *http.Request, limit, budget int64) (body []byte, held int64, err error) {
+// readBody buffers r's body, of at most limit bytes, within the gateway's memory budget, on key's account.
+// held is what the body holds of the budget, whether or not reading succeeded: the caller releases it when
+// the request is done.
+func (g *Gateway) readBody(r *http.Request, key string, limit, budget int64) (body []byte, held int64, err error) {
 	if r.ContentLength > limit {
 		return nil, 0, errBodyTooLarge{limit}
 	}
-	if n := r.ContentLength; n >= 0 { // net/http never hands out more than the declared length
-		if !g.buffered.reserve(n, budget) {
-			return nil, 0, errBufferFull
-		}
-		body, err = io.ReadAll(r.Body)
-		return body, n, err
-	}
+	keyMax := max(budget/2, limit) // half of everything, but always room for one body of the allowed size
 	for {
-		if !g.buffered.reserve(bodyStep, budget) {
+		if !g.buffered.reserve(key, bodyStep, budget, keyMax) {
 			return nil, held, errBufferFull
 		}
 		held += bodyStep

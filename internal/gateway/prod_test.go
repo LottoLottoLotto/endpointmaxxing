@@ -494,7 +494,7 @@ func TestBodyLimitAndBufferBudget(t *testing.T) {
 		t.Fatalf("%d bytes of the budget still held after the requests ended", used)
 	}
 
-	if !g.buffered.reserve(8<<20, 8<<20) { // other requests hold the whole budget
+	if !g.buffered.reserve("", 8<<20, 8<<20, 8<<20) { // other requests hold the whole budget
 		t.Fatal("an empty budget refused its own size")
 	}
 	for name, code := range map[string]int{
@@ -508,9 +508,45 @@ func TestBodyLimitAndBufferBudget(t *testing.T) {
 	if w := direct(h, "POST", "/v1/chat/completions", "", chatBody("m")); w.Header().Get("Retry-After") != "1" {
 		t.Errorf("budget exhausted: Retry-After %q", w.Header().Get("Retry-After"))
 	}
-	g.buffered.release(8 << 20)
+	g.buffered.release("", 8<<20)
 	if w := direct(h, "POST", "/v1/chat/completions", "", chatBody("m")); w.Code != 200 {
 		t.Fatalf("budget free again: %d", w.Code)
+	}
+}
+
+// A declared length reserves nothing until bytes arrive, and one key holds at most half the budget: neither
+// idle uploads nor one busy key can make the gateway refuse everybody else.
+func TestBodyBudgetIsTakenAsBytesArriveAndSharedBetweenKeys(t *testing.T) {
+	g := &Gateway{}
+	pr, pw := io.Pipe()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", pr)
+	req.ContentLength = 4 << 20 // announced, never sent
+	done := make(chan int64)
+	go func() {
+		_, held, _ := g.readBody(req, "k", 8<<20, 64<<20)
+		done <- held
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if used := g.buffered.used.Load(); used > bodyStep {
+		t.Fatalf("a body that only announced its length holds %d bytes of the budget", used)
+	}
+	pw.Close()
+	g.buffered.release("k", <-done)
+
+	const max = 8 << 20
+	if !g.buffered.reserve("a", max/2, max, max/2) {
+		t.Fatal("a key was refused half the budget")
+	}
+	if g.buffered.reserve("a", 1, max, max/2) {
+		t.Fatal("one key took more than half the budget")
+	}
+	if !g.buffered.reserve("b", max/2, max, max/2) {
+		t.Fatal("another key was refused while the first held its half")
+	}
+	g.buffered.release("a", max/2)
+	g.buffered.release("b", max/2)
+	if used := g.buffered.used.Load(); used != 0 || len(g.buffered.byKey) != 0 {
+		t.Fatalf("budget not returned: %d bytes, keys %v", used, g.buffered.byKey)
 	}
 }
 

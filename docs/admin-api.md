@@ -150,8 +150,18 @@ the management API instead.
 - **MCP:** `substrate mcp` speaks MCP over stdio. Each command becomes a tool
   named `substrate_<command>`, for example `substrate_ensure`,
   `substrate_chat`, `substrate_usage` and `substrate_model_add`. Tool
-  arguments mirror the command's flags, plus `args` for positional arguments
-  and `engine_args` for arguments passed through to the engine.
+  arguments mirror the command's flags, plus `args` for positional arguments.
+
+  An agent acts on what it reads, and what it reads may have been written by
+  someone else. So by default the tools leave out every input that chooses
+  what this host runs or which of its files are read: `engine add` and
+  `engine set`, engine arguments (`engine_args`), `--var` and `--pre-arg`,
+  `--trust-remote-code`, and flags that name a file to read (`--prompt-file`,
+  `--hardware`, `--file`, `--key-file`). With them left out an agent can
+  register, start, stop, measure and inspect models, but cannot be talked
+  into running a program. `substrate mcp --allow-host` offers everything the
+  CLI does; the agent then has the access of a shell on this host.
+  `substrate commands --json` marks these commands and flags `host_only`.
 
   ```json
   { "mcpServers": { "substrate": { "command": "substrate", "args": ["mcp"] } } }

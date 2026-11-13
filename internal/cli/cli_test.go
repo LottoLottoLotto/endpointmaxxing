@@ -52,7 +52,7 @@ func TestSchemaCoversEveryCommand(t *testing.T) {
 
 func TestToolArgv(t *testing.T) {
 	var run mcpTool
-	for _, tl := range tools() {
+	for _, tl := range tools(true) {
 		if tl.Name == "substrate_run" {
 			run = tl
 		}
@@ -73,6 +73,59 @@ func TestToolArgv(t *testing.T) {
 	}
 }
 
+// Without --allow-host an agent gets no input that chooses what the host runs or which files it reads.
+func TestMCPToolsLeaveOutHostInputsByDefault(t *testing.T) {
+	byName := map[string]mcpTool{}
+	for _, tl := range tools(false) {
+		byName[tl.Name] = tl
+	}
+	for _, name := range []string{"substrate_engine_add", "substrate_engine_set"} {
+		if _, ok := byName[name]; ok {
+			t.Errorf("%s is offered without --allow-host", name)
+		}
+	}
+	props := func(tool string) map[string]any {
+		tl, ok := byName[tool]
+		if !ok {
+			t.Fatalf("no %s tool", tool)
+		}
+		return tl.InputSchema["properties"].(map[string]any)
+	}
+	for tool, hidden := range map[string][]string{
+		"substrate_run":          {"engine_args", "trust-remote-code"},
+		"substrate_ensure":       {"engine_args", "trust-remote-code"},
+		"substrate_model_add":    {"engine_args", "var", "pre-arg", "trust-remote-code"},
+		"substrate_bench_run":    {"prompt-file"},
+		"substrate_bench_config": {"hardware"},
+		"substrate_policy_test":  {"file"},
+	} {
+		p := props(tool)
+		for _, name := range hidden {
+			if _, ok := p[name]; ok {
+				t.Errorf("%s offers %q without --allow-host", tool, name)
+			}
+		}
+	}
+	if _, ok := props("substrate_run")["ctx"]; !ok {
+		t.Error("substrate_run lost its ordinary flags")
+	}
+	for _, in := range []map[string]any{
+		{"args": []any{"m"}, "engine_args": []any{"--x"}},
+		{"args": []any{"m"}, "trust-remote-code": true},
+	} {
+		if _, err := byName["substrate_run"].argv(in); err == nil {
+			t.Errorf("substrate_run accepted %v without --allow-host", in)
+		}
+	}
+	all := map[string]bool{}
+	for _, tl := range tools(true) {
+		all[tl.Name] = true
+	}
+	if !all["substrate_engine_add"] || !all["substrate_engine_set"] {
+		t.Error("--allow-host does not offer the engine tools")
+	}
+}
+
 func TestMCPSession(t *testing.T) {
 	t.Setenv("SUBSTRATE_HOME", t.TempDir())
 	in := strings.Join([]string{
@@ -84,7 +137,7 @@ func TestMCPSession(t *testing.T) {
 		`{"jsonrpc":"2.0","id":5,"method":"nope"}`,
 	}, "\n") + "\n"
 	var out bytes.Buffer
-	if err := serveMCP(context.Background(), strings.NewReader(in), &out, io.Discard); err != nil {
+	if err := serveMCP(context.Background(), strings.NewReader(in), &out, io.Discard, false); err != nil {
 		t.Fatal(err)
 	}
 	byID := map[string]map[string]any{}

@@ -8,6 +8,14 @@ upload are done by [`lmx`](https://github.com/LottoLottoLotto/localmaxxing-cli)
 (v0.1.56 or later, logged in with `lmx login`; `$SUBSTRATE_LMX` points at a
 copy off `PATH`). substrate supplies what `lmx` would otherwise ask for.
 
+When the model's endpoint needs a key (an engine started with `--api-key`, or
+`--via gateway` with `$SUBSTRATE_API_KEY`), substrate hands it to `lmx` in the
+environment variable `LMX_MODEL_API_KEY`, not on its command line, which every
+user of the host can read. That needs an `lmx` that lists the feature
+`model-api-key-env` in `lmx version --json` (releases after v0.1.60). With an
+older `lmx`, `bench run` stops and says so; `--key-in-args` accepts the key on
+the command line.
+
 ```sh
 substrate bench config flash-next-iq3s --hf-id ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
     --spec-method MTP --spec-num-tokens 3 --context-length 32768 --notes "..."   # once per model
