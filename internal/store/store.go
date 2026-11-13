@@ -4,6 +4,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -177,28 +178,53 @@ func privateFiles() error {
 	return nil
 }
 
+// migrate brings the schema up to date. An up-to-date database is only read: opening must not need the
+// write lock, which a gateway recording requests holds again and again. A migration takes the write lock
+// first (BEGIN IMMEDIATE waits for it, up to the busy timeout); a transaction that started by reading
+// would be refused it outright while another connection writes.
 func migrate(db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	var v int
-	if err := tx.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
 	if v > len(migrations) {
 		return fmt.Errorf("schema version %d is newer than this substrate (%d)", v, len(migrations))
 	}
+	if v == len(migrations) {
+		return nil
+	}
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	done := false
+	defer func() {
+		if !done {
+			conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+	// Another opener may have migrated while this one waited for the lock.
+	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v); err != nil {
+		return err
+	}
 	for ; v < len(migrations); v++ {
-		if _, err := tx.Exec(migrations[v]); err != nil {
+		if _, err := conn.ExecContext(ctx, migrations[v]); err != nil {
 			return fmt.Errorf("migration %d: %w", v+1, err)
 		}
 	}
-	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", v)); err != nil {
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v)); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return err
+	}
+	done = true
+	return nil
 }
 
 // Request is one proxied request.
