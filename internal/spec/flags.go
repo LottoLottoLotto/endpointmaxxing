@@ -56,16 +56,6 @@ func FlagByKey(k string) (UnifiedFlag, bool) {
 	return UnifiedFlag{}, false
 }
 
-// FlagByCLI returns the unified flag with the CLI name n (without dashes).
-func FlagByCLI(n string) (UnifiedFlag, bool) {
-	for _, f := range Unified {
-		if f.CLI == n {
-			return f, true
-		}
-	}
-	return UnifiedFlag{}, false
-}
-
 // Normalize checks v against the flag's type and returns its canonical text.
 func (f UnifiedFlag) Normalize(v string) (string, error) {
 	v = strings.TrimSpace(v)

@@ -489,6 +489,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec.Model = req.Model // routed: the name of a model that exists
+	g.metrics.markRouted(rec.Model)
 	release, err := g.lim.acquire(r.Context(), rec.Model, g.maxConcurrency(rec.Model), g.gw().MaxQueue, time.Duration(g.gw().QueueTimeout))
 	queue := time.Since(start).Milliseconds()
 	rec.QueueMS = &queue

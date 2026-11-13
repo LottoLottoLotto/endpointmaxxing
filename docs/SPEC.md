@@ -156,9 +156,11 @@ that variable and is not placed on the command line, where the host's
 process list would show it; it takes precedence over `flags.api_key`. It
 must be a valid environment variable name (`[A-Za-z_][A-Za-z0-9_]*`) and is
 not allowed in a multi-model host manifest. Of the builtin engines, `vllm`
-uses `VLLM_API_KEY`, and `llama.cpp` and `buun-llama-cpp` use
-`LLAMA_API_KEY`; `sglang`, `strata` and `tt-vllm` map `flags.api_key` to
-`--api-key` and so receive the key on the command line.
+uses `VLLM_API_KEY`, `llama.cpp` and `buun-llama-cpp` use `LLAMA_API_KEY`,
+`strata` uses `STRATA_API_KEY`, and `tt-vllm` uses `VLLM_API_KEY` (its docker
+command has `-e VLLM_API_KEY`, which forwards the variable into the
+container without putting its value on a command line). Only `sglang` maps
+`flags.api_key` to `--api-key` and so receives the key on the command line.
 
 Validation rejects an unknown placeholder, an unknown field, an unknown
 format or API, a flag that is not in the unified vocabulary, a non-bool flag

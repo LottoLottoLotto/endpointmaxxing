@@ -59,6 +59,9 @@ launch:
     - "MESH_DEVICE={mesh}"
     - -e
     - "TT_VISIBLE_DEVICES={devices}"
+    # Forwarded from the docker client's environment (launch.api_key_env), so the key is on no command line.
+    - -e
+    - VLLM_API_KEY
     - "{pre_args}"
     - --entrypoint
     - "{python}"
@@ -76,6 +79,8 @@ launch:
   # The docker client forwards SIGTERM to the container (tini -> python closes the device).
   stop_signal: SIGTERM
   stop_timeout: 60s
+  # vLLM reads its key from this variable; docker forwards it into the container (-e VLLM_API_KEY above).
+  api_key_env: VLLM_API_KEY
   # If the client died first, the container would keep the chips: remove it by name.
   cleanup:
     - ["{bin}", rm, -f, "substrate-{instance}"]
@@ -97,7 +102,6 @@ accelerator:
 flags:
   ctx: [--max-model-len, "{value}"]
   parallel: [--max-num-seqs, "{value}"]
-  api_key: [--api-key, "{value}"]
 
 capabilities:
   formats: [safetensors]

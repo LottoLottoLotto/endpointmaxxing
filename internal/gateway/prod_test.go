@@ -1,9 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -599,5 +601,60 @@ func TestUnauthenticatedDenialsAreStoredAtALimitedRate(t *testing.T) {
 	}
 	if n := g.metrics.unstoredDenials; n != 10 {
 		t.Fatalf("%d denials counted as not stored, want 10", n)
+	}
+}
+
+// A body of exactly the allowed size is accepted and a larger one is 413, also when the memory budget is
+// no larger than one body: the read that finds the end of a body needs room of its own.
+func TestBodyOfExactlyTheLimitFitsTheSmallestBudget(t *testing.T) {
+	g := &Gateway{}
+	const limit = 1 << 20
+	read := func(n int) error {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(make([]byte, n)))
+		req.ContentLength = -1 // as a chunked body: its size is found by reading
+		_, held, err := g.readBody(req, "k", limit, limit)
+		g.buffered.release("k", held)
+		return err
+	}
+	if err := read(limit); err != nil {
+		t.Fatalf("body of exactly the limit: %v", err)
+	}
+	var tooLarge errBodyTooLarge
+	if err := read(limit + 1); !errors.As(err, &tooLarge) {
+		t.Fatalf("body over the limit: %v, want the 413 error", err)
+	}
+}
+
+// A real model's failures before it reaches an engine keep its name in the metrics, however many unknown
+// names clients have asked for.
+func TestRoutedModelsKeepTheirMetricSeries(t *testing.T) {
+	m := newMetrics()
+	for i := range maxUnroutedModels + 5 {
+		m.observe(&store.Request{Model: fmt.Sprintf("unknown-%d", i), API: "chat", Status: 404})
+	}
+	m.markRouted("real")
+	m.observe(&store.Request{Model: "real", API: "chat", Status: 429})
+	if m.requests[[4]string{"real", "", "chat", "429"}] != 1 {
+		t.Fatalf("the routed model was folded away: %v", m.requests[[4]string{"other", "", "chat", "429"}])
+	}
+	if m.requests[[4]string{"other", "", "chat", "404"}] != 5 {
+		t.Fatalf("unknown names beyond the cap: %d under other, want 5", m.requests[[4]string{"other", "", "chat", "404"}])
+	}
+}
+
+// One model served by two instances is still one model: a request without a model goes to it.
+func TestModelLessRequestWithReplicas(t *testing.T) {
+	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	b := newRecordingBackend()
+	defer b.Close()
+	instance(t, "m.a", "m", b.URL)
+	instance(t, "m.b", "m", b.URL)
+	_, srv := newGateway(t)
+	if got := call(t, "POST", srv.URL+"/v1/chat/completions", "", `{"messages":[]}`); got != 200 {
+		t.Fatalf("model-less request with two replicas of the only model: %d", got)
+	}
+	instance(t, "n.a", "n", b.URL)
+	if got := call(t, "POST", srv.URL+"/v1/chat/completions", "", `{"messages":[]}`); got != 400 {
+		t.Fatalf("model-less request with two models ready: %d", got)
 	}
 }

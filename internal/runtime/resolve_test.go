@@ -122,8 +122,8 @@ func TestTTVLLMPlanPlacesPreArgsVarsAndChips(t *testing.T) {
 	argv := strings.Join(p.Argv, " ")
 	for _, want := range []string{
 		"--name substrate-lfm.tt-vllm",
-		"-e TT_VISIBLE_DEVICES=2,3 -e LFM2_SPECULATE=1 --entrypoint", // pre-args sit before the image
-		"lfm25-p150:dev-m12 -m vllm.entrypoints.openai.api_server",   // an image tag survives path cleaning
+		"-e TT_VISIBLE_DEVICES=2,3 -e VLLM_API_KEY -e LFM2_SPECULATE=1 --entrypoint", // pre-args sit before the image
+		"lfm25-p150:dev-m12 -m vllm.entrypoints.openai.api_server",                   // an image tag survives path cleaning
 		"MESH_DEVICE=P150x2",
 		"--served-model-name m",
 		"--max-model-len 8192 --max-num-seqs 1",

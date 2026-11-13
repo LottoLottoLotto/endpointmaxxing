@@ -146,7 +146,10 @@ func (g *Gateway) readBody(r *http.Request, key string, limit, budget int64) (bo
 	if r.ContentLength > limit {
 		return nil, 0, errBodyTooLarge{limit}
 	}
-	keyMax := max(budget/2, limit) // half of everything, but always room for one body of the allowed size
+	// One key holds half of everything, but always one body of the allowed size; and a body takes one step
+	// more than its size, for the read that finds its end (or finds it over the limit: 413, not 503).
+	budget = max(budget, limit+bodyStep)
+	keyMax := max(budget/2, limit+bodyStep)
 	for {
 		if !g.buffered.reserve(key, bodyStep, budget, keyMax) {
 			return nil, held, errBufferFull

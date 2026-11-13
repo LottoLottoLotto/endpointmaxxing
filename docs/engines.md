@@ -27,7 +27,9 @@ forwarded). How the engine receives it depends on its manifest
 | --- | --- |
 | `vllm` | environment variable `VLLM_API_KEY` |
 | `llama.cpp`, `buun-llama-cpp` | environment variable `LLAMA_API_KEY` |
-| `sglang`, `strata`, `tt-vllm` | `--api-key` on the command line, visible in the host's process list |
+| `strata` | environment variable `STRATA_API_KEY` |
+| `tt-vllm` | environment variable `VLLM_API_KEY`, forwarded into the container by docker (`-e VLLM_API_KEY`) |
+| `sglang` | `--api-key` on the command line, visible in the host's process list |
 | `tt-multihost` | no key (a multi-model host takes no flags) |
 
 ## Tenstorrent

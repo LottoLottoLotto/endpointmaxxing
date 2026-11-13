@@ -420,3 +420,21 @@ func TestDeletedOldestLinesAreDetected(t *testing.T) {
 		t.Fatalf("expected first record: %+v", r)
 	}
 }
+
+// A file from before sequence numbers whose oldest part retention pruned (before pruning was recorded)
+// still verifies once numbered lines follow: its start cannot be held to a pruning record.
+func TestChainPrunedBeforeSequenceNumbersStillVerifies(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := os.WriteFile(p, []byte(`{"prev":"feedbeef","type":"admin","detail":"kept after pruning"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := mustVerify(t, p, Check{}); !r.OK || !r.Anchored {
+		t.Fatalf("before any numbered line: %+v", r)
+	}
+	l := open(t, p, 0, "")
+	write(t, l, 2, "after upgrade")
+	l.Close()
+	if r := mustVerify(t, p, Check{}); !r.OK || !r.Anchored || r.Lines != 3 {
+		t.Fatalf("numbered lines after an unnumbered pruned start: %+v", r)
+	}
+}

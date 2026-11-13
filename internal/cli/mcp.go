@@ -133,6 +133,14 @@ func tools(allowHost bool) []mcpTool {
 							return nil, err
 						}
 						if k == "args" {
+							// Positionals are spliced into a command line: one that starts with a dash would be
+							// read as a flag (or, as "--", open the engine arguments) and slip past what the
+							// schema leaves out. Flags have their own properties; no positional needs a dash.
+							for _, a := range list {
+								if strings.HasPrefix(a, "-") {
+									return nil, fmt.Errorf("args: %q starts with a dash; flags are separate arguments", a)
+								}
+							}
 							pos = list
 						} else {
 							extra = list

@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"path"
-	"strings"
 )
 
 // TLS serves the gateway over HTTPS. Cert and key files are re-read when they change on disk,
@@ -198,20 +197,6 @@ func validateTeams(teams []Team) error {
 	return nil
 }
 
-// UpdateTeam creates or replaces a team in config.yaml.
-func UpdateTeam(t Team) (*Config, error) {
-	return Update(func(c *Config) error {
-		for i := range c.Teams {
-			if c.Teams[i].Name == t.Name {
-				c.Teams[i] = t
-				return nil
-			}
-		}
-		c.Teams = append(c.Teams, t)
-		return nil
-	})
-}
-
 // RemoveTeam deletes a team from config.yaml; false when absent.
 func RemoveTeam(name string) (bool, error) {
 	found := false
@@ -226,23 +211,4 @@ func RemoveTeam(name string) (bool, error) {
 		return nil
 	})
 	return found, err
-}
-
-// SetPrice sets (or with nil removes) the price of a model name or glob; "default" sets the default price.
-func SetPrice(model string, p *Price) (*Config, error) {
-	return Update(func(c *Config) error {
-		if strings.EqualFold(model, "default") {
-			c.Pricing.Default = p
-			return nil
-		}
-		if p == nil {
-			delete(c.Pricing.Models, model)
-			return nil
-		}
-		if c.Pricing.Models == nil {
-			c.Pricing.Models = map[string]Price{}
-		}
-		c.Pricing.Models[model] = *p
-		return nil
-	})
 }

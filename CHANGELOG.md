@@ -161,8 +161,8 @@ Entries marked "breaking" can break existing clients.
 - Instance ids are validated (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`), so
   `stop` and lookups cannot leave the instances directory.
 - Engine API keys no longer appear on the command line for `vllm`,
-  `llama.cpp` and `buun-llama-cpp`; `sglang`, `strata` and `tt-vllm` still
-  receive `--api-key` there.
+  `llama.cpp`, `buun-llama-cpp`, `strata` and `tt-vllm`; `sglang` still
+  receives `--api-key` there.
 - Audit file: lines carry `seq`, the chain head is recorded in
   `<audit file>.head`, and `gateway.audit_key_file` keys the chain
   (HMAC-SHA256). `substrate audit verify` detects a truncated or rewritten

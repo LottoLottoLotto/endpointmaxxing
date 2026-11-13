@@ -113,6 +113,10 @@ func TestMCPToolsLeaveOutHostInputsByDefault(t *testing.T) {
 	for _, in := range []map[string]any{
 		{"args": []any{"m"}, "engine_args": []any{"--x"}},
 		{"args": []any{"m"}, "trust-remote-code": true},
+		// The same inputs dressed as positionals, which are spliced into the command line.
+		{"args": []any{"m", "--", "--directory", "/etc"}},
+		{"args": []any{"--trust-remote-code", "m"}},
+		{"args": []any{"m", "--var=image=x"}},
 	} {
 		if _, err := byName["substrate_run"].argv(in); err == nil {
 			t.Errorf("substrate_run accepted %v without --allow-host", in)
@@ -194,8 +198,8 @@ func TestOutputNeutralisesControlSequencesAndFormulas(t *testing.T) {
 	}
 	out.Reset()
 	e.csv = true
-	e.table("CLIENT\tTOKENS", [][]string{{`=HYPERLINK("http://x","y")`, "-12"}, {"@cmd", "+3.5"}, {"-x", "7"}})
-	want := "CLIENT,TOKENS\n\"'=HYPERLINK(\"\"http://x\"\",\"\"y\"\")\",-12\n'@cmd,+3.5\n'-x,7\n"
+	e.table("CLIENT\tTOKENS", [][]string{{`=HYPERLINK("http://x","y")`, "-12"}, {"@cmd", "+3.5"}, {"-x", "7"}, {"nobody", "-"}})
+	want := "CLIENT,TOKENS\n\"'=HYPERLINK(\"\"http://x\"\",\"\"y\"\")\",-12\n'@cmd,+3.5\n'-x,7\nnobody,-\n"
 	if out.String() != want {
 		t.Fatalf("csv:\n%s\nwant:\n%s", out.String(), want)
 	}

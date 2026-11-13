@@ -13,7 +13,8 @@ import (
 
 func ps(args ...string) string {
 	cmd := exec.Command("ps", args...)
-	cmd.Env = []string{"LC_ALL=C", "PATH=/bin:/usr/bin:/sbin:/usr/sbin"}
+	// UTC: start times are compared between commands and over the gateway's life, across zone changes.
+	cmd.Env = []string{"LC_ALL=C", "TZ=UTC", "PATH=/bin:/usr/bin:/sbin:/usr/sbin"}
 	out, _ := cmd.Output() // ps exits 1 when no process matches; the empty output says the same
 	return string(out)
 }
@@ -26,7 +27,7 @@ func Start(pid int) uint64 {
 	if len(f) < 6 || strings.HasPrefix(f[0], "Z") {
 		return 0
 	}
-	t, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(f[1:6], " "), time.Local)
+	t, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(f[1:6], " "), time.UTC)
 	if err != nil || t.Unix() <= 0 {
 		return 0
 	}

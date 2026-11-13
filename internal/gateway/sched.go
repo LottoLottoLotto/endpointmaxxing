@@ -337,13 +337,24 @@ func placementNote(in *runtime.Instance) string {
 // soleModel names the model a request without one goes to: the only ready instance's, or for a
 // multi-model host the only model it holds.
 func (g *Gateway) soleModel(ctx context.Context, api string) (string, error) {
-	if ins, _ := g.ready(ctx, "", api); len(ins) == 1 {
-		in := ins[0]
-		if !in.Hosting {
-			return in.Name, nil
+	// One model may be served by several instances (replicas): what counts is how many models are ready.
+	names := map[string]bool{}
+	ins, _ := runtime.List()
+	for _, in := range ins {
+		if g.instanceStatus(ctx, in) != runtime.StatusReady || !in.HasAPI(api) {
+			continue
 		}
-		if held := g.hosted(ctx, in); len(held) == 1 {
-			return held[0], nil
+		if !in.Hosting {
+			names[in.Name] = true
+			continue
+		}
+		for _, held := range g.hosted(ctx, in) {
+			names[held] = true
+		}
+	}
+	if len(names) == 1 {
+		for name := range names {
+			return name, nil
 		}
 	}
 	return "", errs.New(errs.Usage, "request has no model, and not exactly one model is ready")
@@ -369,12 +380,6 @@ func (g *Gateway) ready(ctx context.Context, model, api string) ([]*runtime.Inst
 			continue
 		}
 		ok = append(ok, in)
-	}
-	if model == "" {
-		if len(ok) == 1 {
-			return ok, nil
-		}
-		return nil, nil
 	}
 	if len(ok) == 0 {
 		if len(wrongAPI) > 0 {

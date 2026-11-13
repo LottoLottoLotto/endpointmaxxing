@@ -87,7 +87,15 @@ func cmdRun() *command {
 					if err != nil {
 						return err
 					}
+					// The plan is for reading and pasting: the key is masked wherever the engine takes it.
 					plan.Argv = runtime.Redact(plan.Argv, l.flags["api_key"])
+					if key := l.flags["api_key"]; key != "" {
+						for k, v := range plan.Env {
+							if v == key {
+								plan.Env[k] = "***"
+							}
+						}
+					}
 					return e.out(map[string]any{"id": iid, "plan": plan}, func(w io.Writer) { printPlan(w, iid, plan) })
 				}
 				if a.HostEngine(t, opts.Engine) != nil {

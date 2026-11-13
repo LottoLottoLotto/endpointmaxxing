@@ -541,6 +541,7 @@ func Verify(path string, c Check) (*Report, error) {
 		prev                 string // chain hash of the line before
 		seq                  int64  // sequence number of the last numbered line
 		started, numbered    bool   // a chained, a numbered line was seen
+		anchoredAt           int64  // sequence number of the line the chain starts at, when pruned and numbered
 		atAnchor, atExpected bool   // the line the anchor, the caller names was seen
 		keyed                []byte // a keyed line's fields up to and including "mac"
 	)
@@ -557,6 +558,9 @@ func Verify(path string, c Check) (*Report, error) {
 			return "no chain link after chained lines (inserted line?)"
 		case !started && r.Unchained == 0 && *lk.Prev != "":
 			r.Anchored = true // the predecessor was pruned; this line anchors what remains
+			if lk.Seq != nil {
+				anchoredAt = *lk.Seq
+			}
 		case *lk.Prev != prev:
 			return "chain broken (the line before it was changed, removed or reordered)"
 		}
@@ -655,8 +659,9 @@ func Verify(path string, c Check) (*Report, error) {
 		return fail("the chain does not contain the line its head anchor %s names (record %d, hash %s): the tail was rewritten", headPath(path), anchor.Count, anchor.Hash)
 	}
 	// A chain that does not start at its beginning is what retention leaves, and also what deleting the
-	// oldest lines leaves: only the pruning record tells them apart.
-	if r.Anchored && r.First > 0 {
+	// oldest lines leaves: only the pruning record tells them apart. Lines from before sequence numbers
+	// cannot be held to it: a chain that starts with one was pruned before pruning was recorded.
+	if anchoredAt > 0 {
 		kept, err := readPruned(path)
 		switch {
 		case err != nil:

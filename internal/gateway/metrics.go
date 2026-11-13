@@ -33,6 +33,9 @@ type metrics struct {
 	// unrouted holds the model names of requests that never reached an engine. Clients choose those names,
 	// so only the first maxUnroutedModels get their own series; later ones are counted as "other".
 	unrouted map[string]struct{}
+	// routed holds the names the gateway found a model for: a request that fails before reaching the
+	// engine (queue full, start failed) still counts under its model.
+	routed map[string]struct{}
 
 	// unstoredDenials counts refused-key (401) requests over the stored-per-minute limit.
 	unstoredDenials int64
@@ -67,13 +70,23 @@ func newMetrics() *metrics {
 		errorKind: map[[2]string]int64{}, cost: map[[2]string]float64{}}
 }
 
+// markRouted records that name is a model the gateway serves.
+func (m *metrics) markRouted(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.routed == nil {
+		m.routed = map[string]struct{}{}
+	}
+	m.routed[name] = struct{}{}
+}
+
 // maxUnroutedModels bounds the metric series a client can create by asking for models that do not exist.
 const maxUnroutedModels = 200
 
 func (m *metrics) observe(r *store.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if r.Engine == "" && r.Model != "" {
+	if _, real := m.routed[r.Model]; !real && r.Engine == "" && r.Model != "" {
 		if _, seen := m.unrouted[r.Model]; !seen {
 			if len(m.unrouted) >= maxUnroutedModels {
 				folded := *r

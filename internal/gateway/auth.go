@@ -87,16 +87,15 @@ func permits(level int, role string) bool {
 
 // authState caches keys.yaml and tracks per-key rate and token use.
 type authState struct {
-	mu      sync.Mutex
-	file    *keys.File
-	mtime   time.Time
-	size    int64
-	byHash  map[string]*keys.Key   // current and (during a rotation grace period) previous secret hashes
-	minute  map[string][]time.Time // request times in the last minute, per key
-	tokens  map[string]tokenUse    // tokens used today, per key
-	teams   map[string]*teamUse    // team totals for the day and month
-	dbFunc  func() (*store.DB, error)
-	loadErr error
+	mu     sync.Mutex
+	file   *keys.File
+	mtime  time.Time
+	size   int64
+	byHash map[string]*keys.Key   // current and (during a rotation grace period) previous secret hashes
+	minute map[string][]time.Time // request times in the last minute, per key
+	tokens map[string]tokenUse    // tokens used today, per key
+	teams  map[string]*teamUse    // team totals for the day and month
+	dbFunc func() (*store.DB, error)
 }
 
 type tokenUse struct {

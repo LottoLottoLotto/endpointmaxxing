@@ -115,7 +115,7 @@ func (p plain) Write(b []byte) (int, error) {
 // csvCell keeps a spreadsheet from running a cell as a formula: text that starts like one gets a leading
 // apostrophe. Numbers (also negative ones) stay as they are.
 func csvCell(s string) string {
-	if s == "" || !strings.ContainsRune("=+-@\t\r", rune(s[0])) {
+	if s == "" || s == "-" || !strings.ContainsRune("=+-@\t\r", rune(s[0])) { // "-" alone marks an absent value
 		return s
 	}
 	if _, err := strconv.ParseFloat(s, 64); err == nil {
@@ -473,9 +473,8 @@ type CommandSchema struct {
 	Flags      []FlagSchema `json:"flags"`
 	EngineArgs bool         `json:"engine_args"` // accepts engine arguments after --
 	// HostOnly marks a command whose inputs choose programs this host runs.
-	HostOnly    bool   `json:"host_only,omitempty"`
-	MCPTool     string `json:"mcp_tool,omitempty"`
-	exampleArgs []string
+	HostOnly bool   `json:"host_only,omitempty"`
+	MCPTool  string `json:"mcp_tool,omitempty"`
 }
 
 func flagType(f *flag.Flag) string {
