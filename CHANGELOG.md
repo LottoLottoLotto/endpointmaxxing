@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A binary built with `go install ...@<version>` reports that version instead
+  of `dev`.
+
 ## [0.1.0] - 2026-11-13
 
 The first public release.

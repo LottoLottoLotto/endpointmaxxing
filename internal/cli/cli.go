@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,8 +23,14 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
-// Version is set at build time with -ldflags "-X github.com/LottoLottoLotto/endpointmaxxing/internal/cli.Version=...".
-var Version = "dev"
+// Version is set at build time with -ldflags "-X github.com/LottoLottoLotto/endpointmaxxing/internal/cli.Version=...";
+// a binary built with `go install ...@v1.2.3` has no such flag and takes the version of its module.
+var Version = func() string {
+	if info, ok := debug.ReadBuildInfo(); ok && strings.HasPrefix(info.Main.Version, "v") {
+		return info.Main.Version
+	}
+	return "dev"
+}()
 
 // env is what every command receives.
 type env struct {
