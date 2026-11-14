@@ -161,6 +161,13 @@ func (m *metrics) restarted(in *runtime.Instance) {
 	m.mu.Unlock()
 }
 
+// gpuSnapshot returns the GPUs as last sampled.
+func (m *metrics) gpuSnapshot() []gpu.GPU {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gpus
+}
+
 func (m *metrics) setSamples(gs []gpu.GPU, is []store.InstanceSample) {
 	m.mu.Lock()
 	m.gpus, m.instances = gs, is

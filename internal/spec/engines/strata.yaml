@@ -41,6 +41,11 @@ context:
   path: /v1/models
   field: data.0.meta.n_ctx
 
+# Whether the loaded model takes images.
+vision:
+  path: /v1/models
+  field: data.0.architecture.input_modalities
+
 flags:
   gpus: [--gpu, "{value}"]
 

@@ -4,21 +4,16 @@ import (
 	"context"
 	"net/http"
 	"time"
-
-	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
-// ReportedContext asks the running engine for the context window of the model it serves, the way its
-// manifest says to; 0 when the manifest does not say, or the engine does not answer with one.
-func ReportedContext(ctx context.Context, in *Instance, c *spec.Context) int {
-	if c == nil || c.Path == "" {
-		return 0
-	}
+// Report asks the running engine for what it says about itself at path (its manifest names the path for the
+// model's context window and for image input); nil when it does not answer.
+func Report(ctx context.Context, in *Instance, path string) []byte {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	body, err := hostCall(ctx, in, http.MethodGet, c.Path, nil)
+	body, err := hostCall(ctx, in, http.MethodGet, path, nil)
 	if err != nil {
-		return 0
+		return nil
 	}
-	return c.Read(body)
+	return body
 }

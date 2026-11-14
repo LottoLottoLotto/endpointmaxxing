@@ -267,6 +267,16 @@ type Offer struct {
 	Context int `json:"context,omitempty"`
 	// Unavailable says why it cannot be started; empty when it can.
 	Unavailable string `json:"unavailable,omitempty"`
+	// Images says whether it takes image input, when its files say (nil: not known until it runs).
+	Images *bool `json:"images,omitempty"`
+	// APIs are the request formats its engine serves (chat, messages, embeddings, ...).
+	APIs []string `json:"apis,omitempty"`
+	// Accelerator is "tenstorrent" for an engine that runs on Tenstorrent chips, else "gpu"; Chips is how
+	// many chips an instance owns, NeedMiB the GPU memory it takes (declared, or the peak measured over
+	// the last 30 days; 0 when neither).
+	Accelerator string `json:"accelerator,omitempty"`
+	Chips       int    `json:"chips,omitempty"`
+	NeedMiB     int64  `json:"need_mib,omitempty"`
 }
 
 // Offer describes registered model m as a client choosing a model should see it.
@@ -284,10 +294,23 @@ func (a *App) Offer(m config.Model) Offer {
 		o.Engine = id
 		if e, err := a.Engine(id); err == nil {
 			o.Context = e.Context.Registered(m.Flags)
+			o.APIs = e.Capabilities.APIs
+			o.Accelerator = "gpu"
+			if e.Accelerator.Kind == spec.AccelTenstorrent {
+				o.Accelerator = spec.AccelTenstorrent
+				if o.Chips = m.Devices; o.Chips == 0 {
+					o.Chips = max(e.Accelerator.Devices, 1)
+				}
+			} else if o.NeedMiB = m.VRAMMiB; o.NeedMiB == 0 {
+				o.NeedMiB = a.peak(m.Name, id)
+			}
 		}
 	}
 	if o.Context == 0 && m.Bench != nil {
 		o.Context = m.Bench.ContextLength
+	}
+	if images, known := model.DeclaresVision(paths.Expand(m.Source)); known {
+		o.Images = &images
 	}
 	return o
 }

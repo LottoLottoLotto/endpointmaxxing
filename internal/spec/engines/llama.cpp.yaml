@@ -37,6 +37,11 @@ context:
   field: default_generation_settings.n_ctx
   split_by: parallel
 
+# Whether the loaded model takes images (it does when started with a projector).
+vision:
+  path: /props
+  field: modalities.vision
+
 flags:
   ctx: [-c, "{value}"]
   gpus:

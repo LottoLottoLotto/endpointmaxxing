@@ -48,7 +48,9 @@ type Manifest struct {
 	Launch      Launch            `yaml:"launch" json:"launch"`
 	Health      Health            `yaml:"health" json:"health"`
 	// Context, when set, says how to learn the context window of the model a running engine serves.
-	Context      *Context           `yaml:"context,omitempty" json:"context,omitempty"`
+	Context *Context `yaml:"context,omitempty" json:"context,omitempty"`
+	// Vision, when set, says how to learn whether the model a running engine serves takes images.
+	Vision       *Vision            `yaml:"vision,omitempty" json:"vision,omitempty"`
 	Flags        map[string]FlagMap `yaml:"flags,omitempty" json:"flags,omitempty"`
 	Capabilities Capabilities       `yaml:"capabilities" json:"capabilities"`
 	Routing      Routing            `yaml:"routing,omitempty" json:"routing,omitempty"`
@@ -118,30 +120,72 @@ type Context struct {
 	SplitBy string `yaml:"split_by,omitempty" json:"split_by,omitempty"`
 }
 
-// Read returns the context window in an engine's answer to Path; 0 when it is not there.
-func (c *Context) Read(body []byte) int {
-	var v any
-	if c == nil || c.Field == "" || json.Unmarshal(body, &v) != nil {
-		return 0
+// lookup returns the value at the dotted path field in the JSON body; a number in the path selects an
+// array element. ok is false when the body is not JSON or the path leads nowhere.
+func lookup(body []byte, field string) (v any, ok bool) {
+	if field == "" || json.Unmarshal(body, &v) != nil {
+		return nil, false
 	}
-	for _, key := range strings.Split(c.Field, ".") {
+	for _, key := range strings.Split(field, ".") {
 		switch node := v.(type) {
 		case map[string]any:
-			v = node[key]
+			if v, ok = node[key]; !ok {
+				return nil, false
+			}
 		case []any:
 			i, err := strconv.Atoi(key)
 			if err != nil || i < 0 || i >= len(node) {
-				return 0
+				return nil, false
 			}
 			v = node[i]
 		default:
-			return 0
+			return nil, false
 		}
 	}
-	if n, ok := v.(float64); ok && n > 0 && n < 1<<40 {
-		return int(n)
+	return v, true
+}
+
+// Read returns the context window in an engine's answer to Path; 0 when it is not there.
+func (c *Context) Read(body []byte) int {
+	if c == nil {
+		return 0
+	}
+	if n, ok := lookup(body, c.Field); ok {
+		if n, ok := n.(float64); ok && n > 0 && n < 1<<40 {
+			return int(n)
+		}
 	}
 	return 0
+}
+
+// Vision says how a running engine tells whether the model it serves takes images: GET Path, and the value
+// at Field is either true/false or a list of input kinds that names "image".
+type Vision struct {
+	Path  string `yaml:"path" json:"path"`
+	Field string `yaml:"field" json:"field"`
+}
+
+// Read returns whether the engine's answer says the model takes images; known is false when it does not say.
+func (v *Vision) Read(body []byte) (images, known bool) {
+	if v == nil {
+		return false, false
+	}
+	val, ok := lookup(body, v.Field)
+	if !ok {
+		return false, false
+	}
+	switch x := val.(type) {
+	case bool:
+		return x, true
+	case []any:
+		for _, kind := range x {
+			if kind == "image" {
+				return true, true
+			}
+		}
+		return false, true
+	}
+	return false, false
 }
 
 // Registered returns the context window of a model registered with these unified flags and not running:
@@ -379,6 +423,9 @@ func (m *Manifest) Validate() []string {
 				bad("context.split_by: %q is not a unified flag", c.SplitBy)
 			}
 		}
+	}
+	if v := m.Vision; v != nil && (!strings.HasPrefix(v.Path, "/") || v.Field == "") {
+		bad("vision: needs a path that starts with / and a field")
 	}
 
 	known := map[string]bool{}

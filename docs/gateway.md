@@ -34,6 +34,22 @@ that could be started.
   the context declared with `emx bench config --context-length`. Without any of
   these the fields are absent, and the client falls back to its own default: set
   `--ctx` when you register a model that agents will use.
+- **What else each entry says.** Every field is absent when the gateway does
+  not know it, so a client falls back to its own default.
+
+  | Field | Meaning | Where it comes from |
+  | --- | --- | --- |
+  | `limits.max_output_tokens` | the most one reply can hold | `gateway.max_output_tokens` and the caller key's own cap, within the context |
+  | `architecture.input_modalities` | `["text"]` or `["text", "image"]` | the running engine's own report; for a stopped Hugging Face checkpoint, its `config.json` (a `vision_config` section, unless `language_model_only`) |
+  | `emx.images` | the same as a true/false | |
+  | `emx.apis` | request formats the model's engine serves (`chat`, `completions`, `responses`, `messages`, `embeddings`, `rerank`) | the instance, else the engine manifest |
+  | `emx.load_seconds` | how long the model took to become ready the last time it was started | the gateway's event records |
+  | `emx.decode_tok_per_sec` | average generation speed of one request over the last 30 days of real traffic (several clients at once share the engine, which lowers it) | the usage records |
+  | `emx.hardware` | running: `{kind, loaded: true, gpus or chips}`. Stopped: `kind` (`gpu` or `tenstorrent`), `chips` it needs or `need_mib` (declared `vram_mib`, else the peak measured in 30 days), `free_mib` on the roomiest GPU as last sampled, and `free_now` | placement |
+
+  `free_now: false` does not mean a request fails: the gateway may make room by
+  stopping an idle model it started, and it waits for a busy Tenstorrent chip.
+  It tells a client that the first answer will take longer.
 - **Unavailable models are left out.** A registered model whose files are gone,
   or that no installed engine can serve, is not listed, and neither is an alias
   that points at one. `emx models` shows them with the reason in its STATUS

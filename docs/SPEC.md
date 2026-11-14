@@ -93,6 +93,10 @@ context:                         # optional: how clients learn a model's context
   field: data.0.max_model_len    # dotted path of the number in it; a number selects an array element
   split_by: parallel             # optional: the registered ctx is shared between this many slots
 
+vision:                          # optional: how clients learn whether the loaded model takes images
+  path: /props                   # GET on the running engine, answering JSON
+  field: modalities.vision       # true/false, or a list of input kinds that names "image"
+
 flags:                           # unified flag -> engine arguments/env; omitted = unsupported
   ctx: [--ctx-size, "{value}"]                 # shorthand for {args: [...]}
   gpus: {env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}}  # placement fills {value}
@@ -177,6 +181,14 @@ read `/props` (`default_generation_settings.n_ctx`, split by `parallel`);
 `vllm` and `tt-vllm` read `max_model_len` from `/v1/models`; `strata` reads
 `meta.n_ctx` there. An engine without `context` reports the registered `ctx`
 only.
+
+`vision` works the same way for image input: the gateway requests `path` on a
+running instance and reads `field`, which is either true/false or a list of
+input kinds. The builtin `llama.cpp` and `buun-llama-cpp` read
+`modalities.vision` from `/props`; `strata` reads
+`architecture.input_modalities` from `/v1/models`. For a model that is not
+running, and for engines without `vision`, the gateway looks at the model's
+own files (a Hugging Face `config.json` with a `vision_config` section).
 
 Validation rejects an unknown placeholder, an unknown field, an unknown
 format or API, a flag that is not in the unified vocabulary, a non-bool flag

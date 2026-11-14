@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/v1/models` says more about each model: whether it takes images
+  (`architecture.input_modalities`), the longest reply (`limits.max_output_tokens`),
+  and under `emx`: the request formats it serves, its last load time, its
+  measured speed over 30 days, and the hardware it needs with whether that is
+  free now. Engine manifests can say where to read image support with a
+  `vision` block.
+
 ## [0.1.1] - 2026-11-14
 
 ### Added

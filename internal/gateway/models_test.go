@@ -6,9 +6,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // fakeEngine installs a user manifest for the engine id the test instances use. Its binary is `go`, which
@@ -28,6 +31,9 @@ context:
   path: /props
   field: settings.n_ctx
   split_by: parallel
+vision:
+  path: /props
+  field: modalities.vision
 flags:
   ctx: [-c, "{value}"]
   parallel: [-np, "{value}"]
@@ -69,7 +75,7 @@ func TestModelListShowsContextAndLeavesOutWhatCannotStart(t *testing.T) {
 	// The running engine reports the context it really has, which is not what was registered.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/props" {
-			w.Write([]byte(`{"settings":{"n_ctx":32768}}`))
+			w.Write([]byte(`{"settings":{"n_ctx":32768},"modalities":{"vision":true}}`))
 		}
 	}))
 	defer backend.Close()
@@ -138,5 +144,117 @@ func TestModelListShowsContextAndLeavesOutWhatCannotStart(t *testing.T) {
 	}
 	if why["files-gone"] != "files missing" || why["no-engine"] != "no installed engine serves it" || why["running"] != "" || why["stopped"] != "" {
 		t.Errorf("with ?unavailable=1: %v", why)
+	}
+}
+
+// Beyond context, the list says what else a client choosing a model needs: whether it takes images, how
+// long a reply may be, which request formats it serves, how long it takes to load, how fast it has been,
+// and what hardware it needs.
+func TestModelListCarriesWhatAClientChoosesBy(t *testing.T) {
+	t.Setenv("EMX_HOME", t.TempDir())
+	fakeEngine(t)
+	dir := func(config string) string {
+		d := filepath.Join(t.TempDir(), "ckpt")
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "config.json"), []byte(config), 0o600)
+		return filepath.ToSlash(d)
+	}
+	models := `models:
+  - {name: text-model, source: "` + dir(`{"architectures":["X"]}`) + `", format: safetensors, engine: fake, flags: {ctx: "8192"}}
+  - {name: vision-model, source: "` + dir(`{"architectures":["X"],"vision_config":{}}`) + `", format: safetensors, engine: fake, flags: {ctx: "8192"}}
+  - {name: tower-removed, source: "` + dir(`{"vision_config":{},"language_model_only":true}`) + `", format: safetensors, engine: fake}
+  - {name: running, source: "` + dir(`{"architectures":["X"]}`) + `", format: safetensors, engine: fake}
+`
+	os.MkdirAll(filepath.Dir(config.ModelsPath()), 0o755)
+	if err := os.WriteFile(config.ModelsPath(), []byte(models), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig(t, "gateway:\n    max_output_tokens: 1000\n")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/props" { // the running engine was started with a projector its files do not show
+			w.Write([]byte(`{"settings":{"n_ctx":32768},"modalities":{"vision":true}}`))
+		}
+	}))
+	defer backend.Close()
+	instance(t, "running.fake", "running", backend.URL)
+	g, srv := newGateway(t)
+	db, err := g.App.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := int64(12300)
+	if err := db.InsertEvent(&store.Event{TS: time.Now().UnixMilli(), Kind: "ready", Model: "text-model", DurationMS: &load}); err != nil {
+		t.Fatal(err)
+	}
+	ttft, dur, out := int64(1000), int64(11000), int64(500) // 500 tokens in 10 s of decoding
+	if err := db.InsertRequest(&store.Request{ID: "r1", TS: time.Now().UnixMilli(), Model: "text-model", Status: 200, Stream: true,
+		CompletionTokens: &out, TTFTMS: &ttft, DurationMS: &dur, UsageSource: "usage"}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(srv.URL + "/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var list struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Limits struct {
+				MaxOutputTokens int `json:"max_output_tokens"`
+			} `json:"limits"`
+			Architecture *struct {
+				Input []string `json:"input_modalities"`
+			} `json:"architecture"`
+			EMX struct {
+				APIs     []string       `json:"apis"`
+				Images   *bool          `json:"images"`
+				Load     float64        `json:"load_seconds"`
+				Speed    float64        `json:"decode_tok_per_sec"`
+				Hardware map[string]any `json:"hardware"`
+			} `json:"emx"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	images := func(id string) string {
+		for _, m := range list.Data {
+			if m.ID == id {
+				if m.Architecture == nil || m.EMX.Images == nil {
+					return "unknown"
+				}
+				return strings.Join(m.Architecture.Input, "+")
+			}
+		}
+		return "not listed"
+	}
+	for id, want := range map[string]string{
+		"text-model":    "text",
+		"vision-model":  "text+image",
+		"tower-removed": "text",       // exported without its vision tower
+		"running":       "text+image", // the engine's word wins over the files
+	} {
+		if got := images(id); got != want {
+			t.Errorf("%s: input %s, want %s", id, got, want)
+		}
+	}
+	for _, m := range list.Data {
+		if len(m.EMX.APIs) == 0 || m.EMX.APIs[0] != "chat" {
+			t.Errorf("%s: apis %v", m.ID, m.EMX.APIs)
+		}
+		switch m.ID {
+		case "text-model":
+			if m.Limits.MaxOutputTokens != 1000 { // the gateway's cap, below the 8192 context
+				t.Errorf("text-model: max output %d, want 1000", m.Limits.MaxOutputTokens)
+			}
+			if m.EMX.Load != 12.3 || m.EMX.Speed < 49 || m.EMX.Speed > 51 {
+				t.Errorf("text-model: load %v s, speed %v tok/s, want 12.3 and about 50", m.EMX.Load, m.EMX.Speed)
+			}
+		case "running":
+			if m.EMX.Hardware["loaded"] != true {
+				t.Errorf("running: hardware %v", m.EMX.Hardware)
+			}
+		}
 	}
 }
