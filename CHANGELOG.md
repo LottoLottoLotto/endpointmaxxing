@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The initial public feature set, to be released as 0.1.0.
+## [0.1.0] - 2026-11-13
+
+The first public release.
 
 ### Added
 
@@ -169,4 +171,5 @@ Entries marked "breaking" can break existing clients.
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/commits/main
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/LottoLottoLotto/endpointmaxxing/releases/tag/v0.1.0
