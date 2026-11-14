@@ -34,6 +34,9 @@ context:
 vision:
   path: /props
   field: modalities.vision
+slots:
+  path: /props
+  field: total_slots
 flags:
   ctx: [-c, "{value}"]
   parallel: [-np, "{value}"]
@@ -164,6 +167,8 @@ func TestModelListCarriesWhatAClientChoosesBy(t *testing.T) {
   - {name: vision-model, source: "` + dir(`{"architectures":["X"],"vision_config":{}}`) + `", format: safetensors, engine: fake, flags: {ctx: "8192"}}
   - {name: tower-removed, source: "` + dir(`{"vision_config":{},"language_model_only":true}`) + `", format: safetensors, engine: fake}
   - {name: running, source: "` + dir(`{"architectures":["X"]}`) + `", format: safetensors, engine: fake}
+  - {name: solo, source: "` + dir(`{}`) + `", format: safetensors, engine: fake, flags: {parallel: "1"}}
+  - {name: capped, source: "` + dir(`{}`) + `", format: safetensors, engine: fake, flags: {parallel: "8"}, max_concurrency: 2}
 `
 	os.MkdirAll(filepath.Dir(config.ModelsPath()), 0o755)
 	if err := os.WriteFile(config.ModelsPath(), []byte(models), 0o600); err != nil {
@@ -172,7 +177,7 @@ func TestModelListCarriesWhatAClientChoosesBy(t *testing.T) {
 	writeConfig(t, "gateway:\n    max_output_tokens: 1000\n")
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/props" { // the running engine was started with a projector its files do not show
-			w.Write([]byte(`{"settings":{"n_ctx":32768},"modalities":{"vision":true}}`))
+			w.Write([]byte(`{"settings":{"n_ctx":32768},"modalities":{"vision":true},"total_slots":4}`))
 		}
 	}))
 	defer backend.Close()
@@ -212,6 +217,12 @@ func TestModelListCarriesWhatAClientChoosesBy(t *testing.T) {
 				Load     float64        `json:"load_seconds"`
 				Speed    float64        `json:"decode_tok_per_sec"`
 				Hardware map[string]any `json:"hardware"`
+				Conc     struct {
+					Mode     string `json:"mode"`
+					Serves   int    `json:"serves"`
+					Parallel int    `json:"parallel"`
+					Limit    int    `json:"limit"`
+				} `json:"concurrency"`
 			} `json:"emx"`
 		} `json:"data"`
 	}
@@ -248,12 +259,27 @@ func TestModelListCarriesWhatAClientChoosesBy(t *testing.T) {
 			if m.Limits.MaxOutputTokens != 1000 { // the gateway's cap, below the 8192 context
 				t.Errorf("text-model: max output %d, want 1000", m.Limits.MaxOutputTokens)
 			}
+			if m.EMX.Conc.Mode != "" {
+				t.Errorf("text-model: mode %q although nothing says how many it serves", m.EMX.Conc.Mode)
+			}
 			if m.EMX.Load != 12.3 || m.EMX.Speed < 49 || m.EMX.Speed > 51 {
 				t.Errorf("text-model: load %v s, speed %v tok/s, want 12.3 and about 50", m.EMX.Load, m.EMX.Speed)
 			}
 		case "running":
 			if m.EMX.Hardware["loaded"] != true {
 				t.Errorf("running: hardware %v", m.EMX.Hardware)
+			}
+			// Registered without a slot count: the engine chose 4, and says so.
+			if c := m.EMX.Conc; c.Mode != "shared" || c.Serves != 4 || c.Parallel != 4 {
+				t.Errorf("running: concurrency %+v, want shared, 4 at once", c)
+			}
+		case "solo":
+			if c := m.EMX.Conc; c.Mode != "single" || c.Serves != 1 {
+				t.Errorf("solo: concurrency %+v, want single", c)
+			}
+		case "capped": // eight engine slots, but the gateway lets two through
+			if c := m.EMX.Conc; c.Mode != "shared" || c.Serves != 2 || c.Parallel != 8 || c.Limit != 2 {
+				t.Errorf("capped: concurrency %+v, want 2 at once of 8 slots", c)
 			}
 		}
 	}

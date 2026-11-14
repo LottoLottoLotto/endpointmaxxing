@@ -161,3 +161,28 @@ func TestContextReadAndRegistered(t *testing.T) {
 		t.Errorf("an engine that does not split its context: %d, want 8192", got)
 	}
 }
+
+func TestSlotsAreAskedOrFixedNotBoth(t *testing.T) {
+	if n := (&Slots{Path: "/props", Field: "total_slots"}).Read([]byte(`{"total_slots":4}`)); n != 4 {
+		t.Errorf("slots read %d, want 4", n)
+	}
+	raw, ok := BuiltinYAML("llama.cpp")
+	if !ok {
+		t.Fatal("no builtin llama.cpp manifest")
+	}
+	base := string(raw)
+	i := strings.Index(base, "\nslots:\n")
+	j := strings.Index(base[i+1:], "\n\n") + i + 1
+	for block, ok := range map[string]bool{
+		"slots:\n  count: 1\n":                                       true,
+		"slots:\n  path: /props\n  field: total_slots\n":             true,
+		"slots:\n  count: 2\n  path: /props\n  field: total_slots\n": false,
+		"slots:\n  path: /props\n":                                   false,
+		"slots:\n  count: -1\n":                                      false,
+	} {
+		_, err := Parse([]byte(base[:i+1]+block+base[j:]), "test")
+		if (err == nil) != ok {
+			t.Errorf("%q: %v, want accepted=%v", block, err, ok)
+		}
+	}
+}

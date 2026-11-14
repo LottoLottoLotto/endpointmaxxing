@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -267,6 +268,9 @@ type Offer struct {
 	Context int `json:"context,omitempty"`
 	// Unavailable says why it cannot be started; empty when it can.
 	Unavailable string `json:"unavailable,omitempty"`
+	// Parallel is how many requests it is registered to work on at the same time (the `parallel` flag);
+	// 0 when the engine is left to choose.
+	Parallel int `json:"parallel,omitempty"`
 	// Images says whether it takes image input, when its files say (nil: not known until it runs).
 	Images *bool `json:"images,omitempty"`
 	// APIs are the request formats its engine serves (chat, messages, embeddings, ...).
@@ -295,6 +299,9 @@ func (a *App) Offer(m config.Model) Offer {
 		if e, err := a.Engine(id); err == nil {
 			o.Context = e.Context.Registered(m.Flags)
 			o.APIs = e.Capabilities.APIs
+			if e.Slots != nil {
+				o.Parallel = e.Slots.Count // an engine with a fixed number of slots
+			}
 			o.Accelerator = "gpu"
 			if e.Accelerator.Kind == spec.AccelTenstorrent {
 				o.Accelerator = spec.AccelTenstorrent
@@ -308,6 +315,9 @@ func (a *App) Offer(m config.Model) Offer {
 	}
 	if o.Context == 0 && m.Bench != nil {
 		o.Context = m.Bench.ContextLength
+	}
+	if n, err := strconv.Atoi(m.Flags["parallel"]); err == nil && n > 0 {
+		o.Parallel = n
 	}
 	if images, known := model.DeclaresVision(paths.Expand(m.Source)); known {
 		o.Images = &images

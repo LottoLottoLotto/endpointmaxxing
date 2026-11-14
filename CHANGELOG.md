@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/v1/models` tells clients how many requests share each model
+  (`emx.concurrency`: `mode` single or shared, how many run at once, the
+  engine's slots, the gateway's limit, and how many are running and queued
+  now). Engine manifests say how to learn it with a `slots` block. `emx models`
+  shows a PARALLEL column and the admin UI an "At once" column.
+
 ## [0.1.2] - 2026-11-14
 
 ### Added

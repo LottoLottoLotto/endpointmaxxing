@@ -65,6 +65,7 @@ func (e *modelEntry) setImages(images bool) {
 type engineReport struct {
 	context int
 	images  *bool
+	slots   int
 }
 
 // instanceReport asks instance in's engine, the way its manifest says to, for the model's context window
@@ -97,6 +98,12 @@ func (g *Gateway) instanceReport(ctx context.Context, in *runtime.Instance) engi
 		} else {
 			complete = false
 		}
+	}
+	if sl := e.Slots; sl != nil && sl.Count > 0 {
+		r.slots = sl.Count
+	} else if sl != nil {
+		r.slots = sl.Read(ask(sl.Path))
+		complete = complete && r.slots > 0
 	}
 	if complete { // an engine that did not answer yet is asked again next time
 		g.reports.Store(key, r)
@@ -134,11 +141,16 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 			e.EMX["apis"] = have
 		}
 	}
+	parallel := map[string]int{} // requests each model's engine works on at once, where known
+	active := map[string]int{}   // requests in flight per model
 	ins, _ := runtime.List()
 	for _, in := range ins {
 		if !in.Alive() {
 			continue
 		}
+		g.activeMu.Lock()
+		busy := g.active[in.ID]
+		g.activeMu.Unlock()
 		names := []string{in.Name}
 		if in.Hosting { // a multi-model host is listed under the models it holds
 			names = g.hosted(r.Context(), in)
@@ -159,12 +171,16 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 				hw["gpus"] = in.GPUs
 			}
 			e.EMX["hardware"] = hw
+			if !in.Hosting {
+				active[n] += busy
+			}
 			if status == runtime.StatusReady && !in.Hosting {
 				rep := g.instanceReport(r.Context(), in)
 				e.setContext(rep.context)
 				if rep.images != nil {
 					e.setImages(*rep.images)
 				}
+				parallel[n] += rep.slots // replicas add up
 			}
 		}
 	}
@@ -194,12 +210,19 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		if e.Architecture == nil && offer.Images != nil {
 			e.setImages(*offer.Images)
 		}
+		if parallel[m.Name] == 0 { // not running, or an engine that does not say: what it is registered with
+			parallel[m.Name] = offer.Parallel
+		}
 		if !running {
 			addAPIs(e, offer.APIs)
 			if hw := free.forOffer(offer.Accelerator, offer.Chips, offer.NeedMiB); hw != nil {
 				e.EMX["hardware"] = hw
 			}
 		}
+	}
+	queued := g.lim.queued()
+	for name, e := range byName {
+		e.EMX["concurrency"] = concurrency(parallel[name], g.maxConcurrency(name), active[name], queued[name])
 	}
 	g.addHistory(byName)
 	// The most one reply can hold: the output cap of the gateway and of the caller's key, within the context.
@@ -226,7 +249,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		e.EMX["alias_for"] = target
 		e.setContext(t.MaxModelLen)
 		e.Limits, e.Architecture = t.Limits, t.Architecture
-		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware"} {
+		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware", "concurrency"} {
 			if v, ok := t.EMX[k]; ok {
 				e.EMX[k] = v
 			}
@@ -242,6 +265,38 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		data[i] = byName[n]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// concurrency tells a client how many others it shares a model with. parallel is how many requests the
+// engine works on at the same time (0: not known), limit how many the gateway lets through (0: no limit).
+//
+//	mode      "single" when one request runs at a time (each gets the engine's full speed), "shared" when
+//	          several do (more total throughput, less for each); absent when neither number is known
+//	serves    requests that run at the same time before others wait
+//	parallel  the engine's slots
+//	limit     the gateway's cap for the model
+//	active    requests running now
+//	queued    requests waiting for a slot now
+func concurrency(parallel, limit, active, queued int) map[string]any {
+	c := map[string]any{"active": active, "queued": queued}
+	serves := parallel
+	if limit > 0 && (serves == 0 || limit < serves) {
+		serves = limit
+	}
+	if parallel > 0 {
+		c["parallel"] = parallel
+	}
+	if limit > 0 {
+		c["limit"] = limit
+	}
+	if serves > 0 {
+		c["serves"] = serves
+		c["mode"] = "shared"
+		if serves == 1 {
+			c["mode"] = "single"
+		}
+	}
+	return c
 }
 
 // historyWindow is how far back measured speed is taken from.

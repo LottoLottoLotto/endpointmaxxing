@@ -97,6 +97,11 @@ vision:                          # optional: how clients learn whether the loade
   path: /props                   # GET on the running engine, answering JSON
   field: modalities.vision       # true/false, or a list of input kinds that names "image"
 
+slots:                           # optional: how clients learn how many requests the engine works on at once
+  path: /props                   # GET on the running engine, answering JSON
+  field: total_slots             # the number in it
+  # count: 1                     # instead of path and field: an engine that always serves this many
+
 flags:                           # unified flag -> engine arguments/env; omitted = unsupported
   ctx: [--ctx-size, "{value}"]                 # shorthand for {args: [...]}
   gpus: {env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}}  # placement fills {value}
@@ -181,6 +186,14 @@ read `/props` (`default_generation_settings.n_ctx`, split by `parallel`);
 `vllm` and `tt-vllm` read `max_model_len` from `/v1/models`; `strata` reads
 `meta.n_ctx` there. An engine without `context` reports the registered `ctx`
 only.
+
+`slots` tells clients how many requests the engine works on at the same time,
+which the gateway reports as `emx.concurrency` in `/v1/models`. Engines pick
+their own number when none is given at launch, so a running instance is asked
+(`path`, `field`); the builtin `llama.cpp` and `buun-llama-cpp` read
+`total_slots` from `/props`. An engine that always serves a fixed number says
+so with `count` (a single-user runtime: `slots: {count: 1}`). Without `slots`,
+the registered `parallel` flag is reported, and nothing when it is not set.
 
 `vision` works the same way for image input: the gateway requests `path` on a
 running instance and reads `field`, which is either true/false or a list of

@@ -45,11 +45,18 @@ that could be started.
   | `emx.apis` | request formats the model's engine serves (`chat`, `completions`, `responses`, `messages`, `embeddings`, `rerank`) | the instance, else the engine manifest |
   | `emx.load_seconds` | how long the model took to become ready the last time it was started | the gateway's event records |
   | `emx.decode_tok_per_sec` | average generation speed of one request over the last 30 days of real traffic (several clients at once share the engine, which lowers it) | the usage records |
+  | `emx.concurrency` | how many requests share the model: `mode` (`single`: one request at a time, each at the engine's full speed; `shared`: several at once, more in total and less for each), `serves` (how many run at the same time before others wait), `parallel` (the engine's slots), `limit` (the gateway's `max_concurrency` for the model, when set), and `active` / `queued` right now | the running engine's report, else the registered `--parallel`; `mode` and `serves` are absent when neither is known |
   | `emx.hardware` | running: `{kind, loaded: true, gpus or chips}`. Stopped: `kind` (`gpu` or `tenstorrent`), `chips` it needs or `need_mib` (declared `vram_mib`, else the peak measured in 30 days), `free_mib` on the roomiest GPU as last sampled, and `free_now` | placement |
 
   `free_now: false` does not mean a request fails: the gateway may make room by
   stopping an idle model it started, and it waits for a busy Tenstorrent chip.
   It tells a client that the first answer will take longer.
+- **One model, two ways to serve it.** Concurrency is fixed when a model
+  starts, so to offer both the fastest single-user speed and a shared version,
+  register the model twice (`emx model add m-solo ... --parallel 1` and
+  `emx model add m-shared ... --parallel 8`). Clients pick by name, and
+  `emx.concurrency.mode` tells them which is which. Switching between the two
+  restarts the model unless the hardware holds both.
 - **Unavailable models are left out.** A registered model whose files are gone,
   or that no installed engine can serve, is not listed, and neither is an alias
   that points at one. `emx models` shows them with the reason in its STATUS

@@ -50,7 +50,9 @@ type Manifest struct {
 	// Context, when set, says how to learn the context window of the model a running engine serves.
 	Context *Context `yaml:"context,omitempty" json:"context,omitempty"`
 	// Vision, when set, says how to learn whether the model a running engine serves takes images.
-	Vision       *Vision            `yaml:"vision,omitempty" json:"vision,omitempty"`
+	Vision *Vision `yaml:"vision,omitempty" json:"vision,omitempty"`
+	// Slots, when set, says how to learn how many requests a running engine works on at the same time.
+	Slots        *Slots             `yaml:"slots,omitempty" json:"slots,omitempty"`
 	Flags        map[string]FlagMap `yaml:"flags,omitempty" json:"flags,omitempty"`
 	Capabilities Capabilities       `yaml:"capabilities" json:"capabilities"`
 	Routing      Routing            `yaml:"routing,omitempty" json:"routing,omitempty"`
@@ -145,17 +147,41 @@ func lookup(body []byte, field string) (v any, ok bool) {
 	return v, true
 }
 
-// Read returns the context window in an engine's answer to Path; 0 when it is not there.
-func (c *Context) Read(body []byte) int {
-	if c == nil {
-		return 0
-	}
-	if n, ok := lookup(body, c.Field); ok {
+// count returns the positive whole number at field in body; 0 when it is not there.
+func count(body []byte, field string) int {
+	if n, ok := lookup(body, field); ok {
 		if n, ok := n.(float64); ok && n > 0 && n < 1<<40 {
 			return int(n)
 		}
 	}
 	return 0
+}
+
+// Read returns the context window in an engine's answer to Path; 0 when it is not there.
+func (c *Context) Read(body []byte) int {
+	if c == nil {
+		return 0
+	}
+	return count(body, c.Field)
+}
+
+// Slots says how a running engine tells how many requests it works on at the same time (GET Path, number
+// at Field). Engines choose their own number when none is given at launch, so asking is the only way to
+// tell a client what it will share the model with.
+type Slots struct {
+	Path  string `yaml:"path,omitempty" json:"path,omitempty"`
+	Field string `yaml:"field,omitempty" json:"field,omitempty"`
+	// Count is for an engine that always works on this many requests at a time and has nothing to ask
+	// (1 for a single-user runtime). It stands in place of Path and Field.
+	Count int `yaml:"count,omitempty" json:"count,omitempty"`
+}
+
+// Read returns the number of slots in the engine's answer; 0 when it is not there.
+func (s *Slots) Read(body []byte) int {
+	if s == nil {
+		return 0
+	}
+	return count(body, s.Field)
 }
 
 // Vision says how a running engine tells whether the model it serves takes images: GET Path, and the value
@@ -426,6 +452,15 @@ func (m *Manifest) Validate() []string {
 	}
 	if v := m.Vision; v != nil && (!strings.HasPrefix(v.Path, "/") || v.Field == "") {
 		bad("vision: needs a path that starts with / and a field")
+	}
+	if sl := m.Slots; sl != nil {
+		asks := sl.Path != "" || sl.Field != ""
+		switch {
+		case sl.Count < 0, asks == (sl.Count > 0):
+			bad("slots: give either count, or path and field")
+		case asks && (!strings.HasPrefix(sl.Path, "/") || sl.Field == ""):
+			bad("slots: needs a path that starts with / and a field")
+		}
 	}
 
 	known := map[string]bool{}

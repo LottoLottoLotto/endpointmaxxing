@@ -42,6 +42,11 @@ vision:
   path: /props
   field: modalities.vision
 
+# How many requests the server works on at once (-np, or its own choice when none was given).
+slots:
+  path: /props
+  field: total_slots
+
 flags:
   ctx: [-c, "{value}"]
   gpus:

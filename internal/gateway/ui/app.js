@@ -384,6 +384,11 @@ async function models() {
           { h: 'Engine', v: (m) => m.emx.engine || (m.emx.alias_for ? '' : el('span', { class: 'muted' }, 'auto')) },
           { h: 'Format', v: (m) => m.emx.format || '' },
           { h: 'Context', v: (m) => m.max_model_len ? m.max_model_len.toLocaleString() : '' },
+          { h: 'At once', v: (m) => {
+            const c = m.emx.concurrency || {};
+            if (!c.serves) return '';
+            return c.serves + (c.mode === 'single' ? ' (single user)' : ' (shared)');
+          } },
           { h: 'State', v: (m) => {
             if (m.emx.alias_for) return el('span', { class: 'muted' }, 'alias for ' + m.emx.alias_for);
             const is = m.emx.instances || [];
