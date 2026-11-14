@@ -36,6 +36,11 @@ health:
   path: /health
   timeout: 20m
 
+# The context window, as the server reports it for the model it serves.
+context:
+  path: /v1/models
+  field: data.0.meta.n_ctx
+
 flags:
   gpus: [--gpu, "{value}"]
 

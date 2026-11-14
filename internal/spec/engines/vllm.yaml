@@ -30,6 +30,11 @@ health:
   path: /health
   timeout: 20m
 
+# The context window, as the server reports it for the model it serves.
+context:
+  path: /v1/models
+  field: data.0.max_model_len
+
 flags:
   ctx: [--max-model-len, "{value}"]
   gpus:

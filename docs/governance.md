@@ -141,8 +141,8 @@ as CSV; `report --csv` is one table with a `SECTION` column and raw numbers.
 metrics, prompt storage without retention, keys without expiry, expiring or
 unused for 90 days, keys in undefined teams, many admin keys, budgets
 without prices and aliases to unregistered models. It lists registered
-models whose files no longer exist (`/v1/models` marks them
-`source_missing`, and the admin UI offers no Start for them).
+models whose files no longer exist (`/v1/models` leaves them out, `emx models`
+marks them `files missing`, and the admin UI offers no Start for them).
 
 Only traffic that passes through `emx serve` or `emx chat` is
 metered. A client that calls an engine's port directly bypasses the meter.

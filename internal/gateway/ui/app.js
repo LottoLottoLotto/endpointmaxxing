@@ -374,7 +374,8 @@ async function models() {
   const load = () => {
     const gen = S.gen;
     guarded(gen, content, async () => {
-      const [ms_, ins] = await Promise.all([get('/v1/models'), get('/emx/v1/instances')]);
+      // The plain list offers only what can answer; an operator also needs the models that cannot, to fix or remove them.
+      const [ms_, ins] = await Promise.all([get('/v1/models?unavailable=1'), get('/emx/v1/instances')]);
       const alive = (s) => s === 'ready' || s === 'starting' || s === 'loading' || s === 'unhealthy';
       return [
         el('h2', {}, 'Registered models'),
@@ -382,11 +383,12 @@ async function models() {
           { h: 'Model', v: (m) => m.id },
           { h: 'Engine', v: (m) => m.emx.engine || (m.emx.alias_for ? '' : el('span', { class: 'muted' }, 'auto')) },
           { h: 'Format', v: (m) => m.emx.format || '' },
+          { h: 'Context', v: (m) => m.max_model_len ? m.max_model_len.toLocaleString() : '' },
           { h: 'State', v: (m) => {
             if (m.emx.alias_for) return el('span', { class: 'muted' }, 'alias for ' + m.emx.alias_for);
             const is = m.emx.instances || [];
             if (is.length) return is.map((i) => [statusPill(i.status), ' ']);
-            if (m.emx.source_missing) return pill('files missing', 'err');
+            if (m.emx.unavailable) return pill(m.emx.unavailable, 'err');
             return el('span', { class: 'muted' }, 'not running');
           } },
           { h: '', v: (m) => {
@@ -394,7 +396,7 @@ async function models() {
             const is = m.emx.instances || [];
             const rm = adminAction('Remove', 'danger', () => remove(m.id), `Remove ${m.id} from the registry? Running instances keep running; its files stay.`);
             if (is.some((i) => alive(i.status))) return [...is.filter((i) => alive(i.status)).map((i) => adminBtn('Stop', 'secondary', (e) => stop(e.target, i.id))), ' ', rm];
-            if (m.emx.source_missing) return rm;
+            if (m.emx.unavailable) return rm;
             return [adminBtn('Start', '', (e) => ensure(e.target, m.id)), ' ', rm];
           } },
         ], ms_.data, { empty: 'No models registered (emx model add).', onrow: (m) => go('requests', { model: m.id, since: S.since }) }),

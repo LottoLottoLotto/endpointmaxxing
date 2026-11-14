@@ -29,7 +29,6 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/meter"
-	"github.com/LottoLottoLotto/endpointmaxxing/internal/model"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
@@ -78,6 +77,7 @@ type Gateway struct {
 	restarts restartBudget
 	reload   reloadState
 	buffered byteBudget  // request bodies in memory, all in-flight requests together
+	contexts sync.Map    // instance id/start -> context window its engine reported
 	denials  denialLimit // stored 401 records this minute
 
 	expiryMu      sync.Mutex
@@ -265,16 +265,50 @@ func (g *Gateway) setStatus(id, st string) {
 }
 
 type modelEntry struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	OwnedBy string         `json:"owned_by"`
-	EMX     map[string]any `json:"emx"`
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+	// The model's context window in tokens, under the two names clients look for (vLLM's and
+	// OpenRouter's); absent when it is not known.
+	MaxModelLen   int            `json:"max_model_len,omitempty"`
+	ContextLength int            `json:"context_length,omitempty"`
+	EMX           map[string]any `json:"emx"`
 }
 
-// models lists running instances and registered models (one entry per name) the caller may use.
+// setContext records the model's context window; the smallest wins when instances differ.
+func (e *modelEntry) setContext(n int) {
+	if n > 0 && (e.MaxModelLen == 0 || n < e.MaxModelLen) {
+		e.MaxModelLen, e.ContextLength = n, n
+		e.EMX["context"] = n
+	}
+}
+
+// instanceContext is the context window instance in reports, asked once per instance and remembered.
+func (g *Gateway) instanceContext(ctx context.Context, in *runtime.Instance) int {
+	key := fmt.Sprintf("%s/%d", in.ID, in.StartTick)
+	if n, ok := g.contexts.Load(key); ok {
+		return n.(int)
+	}
+	e, err := g.App.Engine(in.Engine)
+	if err != nil || e.Context == nil {
+		return 0
+	}
+	n := runtime.ReportedContext(ctx, in, e.Context)
+	if n > 0 {
+		g.contexts.Store(key, n) // an engine that did not answer yet is asked again next time
+	}
+	return n
+}
+
+// models lists what the caller can use right now: running instances, and registered models that could be
+// started (one entry per name). A registered model whose files are gone, or that no installed engine can
+// serve, is left out: a client choosing from this list should not be offered a model that cannot answer.
+// `emx models` shows those with the reason, and so does this list when asked with ?unavailable=1 (the
+// admin UI does, so they can be fixed or removed).
 func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
+	withUnavailable := r.URL.Query().Get("unavailable") == "1"
 	byName := map[string]*modelEntry{}
 	entry := func(name string, created int64) *modelEntry {
 		e := byName[name]
@@ -299,8 +333,12 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			e := entry(n, in.StartedAt.Unix())
+			status := g.instanceStatus(r.Context(), in)
 			e.EMX["instances"] = append(e.EMX["instances"].([]map[string]any),
-				map[string]any{"id": in.ID, "engine": in.Engine, "status": g.instanceStatus(r.Context(), in), "apis": in.APIs, "gpus": in.GPUs})
+				map[string]any{"id": in.ID, "engine": in.Engine, "status": status, "apis": in.APIs, "gpus": in.GPUs})
+			if status == runtime.StatusReady && !in.Hosting {
+				e.setContext(g.instanceContext(r.Context(), in))
+			}
 		}
 	}
 	g.Reload() // see models added since; an invalid config keeps the running one (logged)
@@ -308,22 +346,32 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		if !p.allows(m.Name, g.App.Config()) {
 			continue
 		}
+		offer := g.App.Offer(m)
+		_, running := byName[m.Name]
+		if !running && offer.Unavailable != "" && !withUnavailable {
+			continue // could not be started: its files are gone, or no installed engine serves it
+		}
 		e := entry(m.Name, 0)
+		if !running && offer.Unavailable != "" {
+			e.EMX["unavailable"] = offer.Unavailable
+		}
 		e.EMX["registered"] = true
 		e.EMX["format"] = m.Format
-		if model.MissingLocal(m.Source) {
-			e.EMX["source_missing"] = true // its files are gone: starting it fails until restored
-		}
 		if m.Engine != "" {
 			e.EMX["engine"] = m.Engine
 		}
+		if e.MaxModelLen == 0 { // not running: what it is registered to start with
+			e.setContext(offer.Context)
+		}
 	}
 	for alias, target := range g.App.Config().Aliases {
-		if !p.allows(target, g.App.Config()) {
-			continue
+		t, listed := byName[target]
+		if !listed || !p.allows(target, g.App.Config()) {
+			continue // an alias for a model that is not offered is not offered either
 		}
 		e := entry(alias, 0)
 		e.EMX["alias_for"] = target
+		e.setContext(t.MaxModelLen)
 	}
 	names := make([]string, 0, len(byName))
 	for n := range byName {

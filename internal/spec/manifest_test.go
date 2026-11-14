@@ -133,3 +133,31 @@ func TestHostOnlyFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestContextReadAndRegistered(t *testing.T) {
+	c := &Context{Path: "/v1/models", Field: "data.0.meta.n_ctx", SplitBy: "parallel"}
+	for body, want := range map[string]int{
+		`{"data":[{"meta":{"n_ctx":32768}}]}`:   32768,
+		`{"data":[]}`:                           0,
+		`{"data":[{"meta":{"n_ctx":"32768"}}]}`: 0,
+		`{"data":[{"meta":{"n_ctx":-1}}]}`:      0,
+		`not json`:                              0,
+	} {
+		if got := c.Read([]byte(body)); got != want {
+			t.Errorf("Read(%s) = %d, want %d", body, got, want)
+		}
+	}
+	for want, flags := range map[int]map[string]string{
+		4096:  {"ctx": "16384", "parallel": "4"},
+		16384: {"ctx": "16384"},
+		0:     {"parallel": "4"},
+	} {
+		if got := c.Registered(flags); got != want {
+			t.Errorf("Registered(%v) = %d, want %d", flags, got, want)
+		}
+	}
+	var none *Context
+	if got := none.Registered(map[string]string{"ctx": "8192", "parallel": "2"}); got != 8192 {
+		t.Errorf("an engine that does not split its context: %d, want 8192", got)
+	}
+}

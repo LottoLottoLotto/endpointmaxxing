@@ -88,6 +88,11 @@ health:
   path: /health                  # required
   timeout: 10m                   # how long `run`/the gateway wait for readiness; default 10m
 
+context:                         # optional: how clients learn a model's context window
+  path: /v1/models               # GET on the running engine, answering JSON
+  field: data.0.max_model_len    # dotted path of the number in it; a number selects an array element
+  split_by: parallel             # optional: the registered ctx is shared between this many slots
+
 flags:                           # unified flag -> engine arguments/env; omitted = unsupported
   ctx: [--ctx-size, "{value}"]                 # shorthand for {args: [...]}
   gpus: {env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}}  # placement fills {value}
@@ -161,6 +166,17 @@ uses `VLLM_API_KEY`, `llama.cpp` and `buun-llama-cpp` use `LLAMA_API_KEY`,
 command has `-e VLLM_API_KEY`, which forwards the variable into the
 container without putting its value on a command line). Only `sglang` maps
 `flags.api_key` to `--api-key` and so receives the key on the command line.
+
+`context` tells the gateway how to report a model's context window in
+`/v1/models`, so that a client does not have to guess it. For a running
+instance the gateway requests `path` on the engine once and reads the number at
+`field`. For a registered model that is not running it uses the registered
+`ctx` flag, divided by the `split_by` flag's value where the engine shares one
+context between parallel slots. The builtin `llama.cpp` and `buun-llama-cpp`
+read `/props` (`default_generation_settings.n_ctx`, split by `parallel`);
+`vllm` and `tt-vllm` read `max_model_len` from `/v1/models`; `strata` reads
+`meta.n_ctx` there. An engine without `context` reports the registered `ctx`
+only.
 
 Validation rejects an unknown placeholder, an unknown field, an unknown
 format or API, a flag that is not in the unified vocabulary, a non-bool flag

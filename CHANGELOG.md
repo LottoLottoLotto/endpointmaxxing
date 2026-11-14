@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-14
+
+### Added
+
+- `/v1/models` reports each model's context window (`max_model_len` and
+  `context_length`): what the running engine reports, else what the model is
+  registered to start with. Engine manifests say where to read it with the new
+  `context` block.
+- `emx models` shows CONTEXT and STATUS columns (`--json`: `context`,
+  `unavailable`); the admin UI shows the context too.
+
+### Changed
+
+- `/v1/models` no longer lists registered models that cannot be started (files
+  missing, or no installed engine serves them) or aliases pointing at them;
+  `?unavailable=1` includes them with the reason. The `emx.source_missing`
+  field is replaced by `emx.unavailable`.
+
 ### Fixed
 
 - A binary built with `go install ...@<version>` reports that version instead
@@ -176,5 +194,6 @@ Entries marked "breaking" can break existing clients.
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/LottoLottoLotto/endpointmaxxing/releases/tag/v0.1.0

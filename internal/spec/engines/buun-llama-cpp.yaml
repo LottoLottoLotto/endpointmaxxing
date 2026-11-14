@@ -30,6 +30,13 @@ health:
   path: /health
   timeout: 10m
 
+# The context one request gets. llama-server shares -c between its -np slots, so a model registered with
+# ctx 16384 and parallel 4 offers 4096 tokens.
+context:
+  path: /props
+  field: default_generation_settings.n_ctx
+  split_by: parallel
+
 flags:
   ctx: [-c, "{value}"]
   gpus:

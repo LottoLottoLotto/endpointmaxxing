@@ -5,11 +5,13 @@ package spec
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,16 +37,18 @@ var (
 
 // Manifest describes one inference engine.
 type Manifest struct {
-	Spec         string             `yaml:"spec" json:"spec"`
-	ID           string             `yaml:"id" json:"id"`
-	Name         string             `yaml:"name" json:"name"`
-	Description  string             `yaml:"description,omitempty" json:"description,omitempty"`
-	Homepage     string             `yaml:"homepage,omitempty" json:"homepage,omitempty"`
-	Binary       Binary             `yaml:"binary" json:"binary"`
-	Vars         map[string]string  `yaml:"vars,omitempty" json:"vars,omitempty"`
-	Install      Install            `yaml:"install,omitempty" json:"install,omitempty"`
-	Launch       Launch             `yaml:"launch" json:"launch"`
-	Health       Health             `yaml:"health" json:"health"`
+	Spec        string            `yaml:"spec" json:"spec"`
+	ID          string            `yaml:"id" json:"id"`
+	Name        string            `yaml:"name" json:"name"`
+	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Homepage    string            `yaml:"homepage,omitempty" json:"homepage,omitempty"`
+	Binary      Binary            `yaml:"binary" json:"binary"`
+	Vars        map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
+	Install     Install           `yaml:"install,omitempty" json:"install,omitempty"`
+	Launch      Launch            `yaml:"launch" json:"launch"`
+	Health      Health            `yaml:"health" json:"health"`
+	// Context, when set, says how to learn the context window of the model a running engine serves.
+	Context      *Context           `yaml:"context,omitempty" json:"context,omitempty"`
 	Flags        map[string]FlagMap `yaml:"flags,omitempty" json:"flags,omitempty"`
 	Capabilities Capabilities       `yaml:"capabilities" json:"capabilities"`
 	Routing      Routing            `yaml:"routing,omitempty" json:"routing,omitempty"`
@@ -97,6 +101,62 @@ type Launch struct {
 type Health struct {
 	Path    string   `yaml:"path" json:"path"`
 	Timeout Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// Context says how a client of the gateway learns a model's context window, so that an agent does not
+// have to guess it. A running engine is asked (GET Path, number at Field); for a model that is registered
+// but not running, the registered `ctx` flag stands in, divided by the SplitBy flag where the engine shares
+// one context between its parallel slots.
+type Context struct {
+	// Path is requested on the running engine; it answers JSON.
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+	// Field is the dotted path of the number inside that JSON; a number selects an array element
+	// (data.0.max_model_len).
+	Field string `yaml:"field,omitempty" json:"field,omitempty"`
+	// SplitBy names the unified flag whose value divides the registered ctx: llama.cpp gives each of its
+	// `parallel` slots ctx/parallel tokens.
+	SplitBy string `yaml:"split_by,omitempty" json:"split_by,omitempty"`
+}
+
+// Read returns the context window in an engine's answer to Path; 0 when it is not there.
+func (c *Context) Read(body []byte) int {
+	var v any
+	if c == nil || c.Field == "" || json.Unmarshal(body, &v) != nil {
+		return 0
+	}
+	for _, key := range strings.Split(c.Field, ".") {
+		switch node := v.(type) {
+		case map[string]any:
+			v = node[key]
+		case []any:
+			i, err := strconv.Atoi(key)
+			if err != nil || i < 0 || i >= len(node) {
+				return 0
+			}
+			v = node[i]
+		default:
+			return 0
+		}
+	}
+	if n, ok := v.(float64); ok && n > 0 && n < 1<<40 {
+		return int(n)
+	}
+	return 0
+}
+
+// Registered returns the context window of a model registered with these unified flags and not running:
+// its ctx flag, shared between the SplitBy slots where the engine does that. 0 when no ctx is registered.
+func (c *Context) Registered(flags map[string]string) int {
+	ctx, err := strconv.Atoi(flags["ctx"])
+	if err != nil || ctx <= 0 {
+		return 0
+	}
+	if c != nil && c.SplitBy != "" {
+		if slots, err := strconv.Atoi(flags[c.SplitBy]); err == nil && slots > 1 {
+			ctx /= slots
+		}
+	}
+	return ctx
 }
 
 // FlagMap translates one unified flag. Placeholder {value} is the flag value
@@ -306,6 +366,19 @@ func (m *Manifest) Validate() []string {
 	}
 	if !strings.HasPrefix(m.Health.Path, "/") {
 		bad("health.path: must start with /")
+	}
+	if c := m.Context; c != nil {
+		if (c.Path == "") != (c.Field == "") {
+			bad("context: path and field go together")
+		}
+		if c.Path != "" && !strings.HasPrefix(c.Path, "/") {
+			bad("context.path: must start with /")
+		}
+		if c.SplitBy != "" {
+			if _, ok := FlagByKey(c.SplitBy); !ok {
+				bad("context.split_by: %q is not a unified flag", c.SplitBy)
+			}
+		}
 	}
 
 	known := map[string]bool{}

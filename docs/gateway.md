@@ -20,6 +20,25 @@
   request gets 400.
 - A request for an API the engine doesn't implement is rejected before
   anything is loaded.
+
+`GET /v1/models` is what a client or an agent harness reads to choose a model.
+It lists the models that can answer: running instances, and registered models
+that could be started.
+
+- **Context size.** Each entry carries the model's context window in tokens as
+  `max_model_len` and `context_length` (the two names clients look for), when
+  it is known. For a running model it is what the engine reports. For a
+  registered model that is not running it is the registered `--ctx`, divided by
+  `--parallel` for engines that share one context between their slots
+  (llama.cpp: `--ctx 16384 --parallel 4` offers 4,096 tokens per request), else
+  the context declared with `emx bench config --context-length`. Without any of
+  these the fields are absent, and the client falls back to its own default: set
+  `--ctx` when you register a model that agents will use.
+- **Unavailable models are left out.** A registered model whose files are gone,
+  or that no installed engine can serve, is not listed, and neither is an alias
+  that points at one. `emx models` shows them with the reason in its STATUS
+  column, and `GET /v1/models?unavailable=1` (used by the admin UI) includes
+  them with `emx.unavailable`.
 - `model add`, `engine set` and `key add`/`key rm` take effect without
   restarting the gateway.
 

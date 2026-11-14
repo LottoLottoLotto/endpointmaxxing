@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -49,20 +50,39 @@ func modelListCmd() *command {
 				if err := wantArgs("model list", pos, 0, 0); err != nil {
 					return err
 				}
-				ms, err := config.LoadModels()
+				a, err := e.app()
 				if err != nil {
 					return err
 				}
-				return e.out(ms.Models, func(w io.Writer) {
-					if len(ms.Models) == 0 {
+				// Each model with what a client would get: the gateway's /v1/models leaves out the ones
+				// marked unavailable, and this is where to see why.
+				type listed struct {
+					config.Model
+					Context     int    `json:"context,omitempty"`
+					Unavailable string `json:"unavailable,omitempty"`
+				}
+				var list []listed
+				for _, m := range a.RegisteredModels() {
+					o := a.Offer(m)
+					list = append(list, listed{m, o.Context, o.Unavailable})
+				}
+				return e.out(list, func(w io.Writer) {
+					if len(list) == 0 {
 						fmt.Fprintln(w, "no models (emx model add <name> <path|org/repo>)")
 						return
 					}
-					rows := make([][]string, len(ms.Models))
-					for i, m := range ms.Models {
-						rows[i] = []string{m.Name, m.Format, dash(m.Arch), dash(m.Quant), dash(m.Engine), m.Source}
+					rows := make([][]string, len(list))
+					for i, m := range list {
+						ctx, status := "-", "ok"
+						if m.Context > 0 {
+							ctx = strconv.Itoa(m.Context)
+						}
+						if m.Unavailable != "" {
+							status = m.Unavailable
+						}
+						rows[i] = []string{m.Name, m.Format, dash(m.Arch), dash(m.Quant), dash(m.Model.Engine), ctx, status, m.Source}
 					}
-					e.table("NAME\tFORMAT\tARCH\tQUANT\tENGINE\tSOURCE", rows)
+					e.table("NAME\tFORMAT\tARCH\tQUANT\tENGINE\tCONTEXT\tSTATUS\tSOURCE", rows)
 				})
 			}
 		}}

@@ -93,6 +93,11 @@ health:
   # Weight conversion, kernel compilation and trace capture on a cold cache take minutes.
   timeout: 45m
 
+# The context window, as the server reports it for the model it serves.
+context:
+  path: /v1/models
+  field: data.0.max_model_len
+
 accelerator:
   kind: tenstorrent
   devices: 1

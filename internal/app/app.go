@@ -258,6 +258,40 @@ func DefaultName(ref string) string {
 	return strings.ToLower(base)
 }
 
+// Offer is what a registered model that is not running would give a client.
+type Offer struct {
+	// Engine is the engine that would serve it: its pinned engine, or the best compatible installed one.
+	Engine string `json:"engine,omitempty"`
+	// Context is its context window in tokens: the registered ctx flag (shared between parallel slots
+	// where the engine does that), else the context declared for benchmarks; 0 when neither is set.
+	Context int `json:"context,omitempty"`
+	// Unavailable says why it cannot be started; empty when it can.
+	Unavailable string `json:"unavailable,omitempty"`
+}
+
+// Offer describes registered model m as a client choosing a model should see it.
+func (a *App) Offer(m config.Model) Offer {
+	var o Offer
+	id, err := route.Pick(route.Rank(route.Model{Format: m.Format, Quant: m.Quant, Engine: m.Engine},
+		a.Engines.All(), a.Installed, a.preferences()))
+	switch {
+	case model.MissingLocal(m.Source):
+		o.Unavailable = "files missing"
+	case err != nil:
+		o.Unavailable = "no installed engine serves it"
+	}
+	if err == nil {
+		o.Engine = id
+		if e, err := a.Engine(id); err == nil {
+			o.Context = e.Context.Registered(m.Flags)
+		}
+	}
+	if o.Context == 0 && m.Bench != nil {
+		o.Context = m.Bench.ContextLength
+	}
+	return o
+}
+
 // Route ranks engines for t.
 func (a *App) Route(t *Target) []route.Candidate {
 	return route.Rank(route.Model{Format: t.Info.Format, Quant: t.Info.Quant, Engine: t.Model.Engine},
