@@ -23,14 +23,19 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
-// Version is set at build time with -ldflags "-X github.com/LottoLottoLotto/endpointmaxxing/internal/cli.Version=...";
-// a binary built with `go install ...@v1.2.3` has no such flag and takes the version of its module.
-var Version = func() string {
-	if info, ok := debug.ReadBuildInfo(); ok && strings.HasPrefix(info.Main.Version, "v") {
-		return info.Main.Version
+// Version is set at build time with -ldflags "-X github.com/LottoLottoLotto/endpointmaxxing/internal/cli.Version=...".
+// It must stay a plain string: the linker flag does not reach a variable set by a function.
+var Version = "dev"
+
+// A binary built with `go install ...@v1.2.3` has no such flag and takes the version of its module.
+func init() {
+	if Version != "dev" {
+		return
 	}
-	return "dev"
-}()
+	if info, ok := debug.ReadBuildInfo(); ok && strings.HasPrefix(info.Main.Version, "v") {
+		Version = info.Main.Version
+	}
+}
 
 // env is what every command receives.
 type env struct {
