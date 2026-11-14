@@ -191,7 +191,8 @@ only.
 which the gateway reports as `emx.concurrency` in `/v1/models`. Engines pick
 their own number when none is given at launch, so a running instance is asked
 (`path`, `field`); the builtin `llama.cpp` and `buun-llama-cpp` read
-`total_slots` from `/props`. An engine that always serves a fixed number says
+`total_slots` from `/props`, and so does `strata` (whose stopped models report the
+`"parallel"` setting of their Strata config, one request at a time without it). An engine that always serves a fixed number says
 so with `count` (a single-user runtime: `slots: {count: 1}`). Without `slots`,
 the registered `parallel` flag is reported, and nothing when it is not set.
 

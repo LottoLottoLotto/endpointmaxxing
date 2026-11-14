@@ -36,8 +36,35 @@ var repoRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0
 // MissingLocal reports whether source names a local file or directory that does not exist (a Hugging Face
 // repo id is never missing here: it downloads on first use).
 func MissingLocal(source string) bool {
-	_, err := os.Stat(paths.Expand(source))
-	return os.IsNotExist(err) && !(repoRe.MatchString(source) && !strings.HasPrefix(source, "."))
+	p := paths.Expand(source)
+	if _, err := os.Stat(p); err != nil {
+		return os.IsNotExist(err) && !(repoRe.MatchString(source) && !strings.HasPrefix(source, "."))
+	}
+	return strataWeightsMissing(p)
+}
+
+// strataWeightsMissing reports whether path is a Strata config that names weight files (.gguf) which are
+// gone: the config is only a pointer, and a model whose weights were deleted cannot start.
+func strataWeightsMissing(path string) bool {
+	if !strings.HasSuffix(path, ".json") {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var c strataConfig
+	if json.Unmarshal(data, &c) != nil || c.Exe == "" {
+		return false
+	}
+	for _, arg := range c.Args {
+		if filepath.IsAbs(arg) && strings.HasSuffix(strings.ToLower(arg), ".gguf") {
+			if _, err := os.Stat(arg); os.IsNotExist(err) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Inspect identifies source: a .gguf file, a directory of GGUF shards or of a

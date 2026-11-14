@@ -319,6 +319,11 @@ func (a *App) Offer(m config.Model) Offer {
 	if n, err := strconv.Atoi(m.Flags["parallel"]); err == nil && n > 0 {
 		o.Parallel = n
 	}
+	if o.Parallel == 0 {
+		if n, known := model.DeclaredParallel(paths.Expand(m.Source)); known {
+			o.Parallel = n
+		}
+	}
 	if images, known := model.DeclaresVision(paths.Expand(m.Source)); known {
 		o.Images = &images
 	}

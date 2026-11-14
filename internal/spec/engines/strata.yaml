@@ -46,6 +46,11 @@ vision:
   path: /v1/models
   field: data.0.architecture.input_modalities
 
+# How many requests decode together: 1 unless the Strata config sets "parallel".
+slots:
+  path: /props
+  field: total_slots
+
 flags:
   gpus: [--gpu, "{value}"]
 
