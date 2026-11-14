@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 )
 
 func i64(v int64) *int64 { return &v }
 
 func open(t *testing.T) *DB {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	db, err := Open()
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestEraseClientLeavesNoCopyOnDisk(t *testing.T) {
 }
 
 func TestDatabaseIsPrivate(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	os.MkdirAll(paths.State(), 0o755)
 	os.WriteFile(Path(), nil, 0o644) // an existing database from an older version
 	db, err := Open()

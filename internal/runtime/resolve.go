@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
 // Engine is a manifest with the user's overrides applied and its binary resolved.
@@ -192,7 +192,7 @@ type Plan struct {
 	// Hosting marks a multi-model host launch (no model; models are loaded over HTTP).
 	Hosting bool `json:"hosting,omitempty"`
 
-	lockMode    string // substrate | engine (Tenstorrent)
+	lockMode    string // emx | engine (Tenstorrent)
 	resetOnKill bool
 	stopSignal  string
 	stopTimeout time.Duration
@@ -286,9 +286,9 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 	for _, k := range required {
 		if v[k] == "" {
 			if e.Host != nil {
-				return nil, errs.New(errs.Usage, "engine %s needs vars.%s (substrate engine set %s --var %s=...)", e.ID, k, e.ID, k)
+				return nil, errs.New(errs.Usage, "engine %s needs vars.%s (emx engine set %s --var %s=...)", e.ID, k, e.ID, k)
 			}
-			return nil, errs.New(errs.Usage, "engine %s needs vars.%s for model %s (substrate model add ... --var %s=...)", e.ID, k, r.Name, k)
+			return nil, errs.New(errs.Usage, "engine %s needs vars.%s for model %s (emx model add ... --var %s=...)", e.ID, k, r.Name, k)
 		}
 	}
 	p := &Plan{
@@ -303,7 +303,7 @@ func (e *Engine) Build(r Request) (*Plan, error) {
 		p.Assets = v["assets"]
 	}
 	if p.lockMode == "" {
-		p.lockMode = "substrate"
+		p.lockMode = "emx"
 	}
 	for _, a := range e.Launch.Command {
 		if a == spec.PreArgs {

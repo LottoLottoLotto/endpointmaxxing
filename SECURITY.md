@@ -4,13 +4,13 @@
 
 Please report vulnerabilities privately through GitHub's private
 vulnerability reporting: on the
-[repository](https://github.com/LottoLottoLotto/substrate), open the
+[repository](https://github.com/LottoLottoLotto/endpointmaxxing), open the
 **Security** tab and choose **Report a vulnerability**
-([direct link](https://github.com/LottoLottoLotto/substrate/security/advisories/new)).
+([direct link](https://github.com/LottoLottoLotto/endpointmaxxing/security/advisories/new)).
 
 Do not open a public issue or pull request for a suspected vulnerability.
 
-A useful report says which version (`substrate version`) and platform you
+A useful report says which version (`emx version`) and platform you
 used, how the gateway was configured (listen address, TLS, keys and their
 roles), and the steps or request that show the problem. Leave real key
 secrets and prompts out of the report.
@@ -24,19 +24,19 @@ problem still exists on the latest release before reporting.
 
 In scope:
 
-- the gateway (`substrate serve`): authentication, roles, model access
+- the gateway (`emx serve`): authentication, roles, model access
   globs, quotas and budgets, request routing and proxying, TLS handling;
-- the management and settings API under `/substrate/v1/` and the admin UI at
+- the management and settings API under `/emx/v1/` and the admin UI at
   `/admin/`;
 - stored data: `keys.yaml`, the usage database, the audit file and its hash
   chain, backups, file permissions;
-- the CLI and `substrate mcp`, where they cross a privilege boundary (for
+- the CLI and `emx mcp`, where they cross a privilege boundary (for
   example secrets leaking into logs, events, `ps` output or command lines);
 - engine manifests and how they turn configuration into host command lines.
 
 Out of scope:
 
-- vulnerabilities in the inference engines substrate launches (llama.cpp,
+- vulnerabilities in the inference engines emx launches (llama.cpp,
   vLLM, SGLang, Strata, tt-metal images and others): report those to their
   projects;
 - a gateway deliberately run open on a public address with `--insecure`;
@@ -65,8 +65,8 @@ Out of scope:
   DNS name rebound to loopback, therefore cannot use it.
 - **Keys.** Once any key exists, every request needs one, sent as
   `Authorization: Bearer` or `x-api-key`. Keys are stored only as SHA-256
-  hashes in `~/.config/substrate/keys.yaml` (mode 0600). The master key comes
-  from `$SUBSTRATE_API_KEY` or `serve --api-key-file F` (a file of mode
+  hashes in `~/.config/emx/keys.yaml` (mode 0600). The master key comes
+  from `$EMX_API_KEY` or `serve --api-key-file F` (a file of mode
   0600), never from an argument. The client's key is never forwarded to an
   engine.
 - **Engine keys.** An engine's own key (`--api-key`) is passed in the
@@ -74,7 +74,7 @@ Out of scope:
   `vllm`, `llama.cpp`, `buun-llama-cpp`, `strata`, `tt-vllm`). `sglang`
   still receives it on the command line, which every user of the host can
   read in the process list. Instance listings (`ps`, `inspect`,
-  `/substrate/v1/instances`) show environment values and secret-looking
+  `/emx/v1/instances`) show environment values and secret-looking
   argument values as `***`; the full values are only in the owner-only
   instance file.
 - **Roles.** `user` keys: inference and `/v1/models`, limited to their (and
@@ -95,10 +95,10 @@ Out of scope:
 - **Admin UI.** A client of the management API only; the key is kept in the
   browser tab (`sessionStorage`) and sent as a bearer token, and the page is
   sent with a strict Content-Security-Policy.
-- **Agents.** `substrate mcp` leaves out every input that chooses what the
+- **Agents.** `emx mcp` leaves out every input that chooses what the
   host runs or which files it reads unless started with `--allow-host`; with
   that flag an agent has the access of a shell.
-- **Engine manifests** are programs: substrate runs their commands as you.
+- **Engine manifests** are programs: emx runs their commands as you.
   `engine add` lists them and installs only with `--trust`.
 - **Request handling.** Rate limits and budgets are checked before a body is
   read; bodies are bounded per request (`gateway.max_body_mb`), in total
@@ -111,7 +111,7 @@ Out of scope:
 - **Data at rest.** Config and state directories are `0700`; keys, config,
   the usage database, the audit file and engine logs are `0600`.
 - **Audit file.** Lines are hash-chained and numbered, and the chain's head
-  is recorded in `<audit file>.head`. `substrate audit verify` finds an
+  is recorded in `<audit file>.head`. `emx audit verify` finds an
   edited, inserted, removed or reordered line and a truncated or rewritten
   tail. With `gateway.audit_key_file` the chain is an HMAC-SHA256, so a file
   rewritten without the key does not verify. Not detected on the host
@@ -123,7 +123,7 @@ Out of scope:
   `--expect-first` with the printed values stored off the host. Someone who holds the
   audit key can produce lines that verify.
 
-`substrate doctor` reports security findings for a given setup. The details
+`emx doctor` reports security findings for a given setup. The details
 are in [docs/access.md](docs/access.md),
 [docs/admin-api.md](docs/admin-api.md),
 [docs/governance.md](docs/governance.md) and

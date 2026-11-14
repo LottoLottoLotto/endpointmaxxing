@@ -1,4 +1,4 @@
-spec: substrate.engine/v1
+spec: emx.engine/v1
 id: buun-llama-cpp
 name: buun-llama-cpp
 description: Experimental llama.cpp fork; VBR/TurboQuant/TCQ KV cache codecs, native safetensors and EXL3 loading.

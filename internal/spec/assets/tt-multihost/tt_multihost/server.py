@@ -7,7 +7,7 @@ for any model are executed one at a time on the device by a single worker thread
 (the device has one command queue); prefill/decode of different models interleave
 at request granularity.
 
-HTTP (OpenAI-compatible subset + admin API used by substrate):
+HTTP (OpenAI-compatible subset + admin API used by emx):
   GET  /health                      200 once the device is open
   GET  /v1/models                   resident models
   POST /v1/chat/completions         stream and non-stream
@@ -48,7 +48,7 @@ from models.tt_transformers.tt.model_config import DecodersPrecision, ModelArgs
 MESH_SHAPES = {"P150": (1, 1), "P300": (1, 2), "P150x4": (1, 4), "P150x8": (1, 8), "BHGLX": (8, 4),
                "N150": (1, 1), "N300": (1, 2), "T3K": (1, 8)}
 BLOCK = 32  # paged-attention block size
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")  # substrate model names; also the cache dir name
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")  # emx model names; also the cache dir name
 
 
 from tt_multihost.guard import MAX_BODY_BYTES, BadRequest, host_allowed, is_json, template_kwargs  # noqa: E402
@@ -405,7 +405,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._complete(body, chat=self.path.endswith("chat/completions"))
         except BadRequest as e:
             return self._error(400, str(e))
-        except Unloaded as e:  # unloaded meanwhile: the client (substrate) loads it again
+        except Unloaded as e:  # unloaded meanwhile: the client (emx) loads it again
             return self._error(404, str(e), "not_found_error")
         except Exception as e:  # noqa: BLE001 - surface engine errors to the client
             logger.error(traceback.format_exc())

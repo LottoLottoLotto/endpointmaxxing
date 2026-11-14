@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 func writeConfig(t *testing.T, yaml string) {
@@ -55,7 +55,7 @@ func requestsOf(t *testing.T, a *app.App, f store.Filter) []store.Request {
 }
 
 func TestKeyLifecycleAndAuditorRole(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend()
 	defer backend.Close()
 	instance(t, "m.fake", "m", backend.URL)
@@ -97,18 +97,18 @@ func TestKeyLifecycleAndAuditorRole(t *testing.T) {
 	if s := call(t, "POST", srv.URL+"/v1/chat/completions", auditor, chatBody("m")); s != http.StatusForbidden {
 		t.Fatalf("auditor inference: %d", s)
 	}
-	if s := call(t, "POST", srv.URL+"/substrate/v1/stop", auditor, `{"id":"m.fake"}`); s != http.StatusForbidden {
+	if s := call(t, "POST", srv.URL+"/emx/v1/stop", auditor, `{"id":"m.fake"}`); s != http.StatusForbidden {
 		t.Fatalf("auditor stop: %d", s)
 	}
-	for _, path := range []string{"/substrate/v1/report", "/substrate/v1/keys", "/substrate/v1/events", "/metrics"} {
+	for _, path := range []string{"/emx/v1/report", "/emx/v1/keys", "/emx/v1/events", "/metrics"} {
 		if s := call(t, "GET", srv.URL+path, auditor, ""); s != http.StatusOK {
 			t.Fatalf("auditor GET %s: %d", path, s)
 		}
 	}
-	if s := call(t, "POST", srv.URL+"/substrate/v1/reload", auditor, ""); s != http.StatusForbidden {
+	if s := call(t, "POST", srv.URL+"/emx/v1/reload", auditor, ""); s != http.StatusForbidden {
 		t.Fatalf("auditor reload: %d", s)
 	}
-	if s := call(t, "POST", srv.URL+"/substrate/v1/reload", admin, ""); s != http.StatusOK {
+	if s := call(t, "POST", srv.URL+"/emx/v1/reload", admin, ""); s != http.StatusOK {
 		t.Fatalf("admin reload: %d", s)
 	}
 	g.Close()
@@ -150,7 +150,7 @@ func mustDB(t *testing.T, a *app.App) *store.DB {
 }
 
 func TestTeamBudgetsCostAndModelAccess(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend() // every request: 5 prompt + 5 completion tokens
 	defer backend.Close()
 	instance(t, "m.fake", "m", backend.URL)
@@ -228,7 +228,7 @@ teams:
 }
 
 func TestHotReload(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend()
 	defer backend.Close()
 	instance(t, "m.fake", "m", backend.URL)
@@ -282,9 +282,9 @@ func selfSigned(t *testing.T, dir, serial string) (certFile, keyFile string) {
 		t.Fatal(err)
 	}
 	n, _ := new(big.Int).SetString(serial, 10)
-	tmpl := &x509.Certificate{SerialNumber: n, Subject: pkix.Name{CommonName: "substrate.example"},
+	tmpl := &x509.Certificate{SerialNumber: n, Subject: pkix.Name{CommonName: "emx.example"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		DNSNames: []string{"substrate.example"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames: []string{"emx.example"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)

@@ -3,7 +3,7 @@ package route
 import (
 	"testing"
 
-	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
 func manifests(t *testing.T) []*spec.Manifest {

@@ -17,15 +17,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gpu"
-	"github.com/LottoLottoLotto/substrate/internal/lock"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/proc"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
-	"github.com/LottoLottoLotto/substrate/internal/store"
-	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gpu"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/lock"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/proc"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/tenstorrent"
 )
 
 // Instance is a launched engine process, persisted as state/instances/<id>.json (mode 0600: it may hold an API key).
@@ -229,7 +229,7 @@ func List() ([]*Instance, error) {
 }
 
 func noInstance(ref string) error {
-	return errs.New(errs.NotFound, "no instance %q (see `substrate ps`)", ref)
+	return errs.New(errs.NotFound, "no instance %q (see `emx ps`)", ref)
 }
 
 // Get returns the instance with id. An id that is not a valid name (it would escape the instances
@@ -431,7 +431,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		return nil, err
 	}
 	defer logf.Close()
-	fmt.Fprintf(logf, "# substrate %s: %s\n# cwd: %s\n", time.Now().Format(time.RFC3339), ShellJoin(redactArgv(Redact(p.Argv, p.apiKey))), p.Cwd)
+	fmt.Fprintf(logf, "# emx %s: %s\n# cwd: %s\n", time.Now().Format(time.RFC3339), ShellJoin(redactArgv(Redact(p.Argv, p.apiKey))), p.Cwd)
 	for _, k := range sortedKeys(p.Env) {
 		switch {
 		case k == "PATH":
@@ -633,7 +633,7 @@ func runCleanup(cmds [][]string, in *Instance) {
 		cancel()
 		if in != nil {
 			if f, ferr := os.OpenFile(in.Log, os.O_WRONLY|os.O_APPEND, 0o600); ferr == nil {
-				fmt.Fprintf(f, "# substrate cleanup: %s: err=%v %s\n", ShellJoin(c), err, strings.TrimSpace(string(out)))
+				fmt.Fprintf(f, "# emx cleanup: %s: err=%v %s\n", ShellJoin(c), err, strings.TrimSpace(string(out)))
 				f.Close()
 			}
 		}
@@ -642,7 +642,7 @@ func runCleanup(cmds [][]string, in *Instance) {
 
 // waitChipsFree waits until the instance's chips are unlocked and unopened: helpers
 // outside its session (a docker client and container, an engine's own lock holder)
-// may outlive the process substrate stopped. It reports whether they came free.
+// may outlive the process emx stopped. It reports whether they came free.
 func (in *Instance) waitChipsFree(max time.Duration) bool {
 	if in.Accelerator != spec.AccelTenstorrent || len(in.Devices) == 0 {
 		return true

@@ -9,7 +9,7 @@ import (
 	"os"
 )
 
-// GGUFHeader is the metadata substrate reads from a GGUF file.
+// GGUFHeader is the metadata emx reads from a GGUF file.
 type GGUFHeader struct {
 	Version  uint32
 	Arch     string

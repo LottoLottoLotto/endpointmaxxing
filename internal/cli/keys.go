@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gateway"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/settings"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/settings"
 )
 
 // ---- key ----
@@ -39,7 +39,7 @@ func keyAddCmd() *command {
 		summary: "create a key (printed once)",
 		build: func(fs *flag.FlagSet) action {
 			role := fs.String("role", keys.RoleUser, "user (inference, own usage), auditor (read-only: usage, logs, reports; no inference) or admin (everything)")
-			team := fs.String("team", "", "team whose budgets and model access apply (config.yaml teams; substrate team set)")
+			team := fs.String("team", "", "team whose budgets and model access apply (config.yaml teams; emx team set)")
 			models := fs.String("models", "", "comma-separated model names or globs the key may use (default all)")
 			rpm := fs.Int("rpm", 0, "requests per minute (0 unlimited)")
 			tpd := fs.Int64("tokens-per-day", 0, "prompt+completion tokens per calendar day (0 unlimited)")
@@ -87,7 +87,7 @@ func keyListCmd() *command {
 				}
 				return e.out(infos, func(w io.Writer) {
 					if len(infos) == 0 {
-						fmt.Fprintln(w, "no keys: the gateway is open on loopback (substrate key add <name>)")
+						fmt.Fprintln(w, "no keys: the gateway is open on loopback (emx key add <name>)")
 						return
 					}
 					rows := make([][]string, len(infos))
@@ -286,7 +286,7 @@ func unitPath() string {
 	if dir == "" {
 		dir = filepath.Join(paths.Home(), ".config")
 	}
-	return filepath.Join(dir, "systemd", "user", "substrate.service")
+	return filepath.Join(dir, "systemd", "user", "emx.service")
 }
 
 func systemctl(e *env, args ...string) error {
@@ -303,7 +303,7 @@ func systemctl(e *env, args ...string) error {
 func unit(bin string, serveArgs []string, env []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `[Unit]
-Description=substrate inference gateway
+Description=emx inference gateway
 After=network-online.target
 
 [Service]
@@ -331,11 +331,11 @@ func prefixSpace(s string) string {
 
 func serviceInstallCmd() *command {
 	return &command{name: "install", synopsis: "[--enable] [--env K=V]... [-- serve args]",
-		summary: "write ~/.config/systemd/user/substrate.service (PATH captured from this shell)", passthrough: true,
+		summary: "write ~/.config/systemd/user/emx.service (PATH captured from this shell)", passthrough: true,
 		build: func(fs *flag.FlagSet) action {
 			enable := fs.Bool("enable", false, "also daemon-reload, enable and start it now")
 			var envs multi
-			fs.Var(&envs, "env", "extra Environment= line, e.g. SUBSTRATE_API_KEY=... (repeatable)")
+			fs.Var(&envs, "env", "extra Environment= line, e.g. EMX_API_KEY=... (repeatable)")
 			return func(e *env, pos, extra []string) error {
 				if err := wantArgs("service install", pos, 0, 0); err != nil {
 					return err
@@ -352,8 +352,8 @@ func serviceInstallCmd() *command {
 				}
 				// Engines are found through PATH (llama-server, vllm, ...): pin the PATH of this shell.
 				vars := append([]string{"PATH=" + os.Getenv("PATH")}, envs...)
-				if h := os.Getenv("SUBSTRATE_HOME"); h != "" {
-					vars = append(vars, "SUBSTRATE_HOME="+h)
+				if h := os.Getenv("EMX_HOME"); h != "" {
+					vars = append(vars, "EMX_HOME="+h)
 				}
 				text := unit(bin, extra, vars)
 				path := unitPath()
@@ -367,14 +367,14 @@ func serviceInstallCmd() *command {
 					if err := systemctl(e, "daemon-reload"); err != nil {
 						return err
 					}
-					if err := systemctl(e, "enable", "--now", "substrate.service"); err != nil {
+					if err := systemctl(e, "enable", "--now", "emx.service"); err != nil {
 						return err
 					}
 				}
 				return e.out(map[string]any{"unit": path, "enabled": *enable}, func(w io.Writer) {
 					fmt.Fprintf(w, "wrote %s\n", path)
 					if !*enable {
-						fmt.Fprintln(w, "start it: systemctl --user daemon-reload && systemctl --user enable --now substrate")
+						fmt.Fprintln(w, "start it: systemctl --user daemon-reload && systemctl --user enable --now emx")
 					}
 					fmt.Fprintln(w, "keep it running after logout: loginctl enable-linger $USER")
 				})
@@ -393,7 +393,7 @@ func serviceUninstallCmd() *command {
 				if _, err := os.Stat(path); err != nil {
 					return errs.New(errs.NotFound, "no service installed at %s", path)
 				}
-				_ = systemctl(e, "disable", "--now", "substrate.service")
+				_ = systemctl(e, "disable", "--now", "emx.service")
 				if err := os.Remove(path); err != nil {
 					return err
 				}
@@ -410,7 +410,7 @@ func serviceStatusCmd() *command {
 				if err := wantArgs("service status", pos, 0, 0); err != nil {
 					return err
 				}
-				out, _ := exec.CommandContext(e.ctx, "systemctl", "--user", "show", "substrate.service",
+				out, _ := exec.CommandContext(e.ctx, "systemctl", "--user", "show", "emx.service",
 					"--property=LoadState,ActiveState,SubState,MainPID,ExecMainStartTimestamp").Output()
 				props := map[string]string{"unit": unitPath()}
 				for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {

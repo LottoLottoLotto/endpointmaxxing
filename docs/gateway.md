@@ -2,7 +2,7 @@
 
 [← README](../README.md) · [Documentation index](../README.md#documentation)
 
-`substrate serve` handles `/v1/chat/completions`, `/v1/completions`,
+`emx serve` handles `/v1/chat/completions`, `/v1/completions`,
 `/v1/responses`, `/v1/messages`, `/v1/embeddings` and `/v1/rerank`:
 
 - Requests go to a ready instance whose name matches the request's `model`,
@@ -51,12 +51,12 @@
   therefore always receives the final usage chunk, even if it asked for
   `false`.
 - **Request ids.** The gateway generates the id of every request and
-  returns it as `X-Substrate-Request-Id` and `X-Request-Id`; the engine
+  returns it as `X-Emx-Request-Id` and `X-Request-Id`; the engine
   receives the same id as `X-Request-Id`, and an engine's own `X-Request-Id`
   response header is dropped. An `X-Request-Id` sent by the client (its
   first 128 characters) is stored with the record as `client_request_id`
-  and need not be unique. `substrate requests --id` and
-  `GET /substrate/v1/requests?id=` match either id.
+  and need not be unique. `emx requests --id` and
+  `GET /emx/v1/requests?id=` match either id.
 
 ## Limits, timeouts, health
 
@@ -82,7 +82,7 @@ goes through placement unless you pass `--force`:
    - a declared size (`model add --vram-mib`);
    - the manifest's `fraction` mode: vLLM and SGLang claim
      `--mem-fraction` of each GPU;
-   - the largest footprint substrate measured for this model and engine in
+   - the largest footprint emx measured for this model and engine in
      the last 30 days (recorded each time an instance becomes ready);
    - the `weights` rule: file size × factor + overhead.
 
@@ -105,21 +105,21 @@ Placement modes (`gateway.placement` or `serve --placement`):
 - `exclusive` runs one model per GPU.
 - `off` skips all checks.
 
-`substrate run <model> --dry-run` shows the decision, for example
+`emx run <model> --dry-run` shows the decision, for example
 `placement: GPU 0, 9830 MiB each (0.40 of each GPU)`.
 
 ## Model aliases
 
 ```sh
-substrate alias set chat-default flash-next-iq3s   # clients ask for chat-default
-substrate alias list
-substrate alias rm chat-default
+emx alias set chat-default flash-next-iq3s   # clients ask for chat-default
+emx alias list
+emx alias rm chat-default
 ```
 
 An alias (`aliases:` in `config.yaml`) is resolved before access checks,
 routing and metering: the engine receives the real model name, the usage
 record carries it, keys need access to the target, and `/v1/models` lists
-the alias with `alias_for`. Responses say `X-Substrate-Alias`. Switching the
+the alias with `alias_for`. Responses say `X-Emx-Alias`. Switching the
 target takes effect within seconds through the config reload. An alias
 shadows a registered model of the same name; aliases cannot point at
 aliases.
@@ -127,11 +127,11 @@ aliases.
 ## Configuration reload
 
 The gateway re-reads `config.yaml` and `models.yaml` within two seconds of a
-change, on SIGHUP (`systemctl --user reload substrate`), on `substrate
-reload`, or `POST /substrate/v1/reload`. Requests in flight finish under the
+change, on SIGHUP (`systemctl --user reload emx`), on `emx
+reload`, or `POST /emx/v1/reload`. Requests in flight finish under the
 configuration they started with. An invalid file is refused: the running
 configuration stays, the error is logged once and recorded as a
-`config_reload_failed` event, and `substrate_config_reload_failures_total`
+`config_reload_failed` event, and `emx_config_reload_failures_total`
 counts it. Policy, classification, prices, teams, limits, timeouts (except
 `upstream_header_timeout`), placement, swap and logging options apply at
 once; the listen address, TLS settings (certificates still renew),

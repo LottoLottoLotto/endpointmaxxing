@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
 // HostedModels lists the models multi-model host in has loaded now.

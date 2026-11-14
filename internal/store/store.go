@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/lock"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/policy"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/lock"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/policy"
 	_ "modernc.org/sqlite"
 )
 
@@ -108,7 +108,7 @@ var migrations = []string{
 	`ALTER TABLE requests ADD COLUMN team TEXT NOT NULL DEFAULT '';
 	ALTER TABLE requests ADD COLUMN cost REAL;                              -- in pricing.currency; NULL when unpriced
 	CREATE INDEX requests_team ON requests(team, ts) WHERE team != '';`,
-	// 5: benchmark runs (substrate bench).
+	// 5: benchmark runs (emx bench).
 	`CREATE TABLE benchmarks (
 		id TEXT PRIMARY KEY,
 		ts INTEGER NOT NULL,            -- unix ms, run started
@@ -188,7 +188,7 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if v > len(migrations) {
-		return fmt.Errorf("schema version %d is newer than this substrate (%d)", v, len(migrations))
+		return fmt.Errorf("schema version %d is newer than this emx (%d)", v, len(migrations))
 	}
 	if v == len(migrations) {
 		return nil

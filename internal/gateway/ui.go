@@ -7,7 +7,7 @@ import (
 )
 
 // The admin UI is a static client of the management API: it holds no data and has no routes of its own,
-// so everything a person can do there an agent can do over /substrate/v1 with the same key and role.
+// so everything a person can do there an agent can do over /emx/v1 with the same key and role.
 //
 //go:embed ui
 var uiFiles embed.FS

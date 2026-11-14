@@ -1,9 +1,9 @@
-// substrate admin UI: a static client of the management API (/substrate/v1). It adds no capabilities of
+// emx admin UI: a static client of the management API (/emx/v1). It adds no capabilities of
 // its own; every action here is one API call an agent can make with the same key.
 // Untrusted text (prompts' metadata, errors, model names) is only ever set through textContent.
 'use strict';
 
-const KEY = 'substrate-key';
+const KEY = 'emx-key';
 const S = { key: sessionStorage.getItem(KEY) || '', who: null, timer: null, gen: 0, since: '24h' };
 
 // ---------- DOM helpers ----------
@@ -126,7 +126,7 @@ function showLogin(msg) {
 
 async function signIn() {
   try {
-    S.who = await get('/substrate/v1/whoami');
+    S.who = await get('/emx/v1/whoami');
   } catch (e) {
     if (e.status !== 401) document.getElementById('main').replaceChildren(el('p', { class: 'error' }, e.message));
     return false;
@@ -262,9 +262,9 @@ async function overview() {
     const gen = S.gen;
     guarded(gen, body, async () => {
       const [rep, ins, evs] = await Promise.all([
-        get('/substrate/v1/report' + qs({ since: S.since })),
-        get('/substrate/v1/instances'),
-        get('/substrate/v1/events' + qs({ since: S.since, limit: 500 })),
+        get('/emx/v1/report' + qs({ since: S.since })),
+        get('/emx/v1/instances'),
+        get('/emx/v1/events' + qs({ since: S.since, limit: 500 })),
       ]);
       currency = rep.currency || 'USD';
       const t = rep.totals || {};
@@ -341,13 +341,13 @@ async function models() {
   };
   const ensure = (btn, model) => act(btn, 'Starting', async () => {
     toast(`Starting ${model}. Loading can take minutes.`);
-    const r = await api('POST', '/substrate/v1/ensure', { model });
+    const r = await api('POST', '/emx/v1/ensure', { model });
     toast(`${model} is ready on ${r.instance.id}`);
   });
   const stop = (btn, id) => {
     if (!confirm(`Stop ${id}? In-flight requests finish first.`)) return;
     act(btn, 'Stopping', async () => {
-      await api('POST', '/substrate/v1/stop', { id });
+      await api('POST', '/emx/v1/stop', { id });
       toast(`Stopped ${id}`);
     });
   };
@@ -365,39 +365,39 @@ async function models() {
       { name: 'source', label: 'Source', ph: '/models/Qwen3-8B or Qwen/Qwen3-8B', required: true },
       { name: 'engine', label: 'Engine', ph: 'auto' },
     ], {}, async (v) => {
-      const r = await change('POST', '/substrate/v1/models', v, `Registered ${v.name}`, () => load());
+      const r = await change('POST', '/emx/v1/models', v, `Registered ${v.name}`, () => load());
       if (r.engine) toast(`Registered ${v.name} → ${r.engine}` + (r.warnings ? '\n' + r.warnings.join('\n') : ''));
     }, 'Register'),
     content);
-  const remove = (name) => change('DELETE', '/substrate/v1/models/' + enc(name), undefined, `Removed ${name} from the registry`, () => load());
+  const remove = (name) => change('DELETE', '/emx/v1/models/' + enc(name), undefined, `Removed ${name} from the registry`, () => load());
 
   const load = () => {
     const gen = S.gen;
     guarded(gen, content, async () => {
-      const [ms_, ins] = await Promise.all([get('/v1/models'), get('/substrate/v1/instances')]);
+      const [ms_, ins] = await Promise.all([get('/v1/models'), get('/emx/v1/instances')]);
       const alive = (s) => s === 'ready' || s === 'starting' || s === 'loading' || s === 'unhealthy';
       return [
         el('h2', {}, 'Registered models'),
         table([
           { h: 'Model', v: (m) => m.id },
-          { h: 'Engine', v: (m) => m.substrate.engine || (m.substrate.alias_for ? '' : el('span', { class: 'muted' }, 'auto')) },
-          { h: 'Format', v: (m) => m.substrate.format || '' },
+          { h: 'Engine', v: (m) => m.emx.engine || (m.emx.alias_for ? '' : el('span', { class: 'muted' }, 'auto')) },
+          { h: 'Format', v: (m) => m.emx.format || '' },
           { h: 'State', v: (m) => {
-            if (m.substrate.alias_for) return el('span', { class: 'muted' }, 'alias for ' + m.substrate.alias_for);
-            const is = m.substrate.instances || [];
+            if (m.emx.alias_for) return el('span', { class: 'muted' }, 'alias for ' + m.emx.alias_for);
+            const is = m.emx.instances || [];
             if (is.length) return is.map((i) => [statusPill(i.status), ' ']);
-            if (m.substrate.source_missing) return pill('files missing', 'err');
+            if (m.emx.source_missing) return pill('files missing', 'err');
             return el('span', { class: 'muted' }, 'not running');
           } },
           { h: '', v: (m) => {
-            if (m.substrate.alias_for || !m.substrate.registered) return '';
-            const is = m.substrate.instances || [];
+            if (m.emx.alias_for || !m.emx.registered) return '';
+            const is = m.emx.instances || [];
             const rm = adminAction('Remove', 'danger', () => remove(m.id), `Remove ${m.id} from the registry? Running instances keep running; its files stay.`);
             if (is.some((i) => alive(i.status))) return [...is.filter((i) => alive(i.status)).map((i) => adminBtn('Stop', 'secondary', (e) => stop(e.target, i.id))), ' ', rm];
-            if (m.substrate.source_missing) return rm;
+            if (m.emx.source_missing) return rm;
             return [adminBtn('Start', '', (e) => ensure(e.target, m.id)), ' ', rm];
           } },
-        ], ms_.data, { empty: 'No models registered (substrate model add).', onrow: (m) => go('requests', { model: m.id, since: S.since }) }),
+        ], ms_.data, { empty: 'No models registered (emx model add).', onrow: (m) => go('requests', { model: m.id, since: S.since }) }),
         el('h2', {}, 'Instances'),
         table([
           { h: 'Instance', v: (i) => i.instance.id },
@@ -471,7 +471,7 @@ async function requests() {
   body.append(filterForm(fields, p, (v) => go('requests', v)), results);
   const gen = S.gen;
   guarded(gen, results, async () => {
-    const rows = await get('/substrate/v1/requests' + qs({ since: p.id ? '' : '24h', limit: 100, ...p }));
+    const rows = await get('/emx/v1/requests' + qs({ since: p.id ? '' : '24h', limit: 100, ...p }));
     return [
       el('p', { class: 'muted' }, `${rows.length} request${rows.length === 1 ? '' : 's'}, newest first. Click a row for the full record.`),
       table([
@@ -507,7 +507,7 @@ async function events() {
   body.append(filterForm(fields, p, (v) => go('events', v)), results);
   const gen = S.gen;
   guarded(gen, results, async () => {
-    const rows = await get('/substrate/v1/events' + qs({ since: '7d', limit: 200, ...p }));
+    const rows = await get('/emx/v1/events' + qs({ since: '7d', limit: 200, ...p }));
     return table([
       { h: 'Time', v: (e) => when(e.ts) },
       { h: 'Kind', v: (e) => e.kind },
@@ -530,7 +530,7 @@ async function policy() {
     ev.preventDefault();
     if (!text.value.trim()) return;
     try {
-      const r = await api('POST', '/substrate/v1/policy/test', { text: text.value, model: model.value.trim(), client: client.value.trim() });
+      const r = await api('POST', '/emx/v1/policy/test', { text: text.value, model: model.value.trim(), client: client.value.trim() });
       result.replaceChildren(
         el('p', {}, r.blocked ? pill('would be blocked', 'err') : pill('allowed', 'ok'), ' category ', el('b', {}, r.category || '–'),
           r.flag_severity ? [' · severity ', sevPill(r.flag_severity)] : '',
@@ -556,8 +556,8 @@ async function policy() {
     const gen = S.gen;
     guarded(gen, stats, async () => {
       const [flags, errors] = await Promise.all([
-        get('/substrate/v1/flags' + qs({ since: S.since })),
-        get('/substrate/v1/errors' + qs({ since: S.since })),
+        get('/emx/v1/flags' + qs({ since: S.since })),
+        get('/emx/v1/errors' + qs({ since: S.since })),
       ]);
       return el('div', { class: 'grid2' },
         el('div', {}, el('h2', {}, 'Policy matches'), flagsTable(flags)),
@@ -664,32 +664,32 @@ async function access() {
   body.append(secrets, content);
   const rerender = () => load();
   const load = () => guarded(S.gen, content, async () => {
-    const [ks, teams] = await Promise.all([get('/substrate/v1/keys'), get('/substrate/v1/teams')]);
+    const [ks, teams] = await Promise.all([get('/emx/v1/keys'), get('/emx/v1/teams')]);
     const limit = (v) => (v ? num(v) : el('span', { class: 'muted' }, '∞'));
     const self = (k) => S.who && S.who.name === k.name;
     const keyRow = (k) => el('div', {},
       el('p', { class: 'muted' }, 'Change this key. Blank team or models clears them; blank numbers stay as they are.'),
       settingsForm(keyFields, { ...k, expires: '' }, async (v) => {
-        await change('PATCH', '/substrate/v1/keys/' + enc(k.name), v, `Updated ${k.name}`, rerender);
+        await change('PATCH', '/emx/v1/keys/' + enc(k.name), v, `Updated ${k.name}`, rerender);
       }, 'Save', { keepBlank: true }),
       el('div', { class: 'bar' },
         adminAction('Rotate secret', 'secondary', async () => {
-          const r = await api('POST', '/substrate/v1/keys/' + enc(k.name) + '/rotate', { grace: '24h' });
+          const r = await api('POST', '/emx/v1/keys/' + enc(k.name) + '/rotate', { grace: '24h' });
           secrets.prepend(secretBox(k.name, r.secret, 'The old secret keeps working for 24 hours.'));
           rerender();
         }, `Rotate the secret of ${k.name}? The old one keeps working for 24 hours.`),
         k.disabled
-          ? adminAction('Enable', 'secondary', () => change('POST', '/substrate/v1/keys/' + enc(k.name) + '/enable', undefined, `Enabled ${k.name}`, rerender))
-          : adminAction('Disable', 'secondary', () => change('POST', '/substrate/v1/keys/' + enc(k.name) + '/disable', undefined, `Disabled ${k.name}`, rerender),
+          ? adminAction('Enable', 'secondary', () => change('POST', '/emx/v1/keys/' + enc(k.name) + '/enable', undefined, `Enabled ${k.name}`, rerender))
+          : adminAction('Disable', 'secondary', () => change('POST', '/emx/v1/keys/' + enc(k.name) + '/disable', undefined, `Disabled ${k.name}`, rerender),
             self(k) ? null : `Disable ${k.name}? Requests with it are refused at once.`),
-        adminAction('Delete', 'danger', () => change('DELETE', '/substrate/v1/keys/' + enc(k.name), undefined, `Deleted ${k.name}`, rerender),
+        adminAction('Delete', 'danger', () => change('DELETE', '/emx/v1/keys/' + enc(k.name), undefined, `Deleted ${k.name}`, rerender),
           `Delete ${k.name}? This cannot be undone; its usage history stays.`)),
       jsonBlock(k));
     return [
       el('p', { class: 'muted' }, 'Every change here goes through the management API with your key and is recorded in the admin trail (Events → admin). Agents make the same changes over the API or with the CLI and its MCP tools.'),
       el('h2', {}, 'New API key'),
       settingsForm([{ name: 'name', label: 'Name', ph: 'alice', required: true }, ...keyFields], { role: 'user' }, async (v) => {
-        const r = await change('POST', '/substrate/v1/keys', v, `Created ${v.name}`, rerender);
+        const r = await change('POST', '/emx/v1/keys', v, `Created ${v.name}`, rerender);
         secrets.prepend(secretBox(r.name, r.secret, 'Clients send it as Authorization: Bearer <key>.'));
       }, 'Create key'),
       el('h2', {}, 'API keys'),
@@ -708,7 +708,7 @@ async function access() {
       el('h2', {}, 'Teams'),
       settingsForm([{ name: 'name', label: 'Team', ph: 'research', required: true }, ...teamFields], {}, async (v) => {
         const { name, ...rest } = v;
-        await change('PUT', '/substrate/v1/teams/' + enc(name), rest, `Saved team ${name}`, rerender);
+        await change('PUT', '/emx/v1/teams/' + enc(name), rest, `Saved team ${name}`, rerender);
       }, 'Create or update team'),
       table([
         { h: 'Team', v: (t) => t.name },
@@ -716,7 +716,7 @@ async function access() {
         { h: 'Models', v: (t) => (t.config.models || []).join(', ') || el('span', { class: 'muted' }, 'all') },
         { h: 'Limits', cls: 'wrap', v: (t) => (t.limits || []).map((l) => el('div', {},
           `${l.limit}: ${num(l.used)} of ${num(l.max)} this ${l.period} `, pill((100 * l.ratio).toFixed(0) + '%', l.ratio >= 1 ? 'err' : l.ratio >= (t.config.alert_at || 0.8) ? 'warn' : 'ok'))) },
-        { h: '', v: (t) => adminAction('Delete', 'danger', () => change('DELETE', '/substrate/v1/teams/' + enc(t.name), undefined, `Deleted team ${t.name}`, rerender),
+        { h: '', v: (t) => adminAction('Delete', 'danger', () => change('DELETE', '/emx/v1/teams/' + enc(t.name), undefined, `Deleted team ${t.name}`, rerender),
           `Delete team ${t.name}? Its keys keep the label but lose the budgets.`) },
       ], teams, { empty: 'No teams configured.' }),
     ];
@@ -728,7 +728,7 @@ async function config() {
   const body = page('Config');
   const rerender = () => load();
   const load = () => guarded(S.gen, body, async () => {
-    const [st, aliases, prices] = await Promise.all([get('/substrate/v1/reload'), get('/substrate/v1/aliases'), get('/substrate/v1/prices')]);
+    const [st, aliases, prices] = await Promise.all([get('/emx/v1/reload'), get('/emx/v1/aliases'), get('/emx/v1/prices')]);
     currency = prices.currency || currency;
     const priceRows = Object.entries(prices.models || {}).map(([k, p]) => ({ pattern: k, ...p }));
     if (prices.default) priceRows.push({ pattern: 'default', ...prices.default });
@@ -736,11 +736,11 @@ async function config() {
       el('h2', {}, 'Model aliases'),
       el('p', { class: 'muted' }, 'Stable names for clients: point an alias at another model and clients switch within seconds.'),
       settingsForm([{ name: 'alias', label: 'Alias', ph: 'chat-default', required: true }, { name: 'model', label: 'Model', ph: 'registered model', required: true }], {},
-        async (v) => change('PUT', '/substrate/v1/aliases/' + enc(v.alias), { model: v.model }, `${v.alias} → ${v.model}`, rerender), 'Set alias'),
+        async (v) => change('PUT', '/emx/v1/aliases/' + enc(v.alias), { model: v.model }, `${v.alias} → ${v.model}`, rerender), 'Set alias'),
       table([
         { h: 'Alias', v: (r) => r[0] },
         { h: 'Model', v: (r) => r[1] },
-        { h: '', v: (r) => adminAction('Remove', 'danger', () => change('DELETE', '/substrate/v1/aliases/' + enc(r[0]), undefined, `Removed ${r[0]}`, rerender), `Remove alias ${r[0]}?`) },
+        { h: '', v: (r) => adminAction('Remove', 'danger', () => change('DELETE', '/emx/v1/aliases/' + enc(r[0]), undefined, `Removed ${r[0]}`, rerender), `Remove alias ${r[0]}?`) },
       ], Object.entries(aliases), { empty: 'No aliases.' }),
       el('h2', {}, `Prices (${prices.currency} per million tokens)`),
       el('p', { class: 'muted' }, 'Costs requests and drives team budgets. Model names, globs (qwen*) or default.'),
@@ -752,20 +752,20 @@ async function config() {
         { name: 'currency', label: 'Currency', ph: prices.currency },
       ], {}, async (v) => {
         const { pattern, ...rest } = v;
-        await change('PUT', '/substrate/v1/prices/' + enc(pattern), rest, `Priced ${pattern}`, rerender);
+        await change('PUT', '/emx/v1/prices/' + enc(pattern), rest, `Priced ${pattern}`, rerender);
       }, 'Set price'),
       table([
         { h: 'Model', v: (p) => p.pattern },
         { h: 'Prompt', n: 1, v: (p) => String(p.prompt) },
         { h: 'Cached', n: 1, v: (p) => (p.cached == null ? el('span', { class: 'muted' }, '= prompt') : String(p.cached)) },
         { h: 'Completion', n: 1, v: (p) => String(p.completion) },
-        { h: '', v: (p) => adminAction('Remove', 'danger', () => change('DELETE', '/substrate/v1/prices/' + enc(p.pattern), undefined, `Removed the price of ${p.pattern}`, rerender), `Remove the price of ${p.pattern}?`) },
+        { h: '', v: (p) => adminAction('Remove', 'danger', () => change('DELETE', '/emx/v1/prices/' + enc(p.pattern), undefined, `Removed the price of ${p.pattern}`, rerender), `Remove the price of ${p.pattern}?`) },
       ], priceRows, { empty: 'No prices: requests are not costed.' }),
       el('h2', {}, 'Configuration reload'),
       el('p', { class: 'muted' }, 'The gateway re-reads config.yaml and models.yaml when they change, and at once after a change made here. An invalid file is refused and the running configuration stays.'),
       table([{ h: 'Field', v: (r) => r[0] }, { h: 'Value', cls: 'wrap', v: (r) => (r[0].endsWith('_at') || r[0] === 'last_attempt' ? when(r[1]) : String(r[1])) }],
         Object.entries(st)),
-      el('p', {}, adminAction('Reload now', '', () => change('POST', '/substrate/v1/reload', undefined, 'Configuration reloaded', rerender))),
+      el('p', {}, adminAction('Reload now', '', () => change('POST', '/emx/v1/reload', undefined, 'Configuration reloaded', rerender))),
       el('h2', {}, 'Signed in as'), jsonBlock(S.who),
     ];
   });

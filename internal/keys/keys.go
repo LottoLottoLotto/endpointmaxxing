@@ -14,9 +14,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/lock"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/lock"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 
@@ -170,7 +170,7 @@ func newSecret() (secret, hash, prefix string, err error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", "", "", err
 	}
-	secret = "sk-sub-" + hex.EncodeToString(b[:])
+	secret = "sk-emx-" + hex.EncodeToString(b[:])
 	return secret, Hash(secret), secret[:14], nil
 }
 

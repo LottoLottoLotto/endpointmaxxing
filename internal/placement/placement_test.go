@@ -71,7 +71,7 @@ func TestExclusiveEvictsEverythingEvictableOnTheGPU(t *testing.T) {
 	holders := []Holder{{ID: "small", Evictable: true, Idle: true, MiB: map[int]int64{0: 2000}}}
 	d, err := Decide(gpus, nil, holders, Need{Count: 1, Exclusive: true})
 	if err == nil {
-		// 1000 MiB of non-substrate memory remains; the slack absorbs it.
+		// 1000 MiB of non-emx memory remains; the slack absorbs it.
 		if !reflect.DeepEqual(d.Evict, []string{"small"}) {
 			t.Fatalf("got %+v", d)
 		}

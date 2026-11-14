@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
 )
 
 // A multi-model host serves exactly the models it holds now: requests for them go to it
 // under their own names, /v1/models lists them (not the host), and others are not routed there.
 func TestHostServesTheModelsItHolds(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	held := []string{"a"}
 	var served []string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

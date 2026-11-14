@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/policy"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/policy"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 func (g *Gateway) mgmtInstances(w http.ResponseWriter, r *http.Request) {

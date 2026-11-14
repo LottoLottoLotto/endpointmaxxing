@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/lock"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/lock"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 )
 
 // DefaultMaxMB is the rotation size when logging.audit_max_mb is unset.
@@ -259,7 +259,7 @@ func (l *Log) writeHead() error {
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("head anchor not written (substrate audit verify reports the file as ahead of it): %w", err)
+		return fmt.Errorf("head anchor not written (emx audit verify reports the file as ahead of it): %w", err)
 	}
 	return nil
 }
@@ -331,7 +331,7 @@ func (l *Log) resync(size int64) error {
 	}
 	// An unreadable anchor is replaced like a missing one.
 	if a, _ := readHead(l.path); a != nil && a.Count >= seq && a.Hash != last {
-		l.logf("audit log %s: the file does not end with the line its head anchor names (record %d): lines were removed, rewritten or moved away; the next line is chained from the anchor (substrate audit verify)", l.path, a.Count)
+		l.logf("audit log %s: the file does not end with the line its head anchor names (record %d): lines were removed, rewritten or moved away; the next line is chained from the anchor (emx audit verify)", l.path, a.Count)
 		last, seq = a.Hash, a.Count
 	}
 	l.last, l.seq = last, seq

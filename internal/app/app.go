@@ -16,25 +16,25 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/lock"
-	"github.com/LottoLottoLotto/substrate/internal/model"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/route"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
-	"github.com/LottoLottoLotto/substrate/internal/store"
-	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/lock"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/model"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/route"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/tenstorrent"
 )
 
-// App is one loaded view of the user's substrate setup.
+// App is one loaded view of the user's emx setup.
 type App struct {
 	Engines *spec.Registry
 
 	// cfg is replaced whole by Refresh (hot reload); readers keep the snapshot they loaded.
 	cfg atomic.Pointer[config.Config]
-	// overlay adjusts every loaded config (command-line overrides of `substrate serve`).
+	// overlay adjusts every loaded config (command-line overrides of `emx serve`).
 	overlay func(*config.Config)
 
 	mu       sync.Mutex

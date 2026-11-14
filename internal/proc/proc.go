@@ -1,4 +1,4 @@
-// Package proc is what substrate needs from the operating system about processes: whether one is still the
+// Package proc is what emx needs from the operating system about processes: whether one is still the
 // same process that was started, which processes belong to an engine, how much memory they hold, and how to
 // stop them. Each platform file implements:
 //

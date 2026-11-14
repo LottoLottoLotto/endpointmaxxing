@@ -13,17 +13,17 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/policy"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/policy"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // TestPolicyClassificationErrorsAndAudit drives flagged, blocked, failed and unauthenticated requests
 // through the gateway and checks what reaches the engine, the client, the usage database and the audit file.
 func TestPolicyClassificationErrorsAndAudit(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	var forwarded atomic.Int32
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
@@ -73,7 +73,7 @@ func TestPolicyClassificationErrorsAndAudit(t *testing.T) {
 		}
 		out, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return resp.StatusCode, string(out), resp.Header.Get("X-Substrate-Request-Id")
+		return resp.StatusCode, string(out), resp.Header.Get("X-Emx-Request-Id")
 	}
 
 	_, _, plainID := post(user, "Translate 'good night' into French")
@@ -83,7 +83,7 @@ func TestPolicyClassificationErrorsAndAudit(t *testing.T) {
 		t.Fatalf("blocked request: %d %s (want 400 naming the rule, not the matched text)", status, out)
 	}
 	_, _, rejectedID := post(user, "this prompt is too long")
-	if status, _, _ := post("sk-sub-wrong", "hi"); status != http.StatusUnauthorized {
+	if status, _, _ := post("sk-emx-wrong", "hi"); status != http.StatusUnauthorized {
 		t.Fatalf("bad key: %d", status)
 	}
 	if n := forwarded.Load(); n != 3 {
@@ -178,7 +178,7 @@ func TestPolicyClassificationErrorsAndAudit(t *testing.T) {
 // A request longer than policy.scan_max_bytes cannot be inspected whole: where a blocking rule applies
 // it is refused, with that reason, and never reaches the engine.
 func TestRequestsTooLargeToInspectAreBlocked(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	b := newRecordingBackend()
 	defer b.Close()
 	instance(t, "m.fake", "m", b.URL)

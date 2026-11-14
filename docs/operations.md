@@ -6,22 +6,22 @@
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/substrate/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`, `audit_key_file`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts` |
-| `~/.config/substrate/keys.yaml` | gateway API keys (hashes only, mode 0600) |
-| `~/.config/substrate/models.yaml` | model registry: source, format, pinned engine, default flags, engine args |
-| `~/.config/substrate/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |
-| `~/.local/state/substrate/instances/` | one JSON record per instance (mode 0600; the only place holding unmasked environment and arguments) |
-| `~/.local/state/substrate/logs/` | engine logs (kept after stop) |
-| `~/.local/state/substrate/usage.db` | usage database (schema version 6) |
-| `~/.local/state/substrate/audit.jsonl` | audit log, when `logging.audit_file` is set |
-| `~/.local/state/substrate/audit.jsonl.head` | the audit log's head anchor (see [Audit file integrity](governance.md#audit-file-integrity)) |
-| `~/.local/share/substrate/` | engines installed by `substrate engine install` |
+| `~/.config/emx/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`, `audit_key_file`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts` |
+| `~/.config/emx/keys.yaml` | gateway API keys (hashes only, mode 0600) |
+| `~/.config/emx/models.yaml` | model registry: source, format, pinned engine, default flags, engine args |
+| `~/.config/emx/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |
+| `~/.local/state/emx/instances/` | one JSON record per instance (mode 0600; the only place holding unmasked environment and arguments) |
+| `~/.local/state/emx/logs/` | engine logs (kept after stop) |
+| `~/.local/state/emx/usage.db` | usage database (schema version 6) |
+| `~/.local/state/emx/audit.jsonl` | audit log, when `logging.audit_file` is set |
+| `~/.local/state/emx/audit.jsonl.head` | the audit log's head anchor (see [Audit file integrity](governance.md#audit-file-integrity)) |
+| `~/.local/share/emx/` | engines installed by `emx engine install` |
 
-Set `SUBSTRATE_HOME` to keep all of these under one directory.
+Set `EMX_HOME` to keep all of these under one directory.
 
-The usage database is migrated when a newer substrate first opens it.
+The usage database is migrated when a newer emx first opens it.
 Schema version 6 adds the column `requests.client_request_id`; an older
-substrate binary refuses a database that this version has migrated.
+emx binary refuses a database that this version has migrated.
 
 Here is a `config.yaml` with every setting at its default:
 
@@ -73,23 +73,23 @@ tenstorrent:
 gateway:
     host: 0.0.0.0
     tls:
-        cert: /etc/substrate/gateway.pem    # PEM chain
-        key: /etc/substrate/gateway-key.pem
-        client_ca: /etc/substrate/clients-ca.pem   # optional: require client certificates (mutual TLS)
+        cert: /etc/emx/gateway.pem    # PEM chain
+        key: /etc/emx/gateway-key.pem
+        client_ca: /etc/emx/clients-ca.pem   # optional: require client certificates (mutual TLS)
         min_version: "1.2"                   # or "1.3"
 ```
 
-or `substrate serve --tls-cert F --tls-key F [--tls-client-ca F]`. The
+or `emx serve --tls-cert F --tls-key F [--tls-client-ca F]`. The
 gateway then serves only HTTPS. Certificate and key files are re-read within
 seconds of changing on disk, so a renewal (certbot, cert-manager) needs no
-restart. `substrate chat` and `substrate reload` reach a TLS gateway by
+restart. `emx chat` and `emx reload` reach a TLS gateway by
 trusting the system roots plus the configured certificate; under mutual TLS
 they have no client certificate, and `chat` falls back to the engine.
 
 ## Backup
 
 ```sh
-substrate backup --out /backups/substrate-$(date +%F).tar.gz [--audit] [--no-db]
+emx backup --out /backups/emx-$(date +%F).tar.gz [--audit] [--no-db]
 ```
 
 The archive (mode 0600) holds `config/` (`config.yaml`, `models.yaml`,
@@ -100,7 +100,7 @@ audit log, its head anchor (`<audit file>.head`) and its pruning record
 already at `--out`: it stops and leaves it as it is. The audit key file
 (`gateway.audit_key_file`) is not in the archive: keep a copy of it
 separately. To restore, stop the gateway and copy `config/` and `state/` back
-into `~/.config/substrate` and `~/.local/state/substrate`. Key secrets are
+into `~/.config/emx` and `~/.local/state/emx`. Key secrets are
 only stored hashed, but the archive may hold prompts (`logging.bodies`):
 keep it as private as the state directory.
 
@@ -115,14 +115,14 @@ Prometheus text:
 - GPU memory and utilization, and per-instance GPU memory and RSS;
 - failovers, restarts, and dropped usage records;
 - refused-key (401) requests over the stored-per-minute limit
-  (`substrate_auth_denials_unstored_total`, a counter; these are not in
-  `substrate_requests_total`) and request-body memory held by in-flight
-  requests (`substrate_request_body_buffered_bytes`, a gauge bounded by
+  (`emx_auth_denials_unstored_total`, a counter; these are not in
+  `emx_requests_total`) and request-body memory held by in-flight
+  requests (`emx_request_body_buffered_bytes`, a gauge bounded by
   `gateway.max_buffered_mb`);
-- policy matches per rule (`substrate_policy_flags_total`), requests per prompt category
-  (`substrate_requests_by_category_total`) and failures per error kind (`substrate_errors_total`);
-- cost per model and team (`substrate_cost_total`), team budget use
-  (`substrate_team_budget_used_ratio`), key expiry (`substrate_key_expiry_seconds`) and config reloads.
+- policy matches per rule (`emx_policy_flags_total`), requests per prompt category
+  (`emx_requests_by_category_total`) and failures per error kind (`emx_errors_total`);
+- cost per model and team (`emx_cost_total`), team budget use
+  (`emx_team_budget_used_ratio`), key expiry (`emx_key_expiry_seconds`) and config reloads.
 
 The `model` label is `invalid` for requests that were not routed to a model
 and whose model name is not a valid one, and `other` for unrouted model
@@ -130,9 +130,9 @@ names beyond the first 200 distinct ones (see
 [Governance](governance.md#prompt-policy-classification-and-errors)).
 
 ```sh
-substrate service install --enable -- --port 7777   # systemd user unit; PATH captured from this shell
-substrate service status
-substrate service uninstall
+emx service install --enable -- --port 7777   # systemd user unit; PATH captured from this shell
+emx service status
+emx service uninstall
 loginctl enable-linger $USER                         # keep it running after logout
 ```
 
@@ -143,7 +143,7 @@ before exiting.
 
 ## Platforms
 
-substrate runs on Linux, macOS and Windows. Linux is where it is run with real
+emx runs on Linux, macOS and Windows. Linux is where it is run with real
 engines and accelerators; on macOS and Windows the tests and an engine
 start/serve/stop run pass on every change, but real engines have not been
 exercised there yet.
@@ -154,10 +154,10 @@ exercised there yet.
 | Stopping an engine | the manifest's stop signal, then a kill after the stop timeout | same | always a forced termination of the process tree: Windows cannot deliver a signal to another process |
 | File locks | `flock` | `flock` | `LockFileEx` |
 | Owner-only files (0600/0700) | enforced, checked by `doctor` and for key files | same | not checked: access is governed by the ACL of your profile directory, where the files live by default |
-| `substrate engine install` | runs the manifest's shell steps | same | needs a POSIX `sh` on `PATH` (Git for Windows has one); otherwise install the engine yourself and `substrate engine set <id> --bin <path>` |
+| `emx engine install` | runs the manifest's shell steps | same | needs a POSIX `sh` on `PATH` (Git for Windows has one); otherwise install the engine yourself and `emx engine set <id> --bin <path>` |
 | Tenstorrent engines | supported | not available | not available |
 
-On Windows, keep `SUBSTRATE_HOME` (if you set it) inside a directory only you
+On Windows, keep `EMX_HOME` (if you set it) inside a directory only you
 can read: keys, prompts and request records are stored there.
 
 ## Reliability
@@ -170,7 +170,7 @@ can read: keys, prompts and request records are stored there.
 - **Process tracking:**
   - Instances are tracked by PID together with the process start time, so a
     reused PID is never mistaken for an engine.
-  - If an automatically chosen port is taken during startup, substrate
+  - If an automatically chosen port is taken during startup, emx
     retries on a new port.
   - The previous three logs of each instance are kept as `<id>.log.1` to
     `.3`.

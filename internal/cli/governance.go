@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gateway"
-	"github.com/LottoLottoLotto/substrate/internal/policy"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/policy"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 func cmdFlagged() *command {

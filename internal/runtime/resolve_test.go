@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
 func engine(t *testing.T, id string, ov config.EngineOverride) *Engine {
@@ -121,7 +121,7 @@ func TestTTVLLMPlanPlacesPreArgsVarsAndChips(t *testing.T) {
 	}
 	argv := strings.Join(p.Argv, " ")
 	for _, want := range []string{
-		"--name substrate-lfm.tt-vllm",
+		"--name emx-lfm.tt-vllm",
 		"-e TT_VISIBLE_DEVICES=2,3 -e VLLM_API_KEY -e LFM2_SPECULATE=1 --entrypoint", // pre-args sit before the image
 		"lfm25-p150:dev-m12 -m vllm.entrypoints.openai.api_server",                   // an image tag survives path cleaning
 		"MESH_DEVICE=P150x2",
@@ -132,7 +132,7 @@ func TestTTVLLMPlanPlacesPreArgsVarsAndChips(t *testing.T) {
 			t.Fatalf("argv lacks %q:\n%s", want, argv)
 		}
 	}
-	if p.Accelerator != spec.AccelTenstorrent || len(p.Cleanup) != 1 || p.Cleanup[0][3] != "substrate-lfm.tt-vllm" {
+	if p.Accelerator != spec.AccelTenstorrent || len(p.Cleanup) != 1 || p.Cleanup[0][3] != "emx-lfm.tt-vllm" {
 		t.Fatalf("plan %+v", p)
 	}
 }
@@ -143,10 +143,10 @@ func TestMultiHostPlanShipsItsServer(t *testing.T) {
 	if paths.Windows {
 		t.Skip("a Linux-only engine: the manifest's container paths are POSIX paths")
 	}
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	r := Request{ID: "tt-multihost", Name: "tt-multihost", Host: "127.0.0.1", Port: 9000, Devices: []int{0}}
 	if _, err := engine(t, "tt-multihost", config.EngineOverride{}).Build(r); err == nil ||
-		!strings.Contains(err.Error(), "substrate engine set tt-multihost --var image=") {
+		!strings.Contains(err.Error(), "emx engine set tt-multihost --var image=") {
 		t.Fatalf("missing image: %v", err)
 	}
 	e := engine(t, "tt-multihost", config.EngineOverride{Vars: map[string]string{"image": "tt:dev", "models": "/srv/models"}})
@@ -155,7 +155,7 @@ func TestMultiHostPlanShipsItsServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	argv := strings.Join(p.Argv, " ")
-	for _, want := range []string{"-v /srv/models:/srv/models:ro", "-v " + p.Assets + ":/opt/substrate:ro",
+	for _, want := range []string{"-v /srv/models:/srv/models:ro", "-v " + p.Assets + ":/opt/emx:ro",
 		"TT_VISIBLE_DEVICES=0", "tt:dev -m tt_multihost"} {
 		if !strings.Contains(argv, want) {
 			t.Fatalf("argv lacks %q:\n%s", want, argv)
@@ -193,7 +193,7 @@ func TestStrataVarsOverride(t *testing.T) {
 // another id, is no instance, so a planted record is never loaded and its cleanup commands never run.
 func TestLookupsStayInsideTheInstancesDir(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("SUBSTRATE_HOME", home)
+	t.Setenv("EMX_HOME", home)
 	marker := filepath.Join(home, "cleanup-ran")
 	plant := func(path, id string) {
 		t.Helper()

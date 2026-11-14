@@ -5,14 +5,14 @@
 ## Keys and access
 
 ```sh
-substrate key add alice --team research --models 'qwen*' --rpm 60 --expires 90d   # prints the key once
-substrate key add ops --role admin
-substrate key add compliance --role auditor
-substrate key list                       # role, team, expiry, last use, status
-substrate key set alice --expires 2027-01-31 --tokens-per-day 2000000 --max-output-tokens 4096
-substrate key rotate alice --grace 24h   # new secret printed once; the old one works for 24h
-substrate key disable alice              # refused at once, history kept (key enable alice)
-substrate key rm alice
+emx key add alice --team research --models 'qwen*' --rpm 60 --expires 90d   # prints the key once
+emx key add ops --role admin
+emx key add compliance --role auditor
+emx key list                       # role, team, expiry, last use, status
+emx key set alice --expires 2027-01-31 --tokens-per-day 2000000 --max-output-tokens 4096
+emx key rotate alice --grace 24h   # new secret printed once; the old one works for 24h
+emx key disable alice              # refused at once, history kept (key enable alice)
+emx key rm alice
 ```
 
 - **Open mode:** with no keys and no master key, the gateway is open: every
@@ -26,7 +26,7 @@ substrate key rm alice
   - does not carry `Sec-Fetch-Site: cross-site`.
 
   So a web page open in the operator's browser cannot use an open gateway.
-- **Removing the last key:** `substrate key rm` and `substrate key disable`
+- **Removing the last key:** `emx key rm` and `emx key disable`
   print a warning on stderr when no usable key is left. A gateway that was
   not permitted to run open (a non-loopback address without `--insecure`)
   does not become open: it answers 401 to everything until a key exists or
@@ -34,19 +34,19 @@ substrate key rm alice
 - **Once any key exists,** every request needs one, sent as
   `Authorization: Bearer` or `x-api-key`.
 - **`user` keys:** inference and `/v1/models`, limited to their (and their
-  team's) model globs, plus `/substrate/v1/usage` and `/requests` filtered to
+  team's) model globs, plus `/emx/v1/usage` and `/requests` filtered to
   their own records.
 - **`auditor` keys:** read-only: every client's usage and requests, events,
   flags, errors, reports, keys, teams, `/metrics` and `policy/test`. No
   inference, and no starting, stopping or reloading.
-- **`admin` keys:** everything. The master key (`$SUBSTRATE_API_KEY`, or
+- **`admin` keys:** everything. The master key (`$EMX_API_KEY`, or
   `serve --api-key-file F` for a file of mode 0600; never an argument, since
   other users can read command lines) is an admin key.
 - **Lifecycle:** expired and disabled keys get 401, recorded under the key's
   name (`error_kind` `auth_failed`). `key rotate` replaces the secret; the old
   one keeps working until `--grace` ends. `key list` shows when each key was
   last used, from the usage database; Prometheus exports
-  `substrate_key_expiry_seconds`.
+  `emx_key_expiry_seconds`.
   At most 60 `auth_failed` (401) records are stored per minute; see
   [Governance](governance.md#prompt-policy-classification-and-errors).
 - **Quotas:** going over `rpm` or `tokens-per-day` (or a team limit) returns
@@ -61,9 +61,9 @@ substrate key rm alice
   `--max-output-tokens` cap each request's `max_tokens` /
   `max_completion_tokens` (Anthropic `max_tokens`, Responses
   `max_output_tokens`); the lower one wins, and a request without a limit gets
-  the cap. The response says `X-Substrate-Max-Output-Tokens` when it applied.
+  the cap. The response says `X-Emx-Max-Output-Tokens` when it applied.
 - **Storage:** keys are stored only as SHA-256 hashes in
-  `~/.config/substrate/keys.yaml` (mode 0600).
+  `~/.config/emx/keys.yaml` (mode 0600).
 - **Exposure:** binding to an address other than loopback requires at least
   one key or a master key, or `--insecure`, and warns while the gateway
   serves plain HTTP. `--insecure` allows open mode on that address and lets
@@ -77,12 +77,12 @@ substrate key rm alice
 ## Teams, prices and budgets
 
 ```sh
-substrate price set 'qwen3.8-*' --prompt 0.40 --completion 1.20 --cached 0.10   # per million tokens
-substrate price set default --prompt 0.20 --completion 0.60 --currency EUR
-substrate team set research --tokens-per-month 500000000 --budget-per-month 2000 --alert-at 0.8 --models 'qwen*'
-substrate key set alice --team research
-substrate team list                       # each limit's use this day/month
-substrate usage --by team --since 30d     # tokens and cost per team
+emx price set 'qwen3.8-*' --prompt 0.40 --completion 1.20 --cached 0.10   # per million tokens
+emx price set default --prompt 0.20 --completion 0.60 --currency EUR
+emx team set research --tokens-per-month 500000000 --budget-per-month 2000 --alert-at 0.8 --models 'qwen*'
+emx key set alice --team research
+emx team list                       # each limit's use this day/month
+emx usage --by team --since 30d     # tokens and cost per team
 ```
 
 - **Prices** are per million tokens: an exact model name wins over the
@@ -99,4 +99,4 @@ substrate usage --by team --since 30d     # tokens and cost per team
   completes. A team's `models` globs narrow what its keys may use.
 - **Alerts:** crossing `alert_at` (default 80%) of any limit logs a line and
   records a `budget_alert` event, once per limit and period; Prometheus
-  exports `substrate_team_budget_used_ratio` for alerting rules.
+  exports `emx_team_budget_used_ratio` for alerting rules.

@@ -1,6 +1,6 @@
-// Package bench measures models substrate serves and publishes the results to LocalMaxxing. Measurement,
+// Package bench measures models emx serves and publishes the results to LocalMaxxing. Measurement,
 // verification evidence and upload are lmx's job (the LocalMaxxing CLI); this package works out what lmx
-// needs to know about the model, engine and hardware from substrate's registry and running instances.
+// needs to know about the model, engine and hardware from emx's registry and running instances.
 package bench
 
 import (
@@ -13,10 +13,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/gpu"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gpu"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
 )
 
 // Meta is everything a submission says about the setup, with where each value came from.
@@ -41,7 +41,7 @@ type Meta struct {
 	Problems []string `json:"problems,omitempty"`
 }
 
-// lmxEngineNames maps substrate engine ids to LocalMaxxing engine names.
+// lmxEngineNames maps emx engine ids to LocalMaxxing engine names.
 var lmxEngineNames = map[string]string{
 	"llama.cpp":      "llama.cpp",
 	"buun-llama-cpp": "llama.cpp",
@@ -127,10 +127,10 @@ func Resolve(a *app.App, m config.Model, in *runtime.Instance) *Meta {
 	}
 
 	if meta.HFID == "" {
-		meta.Problems = append(meta.Problems, fmt.Sprintf("no Hugging Face id: substrate bench config %s --hf-id org/repo", m.Name))
+		meta.Problems = append(meta.Problems, fmt.Sprintf("no Hugging Face id: emx bench config %s --hf-id org/repo", m.Name))
 	}
 	if meta.Quantization == "" {
-		meta.Problems = append(meta.Problems, fmt.Sprintf("no quantization label: substrate bench config %s --quantization Q4_K_M", m.Name))
+		meta.Problems = append(meta.Problems, fmt.Sprintf("no quantization label: emx bench config %s --quantization Q4_K_M", m.Name))
 	}
 	if meta.EngineCommit != "" && meta.Sources["engine_commit"] == "detected" && meta.EngineRepository == "" {
 		meta.Problems = append(meta.Problems, "the engine checkout's commit is on no remote branch: publish it or set --engine-commit/--engine-repository")
@@ -206,7 +206,7 @@ func DetectHardware(in *runtime.Instance) (map[string]any, []string) {
 			b, ok := ttBoards[typ]
 			if !ok {
 				b.name = "Tenstorrent " + strings.ToUpper(typ)
-				problems = append(problems, fmt.Sprintf("Tenstorrent board %q is not in substrate's table: check the name and memory", typ))
+				problems = append(problems, fmt.Sprintf("Tenstorrent board %q is not in emx's table: check the name and memory", typ))
 			}
 			names[b.name]++
 			mem += b.gb
@@ -231,7 +231,7 @@ func DetectHardware(in *runtime.Instance) (map[string]any, []string) {
 		setGPUs(hw, names, mem, &problems)
 	default:
 		hw["hwClass"] = "CPU"
-		problems = append(problems, "the instance uses no GPU or Tenstorrent chip that substrate knows of: set bench.hardware")
+		problems = append(problems, "the instance uses no GPU or Tenstorrent chip that emx knows of: set bench.hardware")
 	}
 	return hw, problems
 }

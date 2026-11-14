@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/lock"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/policy"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/lock"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/policy"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,7 +47,7 @@ type Config struct {
 	Aliases map[string]string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 }
 
-// Tenstorrent configures how substrate shares Tenstorrent chips with other jobs.
+// Tenstorrent configures how emx shares Tenstorrent chips with other jobs.
 type Tenstorrent struct {
 	// Lock is the per-chip lock file; {n} is the chip index. Every job on a card must use the same file.
 	Lock string `yaml:"lock" json:"lock"`
@@ -68,7 +68,7 @@ type Swap struct {
 	WaitTimeout spec.Duration `yaml:"wait_timeout" json:"wait_timeout"`
 }
 
-// Gateway configures `substrate serve`.
+// Gateway configures `emx serve`.
 type Gateway struct {
 	Host string `yaml:"host" json:"host"`
 	Port int    `yaml:"port" json:"port"`
@@ -118,7 +118,7 @@ type Gateway struct {
 	MaxBufferedMB int `yaml:"max_buffered_mb" json:"max_buffered_mb"`
 	// AuditKeyFile names a file holding a secret of at least 32 bytes, accessible by its owner only (relative
 	// paths are under the config directory). With it the audit file's chain is keyed (HMAC-SHA256): a file
-	// rewritten without the secret does not verify (substrate audit verify). The gateway refuses to start
+	// rewritten without the secret does not verify (emx audit verify). The gateway refuses to start
 	// when the file is missing, accessible by group or others, or too short.
 	AuditKeyFile string `yaml:"audit_key_file,omitempty" json:"audit_key_file,omitempty"`
 }
@@ -153,7 +153,7 @@ type Logging struct {
 	// (0 keeps them forever). Audit retention is usually longer than usage retention.
 	AuditRetentionDays int `yaml:"audit_retention_days,omitempty" json:"audit_retention_days,omitempty"`
 	// AuditFile appends one JSON line per request (no bodies), refused API key, administrative change and
-	// alert, hash-chained so edits and deletions are detectable (substrate audit verify), for shipping to a
+	// alert, hash-chained so edits and deletions are detectable (emx audit verify), for shipping to a
 	// SIEM or log pipeline; relative paths are under the state directory. Empty disables it.
 	AuditFile string `yaml:"audit_file,omitempty" json:"audit_file,omitempty"`
 	// AuditMaxMB rotates the audit file when it grows past this size (default 100); rotated files keep the chain.

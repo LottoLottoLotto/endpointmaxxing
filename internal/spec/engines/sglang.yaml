@@ -1,4 +1,4 @@
-spec: substrate.engine/v1
+spec: emx.engine/v1
 id: sglang
 name: SGLang
 description: RadixAttention serving runtime for Hugging Face checkpoints.
@@ -14,7 +14,7 @@ binary:
   version: [-c, "import sglang; print(sglang.__version__)"]
 
 install:
-  notes: Installs SGLang into its own virtualenv under the substrate data dir.
+  notes: Installs SGLang into its own virtualenv under the emx data dir.
   steps:
     - python3 -m venv "{data}/venvs/sglang"
     - '"{data}/venvs/sglang/bin/pip" install -U "sglang[all]"'

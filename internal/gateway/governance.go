@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/audit"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/policy"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/audit"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/policy"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // Inspector applies config.yaml's policy and classify sections to request bodies.

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 )
 
 // setJSONField returns body with key set to value (value is already JSON), or body unchanged on error.

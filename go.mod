@@ -1,4 +1,4 @@
-module github.com/LottoLottoLotto/substrate
+module github.com/LottoLottoLotto/endpointmaxxing
 
 go 1.26.0
 

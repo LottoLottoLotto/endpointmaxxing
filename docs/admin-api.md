@@ -5,31 +5,31 @@
 ## Management API
 
 For agents that only speak HTTP, the gateway also offers a management API
-under `/substrate/v1/`:
+under `/emx/v1/`:
 
 | Method | Path | Body or query | Result |
 | --- | --- | --- | --- |
-| GET | `/substrate/v1/instances` | | instances with status, in-flight requests, idle state, last use; secrets masked (see below) |
-| POST | `/substrate/v1/ensure` | `{"model", "engine"?, "timeout"?}` | a ready instance (placed, evicting if needed) |
-| POST | `/substrate/v1/stop` | `{"id"}` (instance id or model name) | waits for in-flight requests, then stops; 404 `no instance` for an unknown or malformed id |
-| GET | `/substrate/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client`, `team`, `category`, `error_kind`, `errors`, `flagged`, `min_severity`, `rule` | aggregates (with cost) |
-| GET | `/substrate/v1/requests` | same filters, plus `id` (the gateway's request id or the client's `X-Request-Id`) and `limit` | request records |
-| GET | `/substrate/v1/events` | `since`, `until`, `model`, `engine`, `instance`, `kind` (`admin`, `exited`, `budget_alert`, ...), `limit` | lifecycle events, budget alerts, config reloads, admin trail |
-| GET | `/substrate/v1/flags` | same filters | policy matches by rule and detector |
-| GET | `/substrate/v1/errors` | same filters | failed requests by error kind |
-| GET | `/substrate/v1/report` | same filters (`since` defaults to `24h`) | totals, cost, models, teams, clients, categories, flags, errors |
-| GET | `/substrate/v1/keys` | | keys with role, team, expiry, status and last use (no secrets) |
-| GET | `/substrate/v1/teams` | | team limits and their use this day and month |
-| POST | `/substrate/v1/policy/test` | `{"text"}` or `{"body"}`, optionally `model`, `client`, `api` (at most `gateway.max_body_mb`) | category and flags, nothing sent to a model |
-| GET / POST | `/substrate/v1/reload` | | last reload outcome / re-read the config now (400 with the error if it is invalid) |
-| GET | `/substrate/v1/whoami` | | the caller's key name, role and team |
+| GET | `/emx/v1/instances` | | instances with status, in-flight requests, idle state, last use; secrets masked (see below) |
+| POST | `/emx/v1/ensure` | `{"model", "engine"?, "timeout"?}` | a ready instance (placed, evicting if needed) |
+| POST | `/emx/v1/stop` | `{"id"}` (instance id or model name) | waits for in-flight requests, then stops; 404 `no instance` for an unknown or malformed id |
+| GET | `/emx/v1/usage` | `by`, `since`, `until`, `model`, `engine`, `instance`, `client`, `team`, `category`, `error_kind`, `errors`, `flagged`, `min_severity`, `rule` | aggregates (with cost) |
+| GET | `/emx/v1/requests` | same filters, plus `id` (the gateway's request id or the client's `X-Request-Id`) and `limit` | request records |
+| GET | `/emx/v1/events` | `since`, `until`, `model`, `engine`, `instance`, `kind` (`admin`, `exited`, `budget_alert`, ...), `limit` | lifecycle events, budget alerts, config reloads, admin trail |
+| GET | `/emx/v1/flags` | same filters | policy matches by rule and detector |
+| GET | `/emx/v1/errors` | same filters | failed requests by error kind |
+| GET | `/emx/v1/report` | same filters (`since` defaults to `24h`) | totals, cost, models, teams, clients, categories, flags, errors |
+| GET | `/emx/v1/keys` | | keys with role, team, expiry, status and last use (no secrets) |
+| GET | `/emx/v1/teams` | | team limits and their use this day and month |
+| POST | `/emx/v1/policy/test` | `{"text"}` or `{"body"}`, optionally `model`, `client`, `api` (at most `gateway.max_body_mb`) | category and flags, nothing sent to a model |
+| GET / POST | `/emx/v1/reload` | | last reload outcome / re-read the config now (400 with the error if it is invalid) |
+| GET | `/emx/v1/whoami` | | the caller's key name, role and team |
 
 - **JSON bodies only.** Every POST, PUT, PATCH or DELETE under
-  `/substrate/v1/` that has a body must send `Content-Type:
+  `/emx/v1/` that has a body must send `Content-Type:
   application/json`, or it gets 415. This includes `ensure`, `stop`,
   `reload`, `policy/test` and the settings API. Calls without a body need no
   content type.
-- **Masked instance output.** In `GET /substrate/v1/instances`, the `ensure`
+- **Masked instance output.** In `GET /emx/v1/instances`, the `ensure`
   response and the CLI's `ps` and `inspect` output, every `env` value is
   shown as `***` (names are kept). Argument values are shown as `***` when
   they follow an option whose name has the word `key`, `apikey`, `token`,
@@ -45,25 +45,25 @@ under `/substrate/v1/`:
 
 ### Settings API
 
-Admins change the same settings as `substrate key|team|price|alias|model`
+Admins change the same settings as `emx key|team|price|alias|model`
 over HTTP. Both go through one code path, so validation, warnings and the
 admin trail are identical.
 
 | Method | Path | Body | Result |
 | --- | --- | --- | --- |
-| POST | `/substrate/v1/keys` | `{"name", "role"?, "team"?, "models"?, "rpm"?, "tokens_per_day"?, "max_output_tokens"?, "expires"?}` | 201, the key and its `secret` (shown only now) |
-| PATCH | `/substrate/v1/keys/{name}` | any of the fields above except `name`; `""` / `[]` clear `team` / `models`, `"expires": "never"` | the key |
-| POST | `/substrate/v1/keys/{name}/rotate` | `{"grace"?: "24h"}` | the new `secret`; the old one works until `old_secret_valid_until` |
-| POST | `/substrate/v1/keys/{name}/disable`, `/enable` | | refused at once / restored |
-| DELETE | `/substrate/v1/keys/{name}` | | revoked |
-| PUT / DELETE | `/substrate/v1/teams/{name}` | `{"tokens_per_day"?, "tokens_per_month"?, "budget_per_month"?, "alert_at"?, "models"?}` | creates or changes the team / removes it |
-| GET | `/substrate/v1/prices` | | currency, default and per-model prices |
-| PUT / DELETE | `/substrate/v1/prices/{model\|glob\|default}` | `{"prompt", "completion", "cached"?, "currency"?}` | sets / removes a price |
-| GET | `/substrate/v1/aliases` | | alias → model |
-| PUT / DELETE | `/substrate/v1/aliases/{alias}` | `{"model"}` | sets / removes an alias |
-| GET | `/substrate/v1/models` | | the registry, with `source_missing` for entries whose files are gone |
-| POST | `/substrate/v1/models` | `{"name", "source", "engine"?, "force"?, "flags"?, "vram_mib"?, "idle_unload"?, "max_concurrency"?, "devices"?}` | 201, the entry and its route |
-| DELETE | `/substrate/v1/models/{name}` | | removed from the registry (running instances keep running) |
+| POST | `/emx/v1/keys` | `{"name", "role"?, "team"?, "models"?, "rpm"?, "tokens_per_day"?, "max_output_tokens"?, "expires"?}` | 201, the key and its `secret` (shown only now) |
+| PATCH | `/emx/v1/keys/{name}` | any of the fields above except `name`; `""` / `[]` clear `team` / `models`, `"expires": "never"` | the key |
+| POST | `/emx/v1/keys/{name}/rotate` | `{"grace"?: "24h"}` | the new `secret`; the old one works until `old_secret_valid_until` |
+| POST | `/emx/v1/keys/{name}/disable`, `/enable` | | refused at once / restored |
+| DELETE | `/emx/v1/keys/{name}` | | revoked |
+| PUT / DELETE | `/emx/v1/teams/{name}` | `{"tokens_per_day"?, "tokens_per_month"?, "budget_per_month"?, "alert_at"?, "models"?}` | creates or changes the team / removes it |
+| GET | `/emx/v1/prices` | | currency, default and per-model prices |
+| PUT / DELETE | `/emx/v1/prices/{model\|glob\|default}` | `{"prompt", "completion", "cached"?, "currency"?}` | sets / removes a price |
+| GET | `/emx/v1/aliases` | | alias → model |
+| PUT / DELETE | `/emx/v1/aliases/{alias}` | `{"model"}` | sets / removes an alias |
+| GET | `/emx/v1/models` | | the registry, with `source_missing` for entries whose files are gone |
+| POST | `/emx/v1/models` | `{"name", "source", "engine"?, "force"?, "flags"?, "vram_mib"?, "idle_unload"?, "max_concurrency"?, "devices"?}` | 201, the entry and its route |
+| DELETE | `/emx/v1/models/{name}` | | removed from the registry (running instances keep running) |
 
 Changes to config.yaml and models.yaml apply at once; responses carry
 `warnings` (an unconfigured team, a budget without prices, an alias to an
@@ -79,12 +79,12 @@ Security:
   pre-args, engine binaries and environment are not settable over HTTP: they
   reach command lines and container options on the host. Use the CLI there.
   Unified flags are, since they are validated per type, except host-only
-  ones (currently `trust_remote_code`): `POST /substrate/v1/models` returns
+  ones (currently `trust_remote_code`): `POST /emx/v1/models` returns
   400 if `flags` contains one, whatever its value. Set it on the host with
-  `substrate model add ... --trust-remote-code`.
-- **No host environment.** `POST /substrate/v1/models` returns 400 if
+  `emx model add ... --trust-remote-code`.
+- **No host environment.** `POST /emx/v1/models` returns 400 if
   `source` contains `$`: environment variables are expanded only by
-  `substrate model add` on the host (`~` is still expanded). A missing source
+  `emx model add` on the host (`~` is still expanded). A missing source
   returns 404 with the source as written, for example
   `~/x/m.gguf: no such file or directory`.
 - **No self-lockout.** A key cannot delete, disable or demote itself; use
@@ -105,7 +105,7 @@ The gateway serves a web admin UI at `/admin/` (for example
 the management API instead.
 
 - **A client of the management API only.** The page holds no data and has no
-  routes of its own. Everything it shows or does is a `/substrate/v1` call
+  routes of its own. Everything it shows or does is a `/emx/v1` call
   with the key you sign in with, so the same role rules and admin trail apply.
 - **Sign in** with an `admin` or `auditor` key (or the master key). The key is
   kept in that browser tab only (`sessionStorage`) and sent as a bearer token,
@@ -139,17 +139,17 @@ the management API instead.
   | 9 | forbidden |
 
   With `--json`, a failure prints `{"error": "...", "code": "not_found"}`.
-- **Discovery:** `substrate commands --json` lists every command with its
+- **Discovery:** `emx commands --json` lists every command with its
   flags, their types and defaults, and the matching MCP tool name.
-- **Idempotent start:** `substrate ensure <model>` returns a ready instance:
+- **Idempotent start:** `emx ensure <model>` returns a ready instance:
   an existing one, one that is still loading (it waits), or a newly started
   one. Call it before every use.
-- **One-shot request:** `substrate chat <model> "prompt"` goes through the
+- **One-shot request:** `emx chat <model> "prompt"` goes through the
   gateway when it is running. Otherwise it ensures an instance and calls it
   directly. Either way the request is metered.
-- **MCP:** `substrate mcp` speaks MCP over stdio. Each command becomes a tool
-  named `substrate_<command>`, for example `substrate_ensure`,
-  `substrate_chat`, `substrate_usage` and `substrate_model_add`. Tool
+- **MCP:** `emx mcp` speaks MCP over stdio. Each command becomes a tool
+  named `emx_<command>`, for example `emx_ensure`,
+  `emx_chat`, `emx_usage` and `emx_model_add`. Tool
   arguments mirror the command's flags, plus `args` for positional arguments.
 
   An agent acts on what it reads, and what it reads may have been written by
@@ -159,12 +159,12 @@ the management API instead.
   `--trust-remote-code`, and flags that name a file to read (`--prompt-file`,
   `--hardware`, `--file`, `--key-file`). With them left out an agent can
   register, start, stop, measure and inspect models, but cannot be talked
-  into running a program. `substrate mcp --allow-host` offers everything the
+  into running a program. `emx mcp --allow-host` offers everything the
   CLI does; the agent then has the access of a shell on this host.
-  `substrate commands --json` marks these commands and flags `host_only`.
+  `emx commands --json` marks these commands and flags `host_only`.
 
   ```json
-  { "mcpServers": { "substrate": { "command": "substrate", "args": ["mcp"] } } }
+  { "mcpServers": { "emx": { "command": "emx", "args": ["mcp"] } } }
   ```
 
-  For Claude Code: `claude mcp add substrate -- substrate mcp`.
+  For Claude Code: `claude mcp add emx -- emx mcp`.

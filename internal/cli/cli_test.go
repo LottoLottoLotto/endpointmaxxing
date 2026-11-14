@@ -12,7 +12,7 @@ import (
 )
 
 func TestExitCodes(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	cases := map[string]struct {
 		args []string
 		code int
@@ -54,12 +54,12 @@ func TestSchemaCoversEveryCommand(t *testing.T) {
 func TestToolArgv(t *testing.T) {
 	var run mcpTool
 	for _, tl := range tools(true) {
-		if tl.Name == "substrate_run" {
+		if tl.Name == "emx_run" {
 			run = tl
 		}
 	}
 	if run.argv == nil {
-		t.Fatal("no substrate_run tool")
+		t.Fatal("no emx_run tool")
 	}
 	argv, err := run.argv(map[string]any{"args": []any{"m"}, "ctx": float64(4096), "flash-attn": true, "engine_args": []any{"--x", "1"}})
 	if err != nil {
@@ -80,7 +80,7 @@ func TestMCPToolsLeaveOutHostInputsByDefault(t *testing.T) {
 	for _, tl := range tools(false) {
 		byName[tl.Name] = tl
 	}
-	for _, name := range []string{"substrate_engine_add", "substrate_engine_set"} {
+	for _, name := range []string{"emx_engine_add", "emx_engine_set"} {
 		if _, ok := byName[name]; ok {
 			t.Errorf("%s is offered without --allow-host", name)
 		}
@@ -93,12 +93,12 @@ func TestMCPToolsLeaveOutHostInputsByDefault(t *testing.T) {
 		return tl.InputSchema["properties"].(map[string]any)
 	}
 	for tool, hidden := range map[string][]string{
-		"substrate_run":          {"engine_args", "trust-remote-code"},
-		"substrate_ensure":       {"engine_args", "trust-remote-code"},
-		"substrate_model_add":    {"engine_args", "var", "pre-arg", "trust-remote-code"},
-		"substrate_bench_run":    {"prompt-file"},
-		"substrate_bench_config": {"hardware"},
-		"substrate_policy_test":  {"file"},
+		"emx_run":          {"engine_args", "trust-remote-code"},
+		"emx_ensure":       {"engine_args", "trust-remote-code"},
+		"emx_model_add":    {"engine_args", "var", "pre-arg", "trust-remote-code"},
+		"emx_bench_run":    {"prompt-file"},
+		"emx_bench_config": {"hardware"},
+		"emx_policy_test":  {"file"},
 	} {
 		p := props(tool)
 		for _, name := range hidden {
@@ -107,8 +107,8 @@ func TestMCPToolsLeaveOutHostInputsByDefault(t *testing.T) {
 			}
 		}
 	}
-	if _, ok := props("substrate_run")["ctx"]; !ok {
-		t.Error("substrate_run lost its ordinary flags")
+	if _, ok := props("emx_run")["ctx"]; !ok {
+		t.Error("emx_run lost its ordinary flags")
 	}
 	for _, in := range []map[string]any{
 		{"args": []any{"m"}, "engine_args": []any{"--x"}},
@@ -118,27 +118,27 @@ func TestMCPToolsLeaveOutHostInputsByDefault(t *testing.T) {
 		{"args": []any{"--trust-remote-code", "m"}},
 		{"args": []any{"m", "--var=image=x"}},
 	} {
-		if _, err := byName["substrate_run"].argv(in); err == nil {
-			t.Errorf("substrate_run accepted %v without --allow-host", in)
+		if _, err := byName["emx_run"].argv(in); err == nil {
+			t.Errorf("emx_run accepted %v without --allow-host", in)
 		}
 	}
 	all := map[string]bool{}
 	for _, tl := range tools(true) {
 		all[tl.Name] = true
 	}
-	if !all["substrate_engine_add"] || !all["substrate_engine_set"] {
+	if !all["emx_engine_add"] || !all["emx_engine_set"] {
 		t.Error("--allow-host does not offer the engine tools")
 	}
 }
 
 func TestMCPSession(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"substrate_version","arguments":{}}}`,
-		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"substrate_stop","arguments":{"args":["nope"]}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"emx_version","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"emx_stop","arguments":{"args":["nope"]}}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"nope"}`,
 	}, "\n") + "\n"
 	var out bytes.Buffer

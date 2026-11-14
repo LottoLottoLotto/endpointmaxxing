@@ -3,7 +3,7 @@
 #
 #   scripts/package.sh v0.1.0
 #
-# Linux and macOS get substrate_<version>_<os>_<arch>.tar.gz, Windows gets a .zip holding substrate.exe.
+# Linux and macOS get emx_<version>_<os>_<arch>.tar.gz, Windows gets a .zip holding emx.exe.
 # Each archive also carries LICENSE, NOTICE and README.md. Binaries are static (no cgo).
 set -euo pipefail
 
@@ -17,13 +17,13 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
   goos="${target%/*}"
   goarch="${target#*/}"
   stage="$(mktemp -d)"
-  bin=substrate
-  [ "$goos" = windows ] && bin=substrate.exe
+  bin=emx
+  [ "$goos" = windows ] && bin=emx.exe
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
-    -ldflags "-s -w -X github.com/LottoLottoLotto/substrate/internal/cli.Version=${tag}" \
-    -o "$stage/$bin" ./cmd/substrate
+    -ldflags "-s -w -X github.com/LottoLottoLotto/endpointmaxxing/internal/cli.Version=${tag}" \
+    -o "$stage/$bin" ./cmd/emx
   cp LICENSE NOTICE README.md "$stage/"
-  name="substrate_${version}_${goos}_${goarch}"
+  name="emx_${version}_${goos}_${goarch}"
   if [ "$goos" = windows ]; then
     (cd "$stage" && zip -q "$OLDPWD/dist/$name.zip" "$bin" LICENSE NOTICE README.md)
   else
@@ -33,4 +33,4 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
   echo "built $name"
 done
 
-(cd dist && sha256sum substrate_* > checksums.txt)
+(cd dist && sha256sum emx_* > checksums.txt)

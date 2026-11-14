@@ -26,7 +26,7 @@ The initial public feature set, to be released as 0.1.0.
 - Lifecycle commands for every engine: `run`, `ensure`, `ps`, `stop`, `logs`,
   `health`, with whole-process-group shutdown and cleanup of orphaned
   workers.
-- `substrate serve`: one OpenAI- and Anthropic-compatible gateway
+- `emx serve`: one OpenAI- and Anthropic-compatible gateway
   (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`,
   `/v1/messages`, `/v1/embeddings`, `/v1/rerank`) that routes by `model`,
   starts registered models on demand and fails over between replicas.
@@ -52,23 +52,23 @@ The initial public feature set, to be released as 0.1.0.
   kinds.
 - Data protection: owner-only files, `secure_delete`, separate usage and
   audit retention, per-client erasure, and a hash-chained, self-rotating
-  audit file with `substrate audit verify`.
-- Management API and settings API under `/substrate/v1/`, a web admin UI at
+  audit file with `emx audit verify`.
+- Management API and settings API under `/emx/v1/`, a web admin UI at
   `/admin/`, alert webhooks and an admin trail of every administrative
   change.
-- Agent support: JSON output, stable exit codes, `substrate commands --json`
-  and `substrate mcp` (every command as an MCP tool).
+- Agent support: JSON output, stable exit codes, `emx commands --json`
+  and `emx mcp` (every command as an MCP tool).
 - Operations: TLS with certificate reload and optional mutual TLS,
-  Prometheus `/metrics`, `substrate service` (systemd user unit),
-  `substrate backup` and `substrate doctor`.
-- `substrate bench`: measures a served model and publishes results to
+  Prometheus `/metrics`, `emx service` (systemd user unit),
+  `emx backup` and `emx doctor`.
+- `emx bench`: measures a served model and publishes results to
   LocalMaxxing through `lmx`.
 
 ### Changed
 
 Entries marked "breaking" can break existing clients.
 
-- Breaking: every POST, PUT, PATCH or DELETE under `/substrate/v1/` with a
+- Breaking: every POST, PUT, PATCH or DELETE under `/emx/v1/` with a
   body must send `Content-Type: application/json` (415 otherwise), including
   `ensure`, `stop`, `reload` and `policy/test`.
 - Breaking: inference request bodies must be exactly one JSON object;
@@ -82,9 +82,9 @@ Entries marked "breaking" can break existing clients.
   (default 64 MiB, was 256 MiB; 413 beyond it).
 - Breaking: a client's `X-Request-Id` is no longer the usage record's id.
   The gateway always generates the id and returns it as
-  `X-Substrate-Request-Id` and `X-Request-Id`; the client's value is stored
+  `X-Emx-Request-Id` and `X-Request-Id`; the client's value is stored
   as `client_request_id`, and `requests?id=` matches either.
-- Breaking: instance output (`GET /substrate/v1/instances`, the `ensure`
+- Breaking: instance output (`GET /emx/v1/instances`, the `ensure`
   response, `ps`, `inspect`) shows every `env` value and secret-looking
   argument values as `***`.
 - Rate limits and budgets are checked before the request body is read, and
@@ -99,26 +99,26 @@ Entries marked "breaking" can break existing clients.
   `invalid`; metrics count unrouted model names beyond the first 200 as
   `other`.
 - At most 60 `auth_failed` (401) records are stored per minute; the rest are
-  counted in the new metric `substrate_auth_denials_unstored_total`. New
-  gauge `substrate_request_body_buffered_bytes`.
+  counted in the new metric `emx_auth_denials_unstored_total`. New
+  gauge `emx_request_body_buffered_bytes`.
 - Usage database schema version 6 (`requests.client_request_id`); older
   binaries refuse a migrated database.
 - Manifest field `launch.api_key_env`; `vllm` (`VLLM_API_KEY`), `llama.cpp`
   and `buun-llama-cpp` (`LLAMA_API_KEY`) now receive the engine key in the
-  environment. `substrate flags --json` reports `host_only` per flag.
-- `substrate key rm` and `key disable` warn on stderr when no usable key is
+  environment. `emx flags --json` reports `host_only` per flag.
+- `emx key rm` and `key disable` warn on stderr when no usable key is
   left.
-- `substrate backup --audit` also archives the audit head anchor.
+- `emx backup --audit` also archives the audit head anchor.
 - A missing model source is reported as written
   (`~/x/m.gguf: no such file or directory`).
 
 ### Security
 
-- `substrate mcp` no longer offers inputs that choose what the host runs or
+- `emx mcp` no longer offers inputs that choose what the host runs or
   reads (`engine add`, `engine set`, engine arguments, `--var`, `--pre-arg`,
   `--trust-remote-code`, file-path flags) unless started with `--allow-host`.
   Breaking for agents that used them.
-- `substrate engine add` lists the commands a manifest makes substrate run
+- `emx engine add` lists the commands a manifest makes emx run
   and installs it only with `--trust`. Breaking: scripts must add the flag.
 - `bench run` passes the model's API key to `lmx` in `LMX_MODEL_API_KEY`
   instead of on its command line; an `lmx` without that feature is refused
@@ -130,14 +130,14 @@ Entries marked "breaking" can break existing clients.
   `chat_template_kwargs` (a client can no longer supply a chat template),
   requires `Content-Type: application/json` on POST, answers only when
   addressed by IP address or as localhost, and caps bodies at 64 MiB.
-- `substrate logs` no longer reads files outside the logs directory.
+- `emx logs` no longer reads files outside the logs directory.
 - A model file with endlessly nested metadata arrays is refused instead of
   crashing the process; names taken from model files are cut to 64 printable
   characters.
 - Human-readable output shows control characters as `\xNN` instead of
   sending them to the terminal, and `--csv` output prefixes cells that a
   spreadsheet would run as formulas with an apostrophe.
-- `substrate backup` never removes or overwrites an existing file at `--out`.
+- `emx backup` never removes or overwrites an existing file at `--out`.
 - Tenstorrent chip locks: a symbolic link in a lock's place is not followed,
   an unreadable lock counts as held, and a chip reset holds the chip's lock.
 - `audit verify` fails when the oldest lines were deleted (retention records
@@ -156,7 +156,7 @@ Entries marked "breaking" can break existing clients.
   and rerank `query` / `documents`; a request too large to scan
   (`policy.scan_max_bytes`) is refused when a blocking rule applies
   (detector `too_large`).
-- Settings API: `POST /substrate/v1/models` refuses host-only flags
+- Settings API: `POST /emx/v1/models` refuses host-only flags
   (`trust_remote_code`) and `$` in `source`.
 - Instance ids are validated (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`), so
   `stop` and lookups cannot leave the instances directory.
@@ -165,8 +165,8 @@ Entries marked "breaking" can break existing clients.
   receives `--api-key` there.
 - Audit file: lines carry `seq`, the chain head is recorded in
   `<audit file>.head`, and `gateway.audit_key_file` keys the chain
-  (HMAC-SHA256). `substrate audit verify` detects a truncated or rewritten
+  (HMAC-SHA256). `emx audit verify` detects a truncated or rewritten
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/substrate/commits/main
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/commits/main

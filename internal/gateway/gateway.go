@@ -25,14 +25,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/meter"
-	"github.com/LottoLottoLotto/substrate/internal/model"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/meter"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/model"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // maxBody is the hard upper bound on a buffered request body (images ride inline as base64);
@@ -201,21 +201,21 @@ func (g *Gateway) Handler() http.Handler {
 		mux.HandleFunc("POST "+path, g.authed(roleInfer, g.proxy))
 		mux.HandleFunc("POST "+path+"/", g.authed(roleInfer, g.proxy))
 	}
-	mux.HandleFunc("GET /substrate/v1/instances", g.authed(roleRead, g.mgmtInstances))
-	mux.HandleFunc("POST /substrate/v1/ensure", g.authed(roleAdmin, g.mgmtEnsure))
-	mux.HandleFunc("POST /substrate/v1/stop", g.authed(roleAdmin, g.mgmtStop))
-	mux.HandleFunc("GET /substrate/v1/usage", g.authed(roleAny, g.mgmtUsage))
-	mux.HandleFunc("GET /substrate/v1/requests", g.authed(roleAny, g.mgmtRequests))
-	mux.HandleFunc("GET /substrate/v1/events", g.authed(roleRead, g.mgmtEvents))
-	mux.HandleFunc("GET /substrate/v1/flags", g.authed(roleRead, g.mgmtFlags))
-	mux.HandleFunc("GET /substrate/v1/errors", g.authed(roleRead, g.mgmtErrors))
-	mux.HandleFunc("GET /substrate/v1/report", g.authed(roleRead, g.mgmtReport))
-	mux.HandleFunc("GET /substrate/v1/keys", g.authed(roleRead, g.mgmtKeys))
-	mux.HandleFunc("GET /substrate/v1/teams", g.authed(roleRead, g.mgmtTeams))
-	mux.HandleFunc("POST /substrate/v1/policy/test", g.authed(roleRead, g.mgmtPolicyTest))
-	mux.HandleFunc("GET /substrate/v1/reload", g.authed(roleRead, g.mgmtReloadStatus))
-	mux.HandleFunc("POST /substrate/v1/reload", g.authed(roleAdmin, g.mgmtReload))
-	mux.HandleFunc("GET /substrate/v1/whoami", g.authed(roleAny, g.whoami))
+	mux.HandleFunc("GET /emx/v1/instances", g.authed(roleRead, g.mgmtInstances))
+	mux.HandleFunc("POST /emx/v1/ensure", g.authed(roleAdmin, g.mgmtEnsure))
+	mux.HandleFunc("POST /emx/v1/stop", g.authed(roleAdmin, g.mgmtStop))
+	mux.HandleFunc("GET /emx/v1/usage", g.authed(roleAny, g.mgmtUsage))
+	mux.HandleFunc("GET /emx/v1/requests", g.authed(roleAny, g.mgmtRequests))
+	mux.HandleFunc("GET /emx/v1/events", g.authed(roleRead, g.mgmtEvents))
+	mux.HandleFunc("GET /emx/v1/flags", g.authed(roleRead, g.mgmtFlags))
+	mux.HandleFunc("GET /emx/v1/errors", g.authed(roleRead, g.mgmtErrors))
+	mux.HandleFunc("GET /emx/v1/report", g.authed(roleRead, g.mgmtReport))
+	mux.HandleFunc("GET /emx/v1/keys", g.authed(roleRead, g.mgmtKeys))
+	mux.HandleFunc("GET /emx/v1/teams", g.authed(roleRead, g.mgmtTeams))
+	mux.HandleFunc("POST /emx/v1/policy/test", g.authed(roleRead, g.mgmtPolicyTest))
+	mux.HandleFunc("GET /emx/v1/reload", g.authed(roleRead, g.mgmtReloadStatus))
+	mux.HandleFunc("POST /emx/v1/reload", g.authed(roleAdmin, g.mgmtReload))
+	mux.HandleFunc("GET /emx/v1/whoami", g.authed(roleAny, g.whoami))
 	g.settingsRoutes(mux)
 	mux.Handle("GET /admin/", uiHandler())
 	mux.Handle("GET /admin", http.RedirectHandler("/admin/", http.StatusMovedPermanently))
@@ -265,11 +265,11 @@ func (g *Gateway) setStatus(id, st string) {
 }
 
 type modelEntry struct {
-	ID        string         `json:"id"`
-	Object    string         `json:"object"`
-	Created   int64          `json:"created"`
-	OwnedBy   string         `json:"owned_by"`
-	Substrate map[string]any `json:"substrate"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	OwnedBy string         `json:"owned_by"`
+	EMX     map[string]any `json:"emx"`
 }
 
 // models lists running instances and registered models (one entry per name) the caller may use.
@@ -279,8 +279,8 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	entry := func(name string, created int64) *modelEntry {
 		e := byName[name]
 		if e == nil {
-			e = &modelEntry{ID: name, Object: "model", Created: created, OwnedBy: "substrate",
-				Substrate: map[string]any{"instances": []map[string]any{}}}
+			e = &modelEntry{ID: name, Object: "model", Created: created, OwnedBy: "emx",
+				EMX: map[string]any{"instances": []map[string]any{}}}
 			byName[name] = e
 		}
 		return e
@@ -299,7 +299,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			e := entry(n, in.StartedAt.Unix())
-			e.Substrate["instances"] = append(e.Substrate["instances"].([]map[string]any),
+			e.EMX["instances"] = append(e.EMX["instances"].([]map[string]any),
 				map[string]any{"id": in.ID, "engine": in.Engine, "status": g.instanceStatus(r.Context(), in), "apis": in.APIs, "gpus": in.GPUs})
 		}
 	}
@@ -309,13 +309,13 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		e := entry(m.Name, 0)
-		e.Substrate["registered"] = true
-		e.Substrate["format"] = m.Format
+		e.EMX["registered"] = true
+		e.EMX["format"] = m.Format
 		if model.MissingLocal(m.Source) {
-			e.Substrate["source_missing"] = true // its files are gone: starting it fails until restored
+			e.EMX["source_missing"] = true // its files are gone: starting it fails until restored
 		}
 		if m.Engine != "" {
-			e.Substrate["engine"] = m.Engine
+			e.EMX["engine"] = m.Engine
 		}
 	}
 	for alias, target := range g.App.Config().Aliases {
@@ -323,7 +323,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		e := entry(alias, 0)
-		e.Substrate["alias_for"] = target
+		e.EMX["alias_for"] = target
 	}
 	names := make([]string, 0, len(byName))
 	for n := range byName {
@@ -389,7 +389,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	rec := &store.Request{ID: newID(), ClientRequestID: clip(r.Header.Get("X-Request-Id"), 128), TS: start.UnixMilli(), API: api,
 		Path: clip(r.URL.Path, maxStoredField), UserAgent: clip(r.UserAgent(), maxStoredField), Remote: clientIP(r),
 		Client: clip(p.client(r), maxStoredField)}
-	w.Header().Set("X-Substrate-Request-Id", rec.ID)
+	w.Header().Set("X-Emx-Request-Id", rec.ID)
 	w.Header().Set("X-Request-Id", rec.ID)
 	lv := g.live() // this request keeps one config snapshot from here on
 	logging := lv.cfg.Logging
@@ -447,7 +447,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if target, ok := lv.cfg.Alias(req.Model); ok {
-		w.Header().Set("X-Substrate-Alias", req.Model)
+		w.Header().Set("X-Emx-Alias", req.Model)
 		body = setJSONField(body, "model", target)
 		req.Model = target
 	}
@@ -511,7 +511,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if limit := outputCap(lv.cfg.Gateway.MaxOutputTokens, keyCap); limit > 0 {
 		var capped bool
 		if body, capped = capOutputTokens(body, api, limit); capped {
-			w.Header().Set("X-Substrate-Max-Output-Tokens", fmt.Sprint(limit))
+			w.Header().Set("X-Emx-Max-Output-Tokens", fmt.Sprint(limit))
 		}
 	}
 
@@ -582,7 +582,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 			pr.Out.ContentLength = int64(len(body))
 			pr.Out.Header.Del("x-api-key")
 			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("X-Substrate-Client")
+			pr.Out.Header.Del("X-Emx-Client")
 			pr.Out.Header.Set("X-Request-Id", reqID)
 			// The body parsed as JSON; strict engines (vLLM) reject other declared types.
 			pr.Out.Header.Set("Content-Type", "application/json")
@@ -599,8 +599,8 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("X-Request-Id") // the client gets the gateway's id, set already
-			mw.Header().Set("X-Substrate-Instance", in.ID)
-			mw.Header().Set("X-Substrate-Engine", in.Engine)
+			mw.Header().Set("X-Emx-Instance", in.ID)
+			mw.Header().Set("X-Emx-Engine", in.Engine)
 			return nil
 		},
 	}

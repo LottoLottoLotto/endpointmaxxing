@@ -1,4 +1,4 @@
-spec: substrate.engine/v1
+spec: emx.engine/v1
 id: llama.cpp
 name: llama.cpp (llama-server)
 description: ggml-org's C/C++ engine; GGUF on CPU, CUDA, ROCm, Metal, Vulkan.

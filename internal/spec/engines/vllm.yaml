@@ -1,4 +1,4 @@
-spec: substrate.engine/v1
+spec: emx.engine/v1
 id: vllm
 name: vLLM
 description: High-throughput PagedAttention server for Hugging Face checkpoints.
@@ -12,7 +12,7 @@ binary:
   version: [--version]
 
 install:
-  notes: Installs vLLM into its own virtualenv under the substrate data dir.
+  notes: Installs vLLM into its own virtualenv under the emx data dir.
   steps:
     - python3 -m venv "{data}/venvs/vllm"
     - '"{data}/venvs/vllm/bin/pip" install -U vllm'

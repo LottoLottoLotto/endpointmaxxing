@@ -8,7 +8,7 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 )
 
 // Builtin engines may ship files (e.g. the server a container runs) in assets/<id>/.

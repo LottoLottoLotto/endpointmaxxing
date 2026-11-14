@@ -1,6 +1,6 @@
 """Checks on what a request may bring, kept free of device imports so they can be run anywhere.
 
-The server listens on a port published on the host. Besides substrate, a web page open in a browser on that
+The server listens on a port published on the host. Besides emx, a web page open in a browser on that
 host can reach it, so requests a page could forge are refused:
 
 - a Host that is a name other than localhost: a page that re-points its own domain at 127.0.0.1 (DNS

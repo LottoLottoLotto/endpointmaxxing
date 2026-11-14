@@ -1,4 +1,4 @@
-// Package cli implements the substrate command line and the MCP server that
+// Package cli implements the emx command line and the MCP server that
 // exposes the same commands as tools.
 package cli
 
@@ -17,12 +17,12 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
-// Version is set at build time with -ldflags "-X github.com/LottoLottoLotto/substrate/internal/cli.Version=...".
+// Version is set at build time with -ldflags "-X github.com/LottoLottoLotto/endpointmaxxing/internal/cli.Version=...".
 var Version = "dev"
 
 // env is what every command receives.
@@ -41,7 +41,7 @@ type env struct {
 	a *app.App
 }
 
-// app opens the substrate setup once per invocation.
+// app opens the emx setup once per invocation.
 func (e *env) app() (*app.App, error) {
 	if e.a != nil {
 		return e.a, nil
@@ -75,7 +75,7 @@ func (e *env) out(v any, human func(w io.Writer)) error {
 	return nil
 }
 
-// plain is where human-readable output goes: what substrate prints includes text other people chose (model
+// plain is where human-readable output goes: what emx prints includes text other people chose (model
 // names and paths of requests, client names, user agents, error messages, names inside model files), and a
 // terminal would obey control sequences in it (clear the screen, rewrite earlier lines). Control characters
 // other than newline and tab are shown as \xNN instead.
@@ -152,7 +152,7 @@ func (e *env) table(header string, rows [][]string) {
 }
 
 // warn writes to stderr (never pollutes --json stdout).
-func (e *env) warn(f string, a ...any) { fmt.Fprintf(e.stderr, "substrate: "+f+"\n", a...) }
+func (e *env) warn(f string, a ...any) { fmt.Fprintf(e.stderr, "emx: "+f+"\n", a...) }
 
 // progress writes human progress lines to stderr, suppressed in --json mode.
 func (e *env) progress(f string, a ...any) {
@@ -175,7 +175,7 @@ type command struct {
 	// tool exposes the command over MCP.
 	tool bool
 	// host marks a command whose inputs choose programs this host runs (an engine manifest, an engine's
-	// binary, environment and arguments). MCP offers it only with `substrate mcp --allow-host`.
+	// binary, environment and arguments). MCP offers it only with `emx mcp --allow-host`.
 	host bool
 	// passthrough means args after -- are engine arguments.
 	passthrough bool
@@ -200,7 +200,7 @@ func aliasOf(name, summary string, target *command) *command {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintf(w, "substrate: one CLI and one endpoint for every inference engine.\n\nUsage: substrate [--json | --csv] <command> [args]\n\nCommands:\n")
+	fmt.Fprintf(w, "emx (EndpointMaxxing): one CLI and one endpoint for every inference engine.\n\nUsage: emx [--json | --csv] <command> [args]\n\nCommands:\n")
 	for _, c := range commands() {
 		fmt.Fprintf(w, "  %-9s %s\n", c.name, c.summary)
 		for _, s := range c.sub {
@@ -211,7 +211,7 @@ func usage(w io.Writer) {
 --json (anywhere before --) prints machine-readable output; errors become {"error","code"}.
 --csv prints tables as CSV (usage, requests, report, team list, key list, flagged, errors, ...).
 Exit codes: 0 ok, 1 error, 2 usage, 3 not_found, 4 timeout, 5 engine_failed, 6 conflict, 7 unsupported.
-'substrate commands --json' describes every command and flag; 'substrate mcp' serves them as MCP tools.
+'emx commands --json' describes every command and flag; 'emx mcp' serves them as MCP tools.
 `)
 }
 
@@ -306,7 +306,7 @@ func Main(args []string) int {
 	} else {
 		e.warn("%v", err)
 		if code == errs.Usage {
-			fmt.Fprintln(e.stderr, "run 'substrate help' or 'substrate <command> -h'")
+			fmt.Fprintln(e.stderr, "run 'emx help' or 'emx <command> -h'")
 		}
 	}
 	return errs.Exit[code]
@@ -343,7 +343,7 @@ func parse(fs *flag.FlagSet, args []string, help io.Writer) (pos, passthrough []
 func newFlags(name, synopsis string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: substrate %s %s\n\n", name, synopsis)
+		fmt.Fprintf(fs.Output(), "Usage: emx %s %s\n\n", name, synopsis)
 		fs.PrintDefaults()
 	}
 	return fs
@@ -449,7 +449,7 @@ type FlagSchema struct {
 	Default string `json:"default,omitempty"`
 	Usage   string `json:"usage"`
 	// HostOnly marks an input that chooses what this host runs or which of its files are read; MCP offers
-	// it only with `substrate mcp --allow-host`.
+	// it only with `emx mcp --allow-host`.
 	HostOnly bool `json:"host_only,omitempty"`
 }
 
@@ -505,7 +505,7 @@ func flagType(f *flag.Flag) string {
 	return "string"
 }
 
-func toolName(path string) string { return "substrate_" + strings.ReplaceAll(path, " ", "_") }
+func toolName(path string) string { return "emx_" + strings.ReplaceAll(path, " ", "_") }
 
 // schemas describes every runnable command (aliases excluded).
 func schemas() []CommandSchema {
@@ -548,7 +548,7 @@ func cmdCommands() *command {
 				return e.out(map[string]any{"version": Version, "spec": spec.Version, "exit_codes": errs.Exit, "commands": s},
 					func(w io.Writer) {
 						for _, c := range s {
-							fmt.Fprintf(w, "substrate %s %s\n    %s\n", c.Command, c.Synopsis, c.Summary)
+							fmt.Fprintf(w, "emx %s %s\n    %s\n", c.Command, c.Synopsis, c.Summary)
 						}
 					})
 			}
@@ -560,7 +560,7 @@ func cmdVersion() *command {
 		build: func(fs *flag.FlagSet) action {
 			return func(e *env, _, _ []string) error {
 				return e.out(map[string]string{"version": Version, "spec": spec.Version}, func(w io.Writer) {
-					fmt.Fprintf(w, "substrate %s (%s)\n", Version, spec.Version)
+					fmt.Fprintf(w, "emx %s (%s)\n", Version, spec.Version)
 				})
 			}
 		}}

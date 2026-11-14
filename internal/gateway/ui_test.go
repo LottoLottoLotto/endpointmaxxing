@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LottoLottoLotto/substrate/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
 )
 
 func TestWhoamiReportsRoleAndTeam(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	user, _ := keys.Add(keys.Key{Name: "alice", Role: keys.RoleUser, Team: "research"})
 	auditor, _ := keys.Add(keys.Key{Name: "audit", Role: keys.RoleAuditor})
 	g, srv := newGateway(t)
@@ -22,7 +22,7 @@ func TestWhoamiReportsRoleAndTeam(t *testing.T) {
 		{auditor, "audit", keys.RoleAuditor, ""},
 		{"master", "admin", keys.RoleAdmin, ""},
 	} {
-		req, _ := http.NewRequest("GET", srv.URL+"/substrate/v1/whoami", nil)
+		req, _ := http.NewRequest("GET", srv.URL+"/emx/v1/whoami", nil)
 		req.Header.Set("Authorization", "Bearer "+tc.key)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -38,14 +38,14 @@ func TestWhoamiReportsRoleAndTeam(t *testing.T) {
 			t.Errorf("%s: %d %+v", tc.name, resp.StatusCode, got)
 		}
 	}
-	if s := call(t, "GET", srv.URL+"/substrate/v1/whoami", "wrong", ""); s != http.StatusUnauthorized {
+	if s := call(t, "GET", srv.URL+"/emx/v1/whoami", "wrong", ""); s != http.StatusUnauthorized {
 		t.Fatalf("unknown key: %d", s)
 	}
 }
 
 // The UI's files are public (they hold no data); everything it shows still needs a key.
 func TestAdminUIServedWithoutDataOrFraming(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	_, srv := newGateway(t)
 
@@ -66,17 +66,17 @@ func TestAdminUIServedWithoutDataOrFraming(t *testing.T) {
 			t.Errorf("%s: %d", f, s)
 		}
 	}
-	if s := call(t, "GET", srv.URL+"/substrate/v1/report", "", ""); s != http.StatusUnauthorized {
+	if s := call(t, "GET", srv.URL+"/emx/v1/report", "", ""); s != http.StatusUnauthorized {
 		t.Fatalf("report without a key: %d", s)
 	}
 }
 
 // Clients (the admin UI, agents) iterate these answers: no match must be [], not null.
 func TestEmptyListsAreArrays(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	_, srv := newGateway(t)
-	for _, p := range []string{"/substrate/v1/requests?client=nobody", "/substrate/v1/events?kind=none", "/substrate/v1/usage?by=model"} {
+	for _, p := range []string{"/emx/v1/requests?client=nobody", "/emx/v1/events?kind=none", "/emx/v1/usage?by=model"} {
 		req, _ := http.NewRequest("GET", srv.URL+p, nil)
 		req.Header.Set("Authorization", "Bearer "+admin)
 		resp, err := http.DefaultClient.Do(req)

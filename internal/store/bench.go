@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// Benchmark is one measured configuration of `substrate bench run` (one concurrency level).
+// Benchmark is one measured configuration of `emx bench run` (one concurrency level).
 type Benchmark struct {
 	ID           string   `json:"id"`
 	TS           int64    `json:"ts"`

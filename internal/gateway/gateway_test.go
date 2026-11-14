@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // selfStartTick is this process's /proc starttime, so a recorded instance pointing at it counts as alive.
@@ -31,7 +31,7 @@ func selfStartTick(t *testing.T) uint64 {
 }
 
 func TestProxyRoutesByModelAndAPI(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	var gotBody, gotAuth string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
@@ -77,7 +77,7 @@ func TestProxyRoutesByModelAndAPI(t *testing.T) {
 		t.Fatalf("bad client key: status %d", resp.StatusCode)
 	}
 	resp, out := post("/v1/chat/completions", body, "client-key")
-	if resp.StatusCode != 200 || resp.Header.Get("X-Substrate-Instance") != "m.fake" || gotBody != body {
+	if resp.StatusCode != 200 || resp.Header.Get("X-Emx-Instance") != "m.fake" || gotBody != body {
 		t.Fatalf("proxy: status %d out %s body %q", resp.StatusCode, out, gotBody)
 	}
 	// The client's key is replaced by the engine's own.
@@ -107,7 +107,7 @@ func fakeInstance(t *testing.T, backend *httptest.Server, apis ...string) {
 }
 
 func TestStreamIsMeteredAndUsageRequested(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			return
@@ -140,7 +140,7 @@ func TestStreamIsMeteredAndUsageRequested(t *testing.T) {
 	defer srv.Close()
 
 	req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true,"messages":[]}`))
-	req.Header.Set("X-Substrate-Client", "agent-7")
+	req.Header.Set("X-Emx-Client", "agent-7")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestStreamIsMeteredAndUsageRequested(t *testing.T) {
 	if !strings.Contains(string(out), `"usage"`) {
 		t.Fatalf("client did not get the stream: %s", out)
 	}
-	id := resp.Header.Get("X-Substrate-Request-Id")
+	id := resp.Header.Get("X-Emx-Request-Id")
 	g.Close() // flush the usage writer
 
 	db, err := a.DB()
@@ -170,7 +170,7 @@ func TestStreamIsMeteredAndUsageRequested(t *testing.T) {
 
 // Streamed tokens are only metered from the final usage chunk: a client may not turn it off.
 func TestStreamUsageIsForced(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	b := newRecordingBackend()
 	defer b.Close()
 	instance(t, "m.fake", "m", b.URL)

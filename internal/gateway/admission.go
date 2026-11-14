@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
 )
 
 // ---- open mode ----
@@ -51,13 +51,13 @@ func sameOrigin(origin string, r *http.Request) bool {
 // opened to a network on purpose) and must not come from another site.
 func (g *Gateway) openModeRefusal(r *http.Request) string {
 	if !g.Insecure && !loopbackHost(r.Host) {
-		return fmt.Sprintf("without API keys the gateway only answers requests addressed to localhost, not to %q; create keys (substrate key add) or start serve with --insecure", clip(r.Host, 128))
+		return fmt.Sprintf("without API keys the gateway only answers requests addressed to localhost, not to %q; create keys (emx key add) or start serve with --insecure", clip(r.Host, 128))
 	}
 	if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
-		return "without API keys the gateway refuses requests made by other web sites (Sec-Fetch-Site: cross-site); create keys (substrate key add)"
+		return "without API keys the gateway refuses requests made by other web sites (Sec-Fetch-Site: cross-site); create keys (emx key add)"
 	}
 	if _, sent := r.Header["Origin"]; sent && !sameOrigin(r.Header.Get("Origin"), r) {
-		return fmt.Sprintf("without API keys the gateway refuses requests from another origin (%q); create keys (substrate key add)", clip(r.Header.Get("Origin"), 128))
+		return fmt.Sprintf("without API keys the gateway refuses requests from another origin (%q); create keys (emx key add)", clip(r.Header.Get("Origin"), 128))
 	}
 	return ""
 }
@@ -65,7 +65,7 @@ func (g *Gateway) openModeRefusal(r *http.Request) string {
 // needsJSON reports whether r is a management or settings call with a body whose Content-Type is not
 // application/json: a browser can send other types across origins without a preflight.
 func needsJSON(r *http.Request) bool {
-	if !strings.HasPrefix(r.URL.Path, "/substrate/v1/") || r.ContentLength == 0 {
+	if !strings.HasPrefix(r.URL.Path, "/emx/v1/") || r.ContentLength == 0 {
 		return false
 	}
 	switch r.Method {

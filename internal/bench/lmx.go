@@ -20,14 +20,14 @@ type LMX struct {
 	Log io.Writer
 }
 
-// FindLMX locates lmx: $SUBSTRATE_LMX, then PATH.
+// FindLMX locates lmx: $EMX_LMX, then PATH.
 func FindLMX() (*LMX, error) {
-	if p := os.Getenv("SUBSTRATE_LMX"); p != "" {
+	if p := os.Getenv("EMX_LMX"); p != "" {
 		return &LMX{Bin: p}, nil
 	}
 	p, err := exec.LookPath("lmx")
 	if err != nil {
-		return nil, fmt.Errorf("lmx (the LocalMaxxing CLI) is not on PATH: install it (https://github.com/LottoLottoLotto/localmaxxing-cli) or set SUBSTRATE_LMX")
+		return nil, fmt.Errorf("lmx (the LocalMaxxing CLI) is not on PATH: install it (https://github.com/LottoLottoLotto/localmaxxing-cli) or set EMX_LMX")
 	}
 	return &LMX{Bin: p}, nil
 }
@@ -245,7 +245,7 @@ func (l *LMX) Submit(ctx context.Context, payload string) (*Verdict, error) {
 }
 
 // Receipt reports the submission lmx already recorded in payload (its "submissionId"), if any: such a run
-// was uploaded even if substrate did not learn of it.
+// was uploaded even if emx did not learn of it.
 func Receipt(payload string) (id, status string) {
 	data, err := os.ReadFile(payload)
 	if err != nil {

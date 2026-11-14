@@ -8,16 +8,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/audit"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gpu"
-	"github.com/LottoLottoLotto/substrate/internal/proc"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
-	"github.com/LottoLottoLotto/substrate/internal/store"
-	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/audit"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gpu"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/proc"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/tenstorrent"
 )
 
 // Run starts the background loops until ctx ends: exit monitor (and crash
@@ -103,7 +103,7 @@ func (g *Gateway) pick(ctx context.Context, model, api string) ([]*runtime.Insta
 	}
 	g.Reload() // see a model added since; an invalid config keeps the running one (logged)
 	if _, ok := g.App.RegisteredModel(model); !ok {
-		return nil, false, errs.New(errs.NotFound, "model %q is neither running nor registered (see `substrate model add`)", model)
+		return nil, false, errs.New(errs.NotFound, "model %q is neither running nor registered (see `emx model add`)", model)
 	}
 	g.addWaiting(model, 1)
 	defer g.addWaiting(model, -1)

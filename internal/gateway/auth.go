@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // errQuota is answered with 429.
@@ -51,7 +51,7 @@ func (p *principal) client(r *http.Request) string {
 	if p.key != nil {
 		return p.name
 	}
-	return r.Header.Get("X-Substrate-Client")
+	return r.Header.Get("X-Emx-Client")
 }
 
 type ctxKey struct{}
@@ -174,7 +174,7 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 	}
 	if g.APIKey == "" && len(byHash) == 0 {
 		if !g.AllowOpen { // decided when serve started: removing the last key must not open a networked gateway
-			return nil, errs.New(errs.Forbidden, "no API keys exist and this gateway does not run open; create one (substrate key add) or restart serve with a master key")
+			return nil, errs.New(errs.Forbidden, "no API keys exist and this gateway does not run open; create one (emx key add) or restart serve with a master key")
 		}
 		return &principal{role: keys.RoleAdmin, open: true}, nil
 	}
@@ -228,7 +228,7 @@ func (g *Gateway) authed(level int, h http.HandlerFunc) http.HandlerFunc {
 // logDenied records a request refused before reaching its handler (bad, expired or disabled key, a role
 // too low for the route, or a request open mode does not answer); client is the key's name when it is known.
 // Refused keys (401) cost an attacker nothing to produce: only maxStoredDenials a minute are stored, the
-// rest are counted in substrate_auth_denials_unstored_total.
+// rest are counted in emx_auth_denials_unstored_total.
 func (g *Gateway) logDenied(r *http.Request, client string, status int, msg string) {
 	now := time.Now()
 	if status == http.StatusUnauthorized && !g.denials.allow(now) {

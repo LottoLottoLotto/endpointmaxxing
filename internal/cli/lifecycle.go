@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gateway"
-	"github.com/LottoLottoLotto/substrate/internal/meter"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/store"
-	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/meter"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/tenstorrent"
 )
 
 // launchFlags are shared by run and ensure.
@@ -116,7 +116,7 @@ func cmdRun() *command {
 					e.progress("waiting for %s ...", in.HealthURL)
 					if err := a.AwaitReady(ctx, in, *l.timeout); err != nil {
 						if ctx.Err() != nil {
-							return fmt.Errorf("interrupted; %s keeps loading (substrate stop %s)", in.ID, in.ID)
+							return fmt.Errorf("interrupted; %s keeps loading (emx stop %s)", in.ID, in.ID)
 						}
 						return err
 					}
@@ -519,7 +519,7 @@ func chat(ctx context.Context, e *env, model string, body map[string]any, via st
 	var in *runtime.Instance
 	client := chatClient
 	if useGateway {
-		res.Via, url, key, client = "gateway", gwBase+"/v1/chat/completions", os.Getenv("SUBSTRATE_API_KEY"), gwClient
+		res.Via, url, key, client = "gateway", gwBase+"/v1/chat/completions", os.Getenv("EMX_API_KEY"), gwClient
 	} else {
 		r, err := a.Ensure(ctx, model, app.LaunchOpts{Owner: e.owner}, 0)
 		if err != nil {
@@ -533,7 +533,7 @@ func chat(ctx context.Context, e *env, model string, body map[string]any, via st
 	payload, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Substrate-Client", "substrate-"+e.owner)
+	req.Header.Set("X-Emx-Client", "emx-"+e.owner)
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
@@ -549,8 +549,8 @@ func chat(ctx context.Context, e *env, model string, body map[string]any, via st
 	}
 	res.TookMS = time.Since(start).Milliseconds()
 	if useGateway {
-		res.RequestID = resp.Header.Get("X-Substrate-Request-Id")
-		res.Instance, res.Engine = resp.Header.Get("X-Substrate-Instance"), resp.Header.Get("X-Substrate-Engine")
+		res.RequestID = resp.Header.Get("X-Emx-Request-Id")
+		res.Instance, res.Engine = resp.Header.Get("X-Emx-Instance"), resp.Header.Get("X-Emx-Engine")
 	} else {
 		res.RequestID = logDirect(a, e, in, payload, data, resp.StatusCode, start, sent)
 	}
@@ -601,7 +601,7 @@ func logDirect(a *app.App, e *env, in *runtime.Instance, reqBody, respBody []byt
 	q := sent.Sub(start).Milliseconds()
 	r := &store.Request{ID: fmt.Sprintf("req_cli_%d", time.Now().UnixNano()), TS: start.UnixMilli(), Model: in.Name,
 		Instance: in.ID, Engine: in.Engine, API: "chat", Path: "/v1/chat/completions", Status: status,
-		Client: "substrate-" + e.owner, PromptTokens: u.Prompt, CompletionTokens: u.Completion, CachedTokens: u.Cached,
+		Client: "emx-" + e.owner, PromptTokens: u.Prompt, CompletionTokens: u.Completion, CachedTokens: u.Cached,
 		ReasoningTokens: u.Reasoning, UsageSource: u.Source, FinishReason: u.Finish, QueueMS: &q, DurationMS: &d,
 		ReqBytes: int64(len(reqBody)), RespBytes: int64(len(respBody))}
 	switch {

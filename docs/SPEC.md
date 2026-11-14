@@ -1,16 +1,16 @@
-# substrate engine manifest — `substrate.engine/v1`
+# EndpointMaxxing engine manifest — `emx.engine/v1`
 
-An inference engine joins substrate by publishing one YAML manifest. A
+An inference engine joins emx by publishing one YAML manifest. A
 manifest declares how to find the engine, install it, launch it, check that
-it is ready, translate the unified flags, and what it can serve. substrate
+it is ready, translate the unified flags, and what it can serve. emx
 contains no engine-specific code. The builtin engines in
 [`internal/spec/engines/`](../internal/spec/engines) are ordinary manifests
 written against this spec.
 
 ```sh
-substrate engine validate my-engine.yaml   # check against the spec
-substrate engine add my-engine.yaml        # list the commands the manifest makes substrate run
-substrate engine add my-engine.yaml --trust   # install into ~/.config/substrate/engines/
+emx engine validate my-engine.yaml   # check against the spec
+emx engine add my-engine.yaml        # list the commands the manifest makes emx run
+emx engine add my-engine.yaml --trust   # install into ~/.config/emx/engines/
 ```
 
 A manifest is a program. Its probe runs whenever engines are looked up
@@ -24,7 +24,7 @@ A user manifest whose `id` matches a builtin engine replaces that builtin.
 
 ## Server contract
 
-An engine that substrate manages must:
+An engine that emx manages must:
 
 1. Run in the foreground as one process tree, serving HTTP on the `{port}` it
    is given and the `{host}` it is given, if it accepts a host.
@@ -33,14 +33,14 @@ An engine that substrate manages must:
 3. Serve the OpenAI- or Anthropic-compatible paths that it lists in
    `capabilities.apis`.
 4. Exit cleanly on `launch.stop_signal`. If it is still running after
-   `launch.stop_timeout`, substrate kills the process group with SIGKILL.
-5. Write its logs to stdout and stderr. substrate captures both in
-   `~/.local/state/substrate/logs/<instance>.log`.
+   `launch.stop_timeout`, emx kills the process group with SIGKILL.
+5. Write its logs to stdout and stderr. emx captures both in
+   `~/.local/state/emx/logs/<instance>.log`.
 
 ## Fields
 
 ```yaml
-spec: substrate.engine/v1        # required, exact
+spec: emx.engine/v1        # required, exact
 id: my-engine                    # required, [a-z0-9][a-z0-9._-]*
 name: My Engine                  # required
 description: one line            # optional
@@ -57,7 +57,7 @@ binary:                          # how to find the entry point
 vars:                            # optional extra placeholders, expanded in order of name
   root: "{bin_dir}/.."
 
-install:                         # optional: `substrate engine install <id>`
+install:                         # optional: `emx engine install <id>`
   notes: shown before the steps
   steps:                         # each runs with `sh -c` in the data dir; stops at the first failure
     - git clone https://... "{data}/engines/my-engine"
@@ -70,12 +70,12 @@ launch:
   stop_timeout: 30s              # default 30s
   api_key_env: MY_ENGINE_API_KEY # optional: pass the unified --api-key in this environment variable, not in the command
   prepare: [[mkdir, -p, "{cache}"]]                 # optional: run before each launch; failure aborts it
-  cleanup: [[docker, rm, -f, "substrate-{instance}"]] # optional: run after every stop and after a crash
+  cleanup: [[docker, rm, -f, "emx-{instance}"]] # optional: run after every stop and after a crash
 
 accelerator:                     # optional; default {kind: nvidia}
   kind: tenstorrent              # nvidia | tenstorrent
   devices: 1                     # chips per instance (models override with --devices)
-  lock: substrate                # substrate: the engine inherits the per-chip locks; engine: it takes them itself
+  lock: emx                # emx: the engine inherits the per-chip locks; engine: it takes them itself
   reset_on_kill: true            # tt-smi -r the chips after a forced stop or a crash
 
 host:                            # optional: a multi-model host (see below)
@@ -119,10 +119,10 @@ memory:                          # GPU memory need, for placement (default: weig
 | --- | --- | --- |
 | `weights` | file size × `factor` ÷ GPUs + `overhead_mib` | engines that allocate what they load (llama.cpp) |
 | `fraction` | `--mem-fraction` (or `default_fraction`) × GPU size + `overhead_mib` | engines that preallocate a share (vLLM, SGLang) |
-| `exclusive` | the whole GPU; other substrate instances on it are evicted | engines that fill free memory (Strata on CUDA) |
+| `exclusive` | the whole GPU; other emx instances on it are evicted | engines that fill free memory (Strata on CUDA) |
 | `none` | nothing; placement is skipped | CPU-only builds, non-NVIDIA accelerators |
 
-After an instance becomes ready, substrate measures its real GPU footprint.
+After an instance becomes ready, emx measures its real GPU footprint.
 For `weights` mode, the largest measurement from the last 30 days replaces
 the estimate. For `fraction` mode, the larger of the measurement and the
 formula is used. `model add --vram-mib N` overrides everything. A single
@@ -134,7 +134,7 @@ install can override the block in `config.yaml`, under
 | Placeholder | Value |
 | --- | --- |
 | `{bin}`, `{bin_dir}` | resolved entry point and its directory |
-| `{home}`, `{data}`, `{state}` | home, substrate data dir, substrate state dir |
+| `{home}`, `{data}`, `{state}` | home, emx data dir, emx state dir |
 | `{model}` | local path, or the Hugging Face repo id when the model is not downloaded |
 | `{model_path}` | local file or directory. If the command uses it, launching an undownloaded repo fails |
 | `{name}` | served model name, which is the API `model` id |
@@ -187,7 +187,7 @@ empty and `launch.api_key_env` unset. Each load sends the model's `--ctx`.
 
 ## Unified flags
 
-`substrate flags` prints the vocabulary and each engine's mapping. With
+`emx flags` prints the vocabulary and each engine's mapping. With
 `--json`, each flag carries `host_only`, and an engine using
 `launch.api_key_env` shows its `api_key` mapping as
 `{"env": {"VLLM_API_KEY": "{value}"}}`.
@@ -220,7 +220,7 @@ verbatim after `--`. Adding a key to this vocabulary is a spec change.
 ## Local overrides
 
 To change a manifest's behavior for one installation, edit
-`~/.config/substrate/config.yaml` or run `substrate engine set` instead of
+`~/.config/emx/config.yaml` or run `emx engine set` instead of
 forking the manifest:
 
 ```yaml

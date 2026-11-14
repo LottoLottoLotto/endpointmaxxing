@@ -27,8 +27,8 @@ func TestMissingLocalSeparatesGoneFilesFromRepoIDs(t *testing.T) {
 
 // A missing source is reported as the caller wrote it: the expanded path would disclose the environment.
 func TestInspectMissingSourceIsReportedAsWritten(t *testing.T) {
-	t.Setenv("SUBSTRATE_T_SECRET", "hunter2")
-	const source = "/nope/$SUBSTRATE_T_SECRET/m.gguf"
+	t.Setenv("EMX_T_SECRET", "hunter2")
+	const source = "/nope/$EMX_T_SECRET/m.gguf"
 	_, err := Inspect(source)
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("want a not-exist error, got %v", err)

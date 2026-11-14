@@ -20,19 +20,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gateway"
-	"github.com/LottoLottoLotto/substrate/internal/gpu"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/model"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/route"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/settings"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
-	"github.com/LottoLottoLotto/substrate/internal/store"
-	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gpu"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/model"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/route"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/settings"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/tenstorrent"
 )
 
 // ---- model ----
@@ -55,7 +55,7 @@ func modelListCmd() *command {
 				}
 				return e.out(ms.Models, func(w io.Writer) {
 					if len(ms.Models) == 0 {
-						fmt.Fprintln(w, "no models (substrate model add <name> <path|org/repo>)")
+						fmt.Fprintln(w, "no models (emx model add <name> <path|org/repo>)")
 						return
 					}
 					rows := make([][]string, len(ms.Models))
@@ -359,7 +359,7 @@ func engineInstallCmd() *command {
 					return err
 				}
 				if _, err := exec.LookPath("sh"); err != nil {
-					return errs.New(errs.Unsupported, "install steps are POSIX shell commands and there is no `sh` on PATH (on Windows, Git for Windows provides one); or install %s yourself and run: substrate engine set %s --bin <path>", en.ID, en.ID)
+					return errs.New(errs.Unsupported, "install steps are POSIX shell commands and there is no `sh` on PATH (on Windows, Git for Windows provides one); or install %s yourself and run: emx engine set %s --bin <path>", en.ID, en.ID)
 				}
 				for i, s := range steps {
 					fmt.Fprintf(e.stderr, "[%d/%d] %s\n", i+1, len(steps), s)
@@ -431,10 +431,10 @@ func engineValidateCmd() *command {
 }
 
 func engineAddCmd() *command {
-	return &command{name: "add", synopsis: "<manifest.yaml> --trust [--force]", summary: "install a manifest into the user engines dir (it names programs substrate will run: see them without --trust)", tool: true, host: true,
+	return &command{name: "add", synopsis: "<manifest.yaml> --trust [--force]", summary: "install a manifest into the user engines dir (it names programs emx will run: see them without --trust)", tool: true, host: true,
 		build: func(fs *flag.FlagSet) action {
 			force := fs.Bool("force", false, "replace an existing user manifest with the same id")
-			trust := fs.Bool("trust", false, "accept that substrate runs the manifest's commands; without it the command lists them and installs nothing")
+			trust := fs.Bool("trust", false, "accept that emx runs the manifest's commands; without it the command lists them and installs nothing")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("engine add", pos, 1, 1); err != nil {
 					return err
@@ -453,7 +453,7 @@ func engineAddCmd() *command {
 				if !*trust {
 					runs := manifestCommands(m)
 					e.out(map[string]any{"engine": m.ID, "installed": false, "runs": runs}, func(w io.Writer) {
-						fmt.Fprintf(w, "%s is not installed. Once it is, substrate runs these as you:\n", m.ID)
+						fmt.Fprintf(w, "%s is not installed. Once it is, emx runs these as you:\n", m.ID)
 						for _, r := range runs {
 							fmt.Fprintf(w, "  %-22s %s\n", r.When, r.Command)
 						}
@@ -486,13 +486,13 @@ func engineAddCmd() *command {
 		}}
 }
 
-// manifestCommand is one thing a manifest makes substrate run, and when.
+// manifestCommand is one thing a manifest makes emx run, and when.
 type manifestCommand struct {
 	When    string `json:"when"`
 	Command string `json:"command"`
 }
 
-// manifestCommands lists everything m makes substrate execute, in the order it would happen.
+// manifestCommands lists everything m makes emx execute, in the order it would happen.
 func manifestCommands(m *spec.Manifest) []manifestCommand {
 	var out []manifestCommand
 	add := func(when string, argv ...string) { out = append(out, manifestCommand{when, strings.Join(argv, " ")}) }
@@ -723,7 +723,7 @@ func cmdDoctor() *command {
 					res["gpu_error"] = gerr.Error()
 				}
 				return e.out(res, func(w io.Writer) {
-					fmt.Fprintf(w, "substrate %s (%s)\nconfig:   %s\nstate:    %s\ndata:     %s\nusage db: %s (%s)\n\n",
+					fmt.Fprintf(w, "emx %s (%s)\nconfig:   %s\nstate:    %s\ndata:     %s\nusage db: %s (%s)\n\n",
 						Version, spec.Version, filepath.Dir(config.ConfigPath()), paths.State(), paths.Data(), store.Path(), dbStatus)
 					switch {
 					case gerr != nil:
@@ -755,7 +755,7 @@ func cmdDoctor() *command {
 					}
 					fmt.Fprintf(w, "\n%d registered model(s)\n", len(a.RegisteredModels()))
 					for _, m := range missing {
-						fmt.Fprintf(w, "missing  %s: %s does not exist (restore it, or substrate model rm %s)\n", m.Name, m.Source, m.Name)
+						fmt.Fprintf(w, "missing  %s: %s does not exist (restore it, or emx model rm %s)\n", m.Name, m.Source, m.Name)
 					}
 					printFindings(w, findings)
 				})
@@ -781,7 +781,7 @@ func cmdServe() *command {
 			port := fs.Int("port", 0, "listen port (default: config gateway.port)")
 			noAuto := fs.Bool("no-autostart", false, "never start models on demand")
 			placementMode := fs.String("placement", "", "memory, exclusive or off (default: config gateway.placement)")
-			keyFile := fs.String("api-key-file", "", "file holding the master (admin) key, mode 0600 (default: $SUBSTRATE_API_KEY); never pass a key as an argument, other users can read the command line")
+			keyFile := fs.String("api-key-file", "", "file holding the master (admin) key, mode 0600 (default: $EMX_API_KEY); never pass a key as an argument, other users can read the command line")
 			insecure := fs.Bool("insecure", false, "allow open mode (no API keys: every caller is admin) on a non-loopback address, for requests addressed to any host name")
 			tlsCert := fs.String("tls-cert", "", "serve HTTPS with this PEM certificate (default: config gateway.tls.cert)")
 			tlsKey := fs.String("tls-key", "", "PEM private key for --tls-cert (default: config gateway.tls.key)")
@@ -827,9 +827,9 @@ func cmdServe() *command {
 					return err
 				}
 				if !isLoopback(*host) && key == "" && len(ks.Keys) == 0 && !*insecure {
-					return errs.New(errs.Usage, "serve: %s is reachable from other machines; create keys (substrate key add) or set a master key ($SUBSTRATE_API_KEY or --api-key-file), or pass --insecure", *host)
+					return errs.New(errs.Usage, "serve: %s is reachable from other machines; create keys (emx key add) or set a master key ($EMX_API_KEY or --api-key-file), or pass --insecure", *host)
 				}
-				logger := log.New(e.stderr, "substrate: ", log.LstdFlags)
+				logger := log.New(e.stderr, "emx: ", log.LstdFlags)
 				a.Warn = logger.Printf
 				var tlsConf *tls.Config
 				if g.TLS.Enabled() {
@@ -900,17 +900,17 @@ func cmdServe() *command {
 				if hijacked := srv.Close(); hijacked != nil {
 					logger.Printf("close: %v", hijacked)
 				}
-				logger.Printf("gateway stopped; engine instances keep running (substrate ps / stop)")
+				logger.Printf("gateway stopped; engine instances keep running (emx ps / stop)")
 				return nil
 			}
 		}}
 }
 
 // masterKey reads the gateway's master key from a file (which must not be readable by others) or, without
-// one, from $SUBSTRATE_API_KEY.
+// one, from $EMX_API_KEY.
 func masterKey(file string) (string, error) {
 	if file == "" {
-		return os.Getenv("SUBSTRATE_API_KEY"), nil
+		return os.Getenv("EMX_API_KEY"), nil
 	}
 	st, err := os.Stat(file)
 	if err != nil {

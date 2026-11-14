@@ -8,17 +8,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gpu"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/placement"
-	"github.com/LottoLottoLotto/substrate/internal/proc"
-	"github.com/LottoLottoLotto/substrate/internal/route"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
-	"github.com/LottoLottoLotto/substrate/internal/store"
-	"github.com/LottoLottoLotto/substrate/internal/tenstorrent"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gpu"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/placement"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/proc"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/route"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/tenstorrent"
 )
 
 // Evictor stops the instances placement chose to make room.
@@ -255,7 +255,7 @@ func (a *App) place(t *Target, o *LaunchOpts) (*placed, error) {
 	}
 	if len(d.Evict) > 0 {
 		if o.Evict == nil {
-			return nil, errs.New(errs.Capacity, "%s on %s (%s) fits only after stopping %s (substrate stop ..., or launch through the gateway)",
+			return nil, errs.New(errs.Capacity, "%s on %s (%s) fits only after stopping %s (emx stop ..., or launch through the gateway)",
 				t.Model.Name, engineID, need.Source, strings.Join(d.Evict, ", "))
 		}
 		if err := o.Evict(d.Evict); err != nil {
@@ -331,7 +331,7 @@ func (a *App) placeChips(t *Target, o *LaunchOpts, e *runtime.Engine, engineID s
 	}
 	if len(d.Evict) > 0 {
 		if o.Evict == nil {
-			return nil, errs.New(errs.Capacity, "%s on %s needs chips %s, held by %s (substrate stop ..., or launch through the gateway)",
+			return nil, errs.New(errs.Capacity, "%s on %s needs chips %s, held by %s (emx stop ..., or launch through the gateway)",
 				t.Model.Name, engineID, tenstorrent.Join(d.GPUs), strings.Join(d.Evict, ", "))
 		}
 		if err := o.Evict(d.Evict); err != nil {

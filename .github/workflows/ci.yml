@@ -40,8 +40,8 @@ jobs:
       - name: Start, serve and stop an engine with the built binary
         shell: bash
         run: |
-          go build -o substrate-ci.exe ./cmd/substrate
-          scripts/smoke.sh ./substrate-ci.exe
+          go build -o emx-ci.exe ./cmd/emx
+          scripts/smoke.sh ./emx-ci.exe
 
   # Every release target compiles, without cgo.
   build:

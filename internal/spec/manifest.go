@@ -1,5 +1,5 @@
-// Package spec defines the substrate engine manifest (substrate.engine/v1):
-// the contract an inference engine publishes so substrate can find, install,
+// Package spec defines the emx engine manifest (emx.engine/v1):
+// the contract an inference engine publishes so emx can find, install,
 // launch, health-check and route to it without engine-specific code.
 package spec
 
@@ -17,7 +17,7 @@ import (
 )
 
 // Version is the manifest schema identifier every manifest must declare.
-const Version = "substrate.engine/v1"
+const Version = "emx.engine/v1"
 
 // Known model formats and APIs. Manifests may only use these; a new format or
 // API is a spec change, so routing and the gateway stay in agreement.
@@ -157,8 +157,8 @@ type Accelerator struct {
 	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
 	// Devices is how many chips one instance owns (models may override).
 	Devices int `yaml:"devices,omitempty" json:"devices,omitempty"`
-	// Lock: "substrate" holds the per-chip device locks for the instance's lifetime;
-	// "engine" means the engine takes them itself (substrate only checks they are free).
+	// Lock: "emx" holds the per-chip device locks for the instance's lifetime;
+	// "engine" means the engine takes them itself (emx only checks they are free).
 	Lock string `yaml:"lock,omitempty" json:"lock,omitempty"`
 	// ResetOnKill resets the chips (tt-smi -r) after a forced stop or a crash.
 	ResetOnKill bool `yaml:"reset_on_kill,omitempty" json:"reset_on_kill,omitempty"`
@@ -166,7 +166,7 @@ type Accelerator struct {
 
 // Host makes an engine a multi-model host: one instance (per engine) keeps several
 // models loaded and serves them all, so switching between them needs no restart.
-// The launch command starts the host without a model; substrate loads each model
+// The launch command starts the host without a model; emx loads each model
 // routed to the engine on its first request:
 //
 //	POST {load}   {"name": "<served name>", "path": "<local model dir>", "ctx": <tokens, 0 = default>}
@@ -268,7 +268,7 @@ var (
 	placeholderRe = regexp.MustCompile(`\{([a-zA-Z0-9_.]+)\}`)
 )
 
-// BaseVars are the placeholders substrate always defines for templates.
+// BaseVars are the placeholders emx always defines for templates.
 var BaseVars = []string{"bin", "bin_dir", "home", "data", "state", "model", "model_path", "name", "host", "port",
 	"instance", "devices", "device_count", "assets"}
 
@@ -297,7 +297,7 @@ func (m *Manifest) Validate() []string {
 		bad("launch.command: required")
 	}
 	if !strings.Contains(strings.Join(m.Launch.Command, " "), "{port}") {
-		bad("launch.command: must place {port}: substrate assigns ports")
+		bad("launch.command: must place {port}: emx assigns ports")
 	}
 	if m.Launch.StopSignal != "" {
 		if _, ok := Signals[m.Launch.StopSignal]; !ok {
@@ -360,8 +360,8 @@ func (m *Manifest) Validate() []string {
 		if m.Accelerator.Devices < 0 {
 			bad("accelerator.devices: must be >= 0")
 		}
-		if l := m.Accelerator.Lock; l != "" && l != "substrate" && l != "engine" {
-			bad("accelerator.lock: %q (want substrate or engine)", l)
+		if l := m.Accelerator.Lock; l != "" && l != "emx" && l != "engine" {
+			bad("accelerator.lock: %q (want emx or engine)", l)
 		}
 	default:
 		bad("accelerator.kind: %q unknown (nvidia, tenstorrent)", m.Accelerator.Kind)
@@ -379,7 +379,7 @@ func (m *Manifest) Validate() []string {
 	for k, fm := range m.Flags {
 		f, ok := FlagByKey(k)
 		if !ok {
-			bad("flags.%s: not a unified flag (see `substrate flags`)", k)
+			bad("flags.%s: not a unified flag (see `emx flags`)", k)
 			continue
 		}
 		if len(fm.Args) == 0 && len(fm.Env) == 0 {
@@ -507,7 +507,7 @@ func Parse(data []byte, source string) (*Manifest, error) {
 //go:embed engines/*.yaml
 var builtin embed.FS
 
-// Builtin returns the manifests compiled into substrate.
+// Builtin returns the manifests compiled into emx.
 func Builtin() ([]*Manifest, error) {
 	ents, err := builtin.ReadDir("engines")
 	if err != nil {

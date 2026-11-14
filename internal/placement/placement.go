@@ -149,8 +149,8 @@ func try(set []int, byIndex map[int]GPU, reserved map[int]int64, holders, evicta
 	}
 	d := &Decision{GPUs: set, PerGPU: need}
 	if n.Exclusive {
-		// A whole-GPU launch shares with no substrate instance: every evictable holder on the
-		// set goes, and it takes whatever is then free (non-substrate use such as a desktop stays).
+		// A whole-GPU launch shares with no emx instance: every evictable holder on the
+		// set goes, and it takes whatever is then free (non-emx use such as a desktop stays).
 		var block []string
 		for _, h := range holders {
 			if inSet(h) && !h.Evictable {

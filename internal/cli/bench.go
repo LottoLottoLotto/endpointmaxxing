@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/bench"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gateway"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/bench"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 func cmdBench() *command {
@@ -37,7 +37,7 @@ func benchModel(a *app.App, ref string) (config.Model, error) {
 	}
 	m, ok := a.RegisteredModel(name)
 	if !ok {
-		return m, errs.New(errs.NotFound, "no registered model %q (substrate model add)", ref)
+		return m, errs.New(errs.NotFound, "no registered model %q (emx model add)", ref)
 	}
 	return m, nil
 }
@@ -85,7 +85,7 @@ func i64(m map[string]any, k string) *int64 {
 
 func benchRunCmd() *command {
 	return &command{name: "run", synopsis: "<model> [--concurrency 1,4,16] [--canonical-prompt reasoning-v1 | --prompt-file F] [--submit]",
-		summary: "measure a model through its substrate instance with lmx; --submit uploads to LocalMaxxing", tool: true,
+		summary: "measure a model through its emx instance with lmx; --submit uploads to LocalMaxxing", tool: true,
 		build: func(fs *flag.FlagSet) action {
 			levels := fs.String("concurrency", "1", "comma-separated concurrent-request levels; one run each (verified runs need 1)")
 			canonical := fs.String("canonical-prompt", "reasoning-v1", "LocalMaxxing canonical prompt id (lmx context get canonicalPrompts)")
@@ -93,7 +93,7 @@ func benchRunCmd() *command {
 			maxTokens := fs.Int("max-tokens", 1024, "output tokens per request (canonical prompts need at least their minimum, 256 for reasoning-v1)")
 			iterations := fs.Int("iterations", 3, "timed iterations per level; the median is reported")
 			warmup := fs.Int("warmup", 1, "untimed warmup requests per level")
-			via := fs.String("via", "direct", "direct (the engine's own endpoint) or gateway (through substrate serve: metered, policies and caps apply)")
+			via := fs.String("via", "direct", "direct (the engine's own endpoint) or gateway (through emx serve: metered, policies and caps apply)")
 			notes := fs.String("notes", "", "added to the submission notes")
 			validate := fs.Bool("validate", false, "ask LocalMaxxing to check each run (no upload)")
 			submit := fs.Bool("submit", false, "validate, then upload each run")
@@ -143,10 +143,10 @@ func benchRunCmd() *command {
 					KeyInArgs: *keyInArgs, RunsDir: filepath.Join(benchDir(), "lmx-runs")}
 				if *via == "gateway" {
 					run.BaseURL, _ = gateway.Client(&a.Config().Gateway)
-					run.ServedModel, run.APIKey = m.Name, os.Getenv("SUBSTRATE_API_KEY")
+					run.ServedModel, run.APIKey = m.Name, os.Getenv("EMX_API_KEY")
 				}
-				parts := []string{fmt.Sprintf("Served by substrate %s (instance %s, measured %s).", Version, in.ID, map[string]string{
-					"direct": "on the engine's endpoint", "gateway": "through the substrate gateway"}[*via])}
+				parts := []string{fmt.Sprintf("Served by emx %s (instance %s, measured %s).", Version, in.ID, map[string]string{
+					"direct": "on the engine's endpoint", "gateway": "through the emx gateway"}[*via])}
 				for _, n := range []string{*notes, meta.Notes} {
 					if n = strings.TrimSpace(n); n != "" {
 						parts = append([]string{n}, parts...)
@@ -232,8 +232,8 @@ func publish(e *env, a *app.App, lmx *bench.LMX, rec *store.Benchmark, submit, f
 func warnBusy(e *env, a *app.App, in *runtime.Instance) {
 	base, client := gateway.Client(&a.Config().Gateway)
 	client.Timeout = 2 * time.Second
-	req, _ := http.NewRequestWithContext(e.ctx, http.MethodGet, base+"/substrate/v1/instances", nil)
-	if key := os.Getenv("SUBSTRATE_API_KEY"); key != "" {
+	req, _ := http.NewRequestWithContext(e.ctx, http.MethodGet, base+"/emx/v1/instances", nil)
+	if key := os.Getenv("EMX_API_KEY"); key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	resp, err := client.Do(req)
@@ -259,7 +259,7 @@ func warnBusy(e *env, a *app.App, in *runtime.Instance) {
 
 func printBenchmarks(e *env, rs []store.Benchmark) {
 	if len(rs) == 0 {
-		fmt.Fprintln(e.stdout, "no benchmark runs (substrate bench run <model>)")
+		fmt.Fprintln(e.stdout, "no benchmark runs (emx bench run <model>)")
 		return
 	}
 	rows := make([][]string, len(rs))
@@ -320,7 +320,7 @@ func benchShowCmd() *command {
 					return err
 				}
 				if !ok {
-					return errs.New(errs.NotFound, "no benchmark %q (substrate bench list)", pos[0])
+					return errs.New(errs.NotFound, "no benchmark %q (emx bench list)", pos[0])
 				}
 				var payload any
 				if data, err := os.ReadFile(r.Payload); err == nil {

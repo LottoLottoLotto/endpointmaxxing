@@ -1,4 +1,4 @@
-// Package lock serializes read-modify-write cycles across substrate processes
+// Package lock serializes read-modify-write cycles across emx processes
 // (CLI invocations, the gateway, MCP sessions) with advisory whole-file locks:
 // flock(2) on Unix, LockFileEx on Windows. A lock lives as long as the open file.
 package lock

@@ -16,7 +16,7 @@ func TestBuiltinManifestsValid(t *testing.T) {
 }
 
 const minimal = `
-spec: substrate.engine/v1
+spec: emx.engine/v1
 id: toy
 name: Toy
 binary: {candidates: [toy-server]}
@@ -93,8 +93,8 @@ func TestParseAcceptsShorthandAndEnvPlaceholders(t *testing.T) {
 }
 
 func TestExpand(t *testing.T) {
-	t.Setenv("SUBSTRATE_T", "/x")
-	got, err := Expand("{a}:{env.SUBSTRATE_T}:{env.SUBSTRATE_UNSET}", map[string]string{"a": "1"})
+	t.Setenv("EMX_T", "/x")
+	got, err := Expand("{a}:{env.EMX_T}:{env.EMX_UNSET}", map[string]string{"a": "1"})
 	if err != nil || got != "1:/x:" {
 		t.Fatalf("got %q, %v", got, err)
 	}

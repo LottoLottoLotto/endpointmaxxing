@@ -1,4 +1,4 @@
-spec: substrate.engine/v1
+spec: emx.engine/v1
 id: tt-vllm
 name: vLLM on Tenstorrent (docker)
 description: >-
@@ -26,7 +26,7 @@ launch:
     - --rm
     - --init
     - --name
-    - "substrate-{instance}"
+    - "emx-{instance}"
     - --publish
     - "127.0.0.1:{port}:8000"
     - --device
@@ -83,7 +83,7 @@ launch:
   api_key_env: VLLM_API_KEY
   # If the client died first, the container would keep the chips: remove it by name.
   cleanup:
-    - ["{bin}", rm, -f, "substrate-{instance}"]
+    - ["{bin}", rm, -f, "emx-{instance}"]
   # docker would create missing mount sources as root; the container user must own the caches.
   prepare:
     - [mkdir, -p, "{cache}", "{kernel_cache}"]
@@ -96,7 +96,7 @@ health:
 accelerator:
   kind: tenstorrent
   devices: 1
-  lock: substrate
+  lock: emx
   reset_on_kill: true
 
 flags:

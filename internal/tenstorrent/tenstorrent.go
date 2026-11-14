@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/lock"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/lock"
 )
 
 // Config locates the lock files and tt-smi.

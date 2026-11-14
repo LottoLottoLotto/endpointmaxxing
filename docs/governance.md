@@ -41,12 +41,12 @@ model is involved.
   `forbidden`, `rate_limited`, `budget_exceeded`, `policy_blocked`, `bad_request`,
   `model_not_found`, `no_capacity`, `engine_start_failed`,
   `engine_unreachable`, `upstream_timeout`, `engine_error`,
-  `engine_rejected` or `client_disconnected` (`substrate errors --kinds`).
+  `engine_rejected` or `client_disconnected` (`emx errors --kinds`).
   Refused API keys are recorded too, with the caller's address, at most 60
   `auth_failed` (401) records per minute in the usage database and the audit
   file. Further ones are only counted, in
-  `substrate_auth_denials_unstored_total`, and are not part of
-  `substrate_requests_total`.
+  `emx_auth_denials_unstored_total`, and are not part of
+  `emx_requests_total`.
 - **Recorded values.** Text the client chooses is bounded before it is
   stored: `path`, `user_agent` and `client` are cut to 256 bytes, `error` to
   1024. A request that was not routed to a model and whose model name is not
@@ -99,11 +99,11 @@ classify:
           keywords: [contract, liability, NDA]
 logging:
     flagged_bodies: false
-    audit_file: audit.jsonl           # relative to ~/.local/state/substrate
+    audit_file: audit.jsonl           # relative to ~/.local/state/emx
 ```
 
-`substrate policy show` lists the rules, categories and detectors.
-`substrate policy test "text"` (or `--file`, `--body request.json`) shows
+`emx policy show` lists the rules, categories and detectors.
+`emx policy test "text"` (or `--file`, `--body request.json`) shows
 what a prompt would be labelled and flagged with, without sending it.
 Requests recorded before this feature have no category or flags, and their
 failures are reported as `unclassified`.
@@ -123,13 +123,13 @@ failures are reported as `unclassified`.
   who changed what can outlive usage data. Both default to 0 (keep
   everything); typical policies are 30-90 days of usage and a year or more of
   audit. `doctor` warns when audit retention is the shorter one.
-- **Erasure.** `substrate prune --client NAME` (or `DELETE
-  /substrate/v1/clients/{name}/data`, admin) deletes all of one client's
+- **Erasure.** `emx prune --client NAME` (or `DELETE
+  /emx/v1/clients/{name}/data`, admin) deletes all of one client's
   request records and bodies. The erasure itself is recorded in the admin
   trail; the audit file keeps its lines, as the tamper-evident record.
 - **Tamper-evident audit file.** Lines are hash-chained across rotated
   files, the chain's head is recorded beside the file, and the chain can be
-  keyed (`gateway.audit_key_file`); `substrate audit verify` checks it. See
+  keyed (`gateway.audit_key_file`); `emx audit verify` checks it. See
   [Audit file integrity](#audit-file-integrity). The file rotates at
   `logging.audit_max_mb` (default 100) to `audit-<UTC time>.jsonl`.
 
@@ -144,7 +144,7 @@ without prices and aliases to unregistered models. It lists registered
 models whose files no longer exist (`/v1/models` marks them
 `source_missing`, and the admin UI offers no Start for them).
 
-Only traffic that passes through `substrate serve` or `substrate chat` is
+Only traffic that passes through `emx serve` or `emx chat` is
 metered. A client that calls an engine's port directly bypasses the meter.
 GPU and memory samples are taken only while the gateway runs.
 
@@ -153,7 +153,7 @@ GPU and memory samples are taken only while the gateway runs.
 - **Record format.** Each audit line starts with `"prev"` (the chain hash of
   the line before, across rotated files) and `"seq"` (its number in the
   chain, starting at 1; lines written by older versions have no `seq`).
-  With an audit key it also carries `"mac"`. `substrate audit verify` (and
+  With an audit key it also carries `"mac"`. `emx audit verify` (and
   `doctor`) finds an edited, inserted, removed or reordered line; lines from
   before chaining are reported and anchor the chain.
 - **Head anchor.** After every line the writer records the chain head in
@@ -173,12 +173,12 @@ GPU and memory samples are taken only while the gateway runs.
   config directory:
 
   ```sh
-  openssl rand -hex 32 > ~/.config/substrate/audit.key && chmod 600 ~/.config/substrate/audit.key
+  openssl rand -hex 32 > ~/.config/emx/audit.key && chmod 600 ~/.config/emx/audit.key
   ```
 
-  The file must not be accessible by group or others. `substrate serve`
+  The file must not be accessible by group or others. `emx serve`
   refuses to start if it is missing, group- or other-accessible, or shorter
-  than 32 bytes; `substrate doctor` reports that as `audit_key`. With a key,
+  than 32 bytes; `emx doctor` reports that as `audit_key`. With a key,
   each line's chain hash is an HMAC-SHA256 stored in the line as `mac`, so
   someone who rewrites the file without the key cannot produce lines that
   verify. Verification with a key fails if a keyed line does not match (it
@@ -192,7 +192,7 @@ GPU and memory samples are taken only while the gateway runs.
 - **Verifying.**
 
   ```sh
-  substrate audit verify [--key-file F] [--expect-head HASH [--expect-count N]] [--expect-first N]
+  emx audit verify [--key-file F] [--expect-head HASH [--expect-count N]] [--expect-first N]
   ```
 
   | Flag | Effect |
@@ -245,13 +245,13 @@ alerts:
   Deliveries time out after 5 seconds and are retried once; failures are
   logged with the URL's path (its secret) removed.
 - **Admin trail:** every administrative change is recorded as an `admin`
-  event (`substrate events`), an audit-log line (`type` `admin`) and an
+  event (`emx events`), an audit-log line (`type` `admin`) and an
   `admin` webhook, with who made it: `key add/set/rotate/disable/enable/rm`,
   `team set/rm`, `price set/rm`, `alias set/rm`, `model add/rm`, `engine set`
-  (actor: `$SUBSTRATE_ACTOR`, else the OS user), and the management API's
+  (actor: `$EMX_ACTOR`, else the OS user), and the management API's
   `ensure`, `stop` and `reload` (actor: the API key). Edits to `config.yaml`
   itself show up as `config_reloaded` events naming the changed sections.
 - **Request ids:** the engine receives the gateway's request id as
-  `X-Request-Id`, so engine logs can be matched to `substrate requests --id`.
+  `X-Request-Id`, so engine logs can be matched to `emx requests --id`.
   A client's own `X-Request-Id` is stored as `client_request_id`, and
   `--id` matches either (see [Requests](gateway.md#requests)).

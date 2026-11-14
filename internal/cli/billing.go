@@ -10,11 +10,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gateway"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/settings"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/settings"
 )
 
 // ---- team ----
@@ -51,7 +51,7 @@ func teamListCmd() *command {
 				cur := a.Config().Pricing.CurrencyOrDefault()
 				return e.out(teams, func(w io.Writer) {
 					if len(teams) == 0 {
-						fmt.Fprintln(w, "no teams (substrate team set <name> --budget-per-month 500 ...)")
+						fmt.Fprintln(w, "no teams (emx team set <name> --budget-per-month 500 ...)")
 						return
 					}
 					rows := [][]string{}
@@ -175,7 +175,7 @@ func priceListCmd() *command {
 						rows = append(rows, row("(default)", *p.Default))
 					}
 					if len(rows) == 0 {
-						fmt.Fprintln(w, "no prices: requests are not costed (substrate price set <model|glob|default> --prompt X --completion Y)")
+						fmt.Fprintln(w, "no prices: requests are not costed (emx price set <model|glob|default> --prompt X --completion Y)")
 						return
 					}
 					fmt.Fprintf(w, "%s per million tokens\n", p.CurrencyOrDefault())
@@ -248,8 +248,8 @@ func cmdReload() *command {
 					return err
 				}
 				base, client := gateway.Client(&a.Config().Gateway)
-				req, _ := http.NewRequestWithContext(e.ctx, http.MethodPost, base+"/substrate/v1/reload", nil)
-				if key := os.Getenv("SUBSTRATE_API_KEY"); key != "" {
+				req, _ := http.NewRequestWithContext(e.ctx, http.MethodPost, base+"/emx/v1/reload", nil)
+				if key := os.Getenv("EMX_API_KEY"); key != "" {
 					req.Header.Set("Authorization", "Bearer "+key)
 				}
 				resp, err := client.Do(req)

@@ -12,14 +12,14 @@ import (
 	"sort"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/audit"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/settings"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/audit"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/settings"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // ---- alias ----
@@ -46,7 +46,7 @@ func aliasListCmd() *command {
 				}
 				return e.out(al, func(w io.Writer) {
 					if len(al) == 0 {
-						fmt.Fprintln(w, "no aliases (substrate alias set <name> <model>)")
+						fmt.Fprintln(w, "no aliases (emx alias set <name> <model>)")
 						return
 					}
 					names := make([]string, 0, len(al))
@@ -105,10 +105,10 @@ func aliasRmCmd() *command {
 // ---- backup ----
 
 func cmdBackup() *command {
-	return &command{name: "backup", synopsis: "[--out substrate-backup.tar.gz] [--audit]",
+	return &command{name: "backup", synopsis: "[--out emx-backup.tar.gz] [--audit]",
 		summary: "archive config, models, keys, engine manifests and a consistent copy of the usage database",
 		build: func(fs *flag.FlagSet) action {
-			out := fs.String("out", "", "archive path (default substrate-backup-<time>.tar.gz in the current directory)")
+			out := fs.String("out", "", "archive path (default emx-backup-<time>.tar.gz in the current directory)")
 			withAudit := fs.Bool("audit", false, "include logging.audit_file")
 			noDB := fs.Bool("no-db", false, "leave out the usage database")
 			return func(e *env, pos, _ []string) error {
@@ -120,7 +120,7 @@ func cmdBackup() *command {
 					return err
 				}
 				if *out == "" {
-					*out = "substrate-backup-" + time.Now().Format("20060102-150405") + ".tar.gz"
+					*out = "emx-backup-" + time.Now().Format("20060102-150405") + ".tar.gz"
 				}
 				files, err := backup(a, *out, !*noDB, *withAudit)
 				if err != nil {
@@ -293,7 +293,7 @@ func securityFindings(a *app.App) []securityFinding {
 		} else if r, err := audit.Verify(p, audit.Check{Key: key}); err != nil {
 			add("audit_chain", "audit file %s: %v", p, err)
 		} else if !r.OK {
-			add("audit_chain_broken", "audit file: %s (substrate audit verify)", r.Problem)
+			add("audit_chain_broken", "audit file: %s (emx audit verify)", r.Problem)
 		}
 	}
 	f, err := keys.Load()
@@ -302,7 +302,7 @@ func securityFindings(a *app.App) []securityFinding {
 		return out
 	}
 	if exposed && len(f.Keys) == 0 {
-		add("open_gateway", "gateway.host %s with no API keys: only a master key ($SUBSTRATE_API_KEY, --api-key-file) or --insecure would let it start", c.Gateway.Host)
+		add("open_gateway", "gateway.host %s with no API keys: only a master key ($EMX_API_KEY, --api-key-file) or --insecure would let it start", c.Gateway.Host)
 	}
 	var last map[string]int64
 	if db, err := a.DB(); err == nil {
@@ -318,7 +318,7 @@ func securityFindings(a *app.App) []securityFinding {
 			admins++
 		}
 		if k.Expires == nil {
-			add("key_no_expiry", "key %s (%s) never expires: substrate key set %s --expires 90d", k.Name, k.Role, k.Name)
+			add("key_no_expiry", "key %s (%s) never expires: emx key set %s --expires 90d", k.Name, k.Role, k.Name)
 		} else if k.Expires.Sub(now) < 14*24*time.Hour {
 			add("key_expiring", "key %s expires %s", k.Name, k.Expires.Local().Format("2006-01-02"))
 		}
@@ -328,7 +328,7 @@ func securityFindings(a *app.App) []securityFinding {
 			idleSince = time.UnixMilli(used)
 		}
 		if now.Sub(idleSince) > 90*24*time.Hour {
-			add("key_unused", "key %s unused for %d days: substrate key disable %s", k.Name, int(now.Sub(idleSince).Hours()/24), k.Name)
+			add("key_unused", "key %s unused for %d days: emx key disable %s", k.Name, int(now.Sub(idleSince).Hours()/24), k.Name)
 		}
 		if k.Team != "" {
 			if _, ok := c.Team(k.Team); !ok {

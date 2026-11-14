@@ -92,11 +92,11 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          file="substrate_${TAG#v}_${{ matrix.archive }}"
+          file="emx_${TAG#v}_${{ matrix.archive }}"
           grep " $file\$" checksums.txt | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -)
           case "$file" in
-            *.zip) unzip -q "$file"; bin=substrate.exe ;;
-            *) tar -xzf "$file"; bin=substrate ;;
+            *.zip) unzip -q "$file"; bin=emx.exe ;;
+            *) tar -xzf "$file"; bin=emx ;;
           esac
           "./$bin" version | grep "$TAG"
           ../scripts/smoke.sh "./$bin"
@@ -118,5 +118,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/substrate_* dist/checksums.txt \
+          gh release create "$TAG" dist/emx_* dist/checksums.txt \
             --title "$TAG" --generate-notes --verify-tag

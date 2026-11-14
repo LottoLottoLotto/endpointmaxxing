@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // send makes a JSON request and decodes the answer.
@@ -40,76 +40,76 @@ func send(t *testing.T, method, url, key, body string) (int, map[string]any) {
 }
 
 func TestSettingsAPIKeyLifecycle(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	auditor, _ := keys.Add(keys.Key{Name: "audit", Role: keys.RoleAuditor})
 	g, srv := newGateway(t)
 
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/keys", auditor, `{"name":"x"}`); s != http.StatusForbidden {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/keys", auditor, `{"name":"x"}`); s != http.StatusForbidden {
 		t.Fatalf("auditor created a key: %d", s)
 	}
-	s, out := send(t, "POST", srv.URL+"/substrate/v1/keys", admin, `{"name":"alice","team":"research","rpm":30}`)
+	s, out := send(t, "POST", srv.URL+"/emx/v1/keys", admin, `{"name":"alice","team":"research","rpm":30}`)
 	secret, _ := out["secret"].(string)
-	if s != http.StatusCreated || !strings.HasPrefix(secret, "sk-sub-") || out["role"] != keys.RoleUser {
+	if s != http.StatusCreated || !strings.HasPrefix(secret, "sk-emx-") || out["role"] != keys.RoleUser {
 		t.Fatalf("add: %d %v", s, out)
 	}
 	if w, _ := out["warnings"].([]any); len(w) != 1 {
 		t.Errorf("an unconfigured team should warn: %v", out)
 	}
-	if s, who := send(t, "GET", srv.URL+"/substrate/v1/whoami", secret, ""); s != http.StatusOK || who["name"] != "alice" {
+	if s, who := send(t, "GET", srv.URL+"/emx/v1/whoami", secret, ""); s != http.StatusOK || who["name"] != "alice" {
 		t.Fatalf("the new key does not authenticate: %d %v", s, who)
 	}
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/keys", admin, `{"name":"alice"}`); s != http.StatusConflict {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/keys", admin, `{"name":"alice"}`); s != http.StatusConflict {
 		t.Fatalf("duplicate name: %d", s)
 	}
 
-	if s, out := send(t, "PATCH", srv.URL+"/substrate/v1/keys/alice", admin, `{"role":"auditor","models":["qwen*"],"expires":"30d"}`); s != http.StatusOK {
+	if s, out := send(t, "PATCH", srv.URL+"/emx/v1/keys/alice", admin, `{"role":"auditor","models":["qwen*"],"expires":"30d"}`); s != http.StatusOK {
 		t.Fatalf("patch: %d %v", s, out)
 	}
-	if s, who := send(t, "GET", srv.URL+"/substrate/v1/whoami", secret, ""); s != http.StatusOK || who["role"] != keys.RoleAuditor {
+	if s, who := send(t, "GET", srv.URL+"/emx/v1/whoami", secret, ""); s != http.StatusOK || who["role"] != keys.RoleAuditor {
 		t.Fatalf("role change not applied: %v", who)
 	}
 
-	s, out = send(t, "POST", srv.URL+"/substrate/v1/keys/alice/rotate", admin, `{"grace":"0s"}`)
+	s, out = send(t, "POST", srv.URL+"/emx/v1/keys/alice/rotate", admin, `{"grace":"0s"}`)
 	fresh, _ := out["secret"].(string)
 	if s != http.StatusOK || fresh == "" || fresh == secret {
 		t.Fatalf("rotate: %d %v", s, out)
 	}
-	if s := call(t, "GET", srv.URL+"/substrate/v1/whoami", secret, ""); s != http.StatusUnauthorized {
+	if s := call(t, "GET", srv.URL+"/emx/v1/whoami", secret, ""); s != http.StatusUnauthorized {
 		t.Fatalf("secret rotated out without grace still works: %d", s)
 	}
 
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/keys/alice/disable", admin, ""); s != http.StatusOK {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/keys/alice/disable", admin, ""); s != http.StatusOK {
 		t.Fatalf("disable: %d", s)
 	}
-	if s := call(t, "GET", srv.URL+"/substrate/v1/whoami", fresh, ""); s != http.StatusUnauthorized {
+	if s := call(t, "GET", srv.URL+"/emx/v1/whoami", fresh, ""); s != http.StatusUnauthorized {
 		t.Fatalf("disabled key accepted: %d", s)
 	}
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/keys/alice/enable", admin, ""); s != http.StatusOK {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/keys/alice/enable", admin, ""); s != http.StatusOK {
 		t.Fatalf("enable: %d", s)
 	}
-	if s := call(t, "GET", srv.URL+"/substrate/v1/whoami", fresh, ""); s != http.StatusOK {
+	if s := call(t, "GET", srv.URL+"/emx/v1/whoami", fresh, ""); s != http.StatusOK {
 		t.Fatalf("re-enabled key refused: %d", s)
 	}
 
 	// An admin key cannot lock itself out.
 	for _, c := range []struct{ method, path, body string }{
-		{"DELETE", "/substrate/v1/keys/ops", ""},
-		{"POST", "/substrate/v1/keys/ops/disable", ""},
-		{"PATCH", "/substrate/v1/keys/ops", `{"role":"user"}`},
+		{"DELETE", "/emx/v1/keys/ops", ""},
+		{"POST", "/emx/v1/keys/ops/disable", ""},
+		{"PATCH", "/emx/v1/keys/ops", `{"role":"user"}`},
 	} {
 		if s, _ := send(t, c.method, srv.URL+c.path, admin, c.body); s != http.StatusConflict {
 			t.Errorf("%s %s on the caller's own key: %d", c.method, c.path, s)
 		}
 	}
 
-	if s, _ := send(t, "DELETE", srv.URL+"/substrate/v1/keys/alice", admin, ""); s != http.StatusOK {
+	if s, _ := send(t, "DELETE", srv.URL+"/emx/v1/keys/alice", admin, ""); s != http.StatusOK {
 		t.Fatalf("delete: %d", s)
 	}
-	if s := call(t, "GET", srv.URL+"/substrate/v1/whoami", fresh, ""); s != http.StatusUnauthorized {
+	if s := call(t, "GET", srv.URL+"/emx/v1/whoami", fresh, ""); s != http.StatusUnauthorized {
 		t.Fatalf("deleted key accepted: %d", s)
 	}
-	if s, _ := send(t, "DELETE", srv.URL+"/substrate/v1/keys/alice", admin, ""); s != http.StatusNotFound {
+	if s, _ := send(t, "DELETE", srv.URL+"/emx/v1/keys/alice", admin, ""); s != http.StatusNotFound {
 		t.Fatalf("deleting an unknown key: %d", s)
 	}
 
@@ -143,25 +143,25 @@ func mustEvents(t *testing.T, g *Gateway, kind string) []store.Event {
 }
 
 func TestSettingsAPIGuards(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, srv := newGateway(t)
 
 	// The body must be JSON, and strictly what the endpoint takes.
-	req, _ := http.NewRequest("POST", srv.URL+"/substrate/v1/keys", strings.NewReader(`name=x`))
+	req, _ := http.NewRequest("POST", srv.URL+"/emx/v1/keys", strings.NewReader(`name=x`))
 	req.Header.Set("Authorization", "Bearer "+admin)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusUnsupportedMediaType {
 		t.Fatalf("form body: %v %v", resp, err)
 	}
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/keys", admin, `{"name":"x","rol":"admin"}`); s != http.StatusBadRequest {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/keys", admin, `{"name":"x","rol":"admin"}`); s != http.StatusBadRequest {
 		t.Fatalf("unknown field accepted: %d", s)
 	}
 
 	// Secrets never cross a network in plain HTTP: a non-loopback client needs TLS.
 	h := g.Handler()
 	remote := func(tlsOn bool) int {
-		r := httptest.NewRequest("POST", "/substrate/v1/keys", strings.NewReader(`{"name":"remote"}`))
+		r := httptest.NewRequest("POST", "/emx/v1/keys", strings.NewReader(`{"name":"remote"}`))
 		r.RemoteAddr = "203.0.113.5:40000"
 		r.Header.Set("Authorization", "Bearer "+admin)
 		r.Header.Set("Content-Type", "application/json")
@@ -181,46 +181,46 @@ func TestSettingsAPIGuards(t *testing.T) {
 
 	// The settings API can be switched off; reads stay.
 	writeConfig(t, "gateway:\n  disable_settings_api: true\n")
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/reload", admin, ""); s != http.StatusOK {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/reload", admin, ""); s != http.StatusOK {
 		t.Fatalf("reload: %d", s)
 	}
-	if s, _ := send(t, "PUT", srv.URL+"/substrate/v1/aliases/chat", admin, `{"model":"m"}`); s != http.StatusForbidden {
+	if s, _ := send(t, "PUT", srv.URL+"/emx/v1/aliases/chat", admin, `{"model":"m"}`); s != http.StatusForbidden {
 		t.Fatalf("change with the settings API disabled: %d", s)
 	}
-	if s, _ := send(t, "GET", srv.URL+"/substrate/v1/aliases", admin, ""); s != http.StatusOK {
+	if s, _ := send(t, "GET", srv.URL+"/emx/v1/aliases", admin, ""); s != http.StatusOK {
 		t.Fatalf("read with the settings API disabled: %d", s)
 	}
 }
 
 func TestSettingsAPIConfigChangesApplyAtOnce(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, srv := newGateway(t)
 
 	ckpt := filepath.ToSlash(filepath.Join(t.TempDir(), "tiny")) // pasted into JSON below: no backslashes
 	os.MkdirAll(ckpt, 0o755)
 	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
-	s, out := send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"tiny","source":"`+ckpt+`","flags":{"ctx":"4096"}}`)
+	s, out := send(t, "POST", srv.URL+"/emx/v1/models", admin, `{"name":"tiny","source":"`+ckpt+`","flags":{"ctx":"4096"}}`)
 	if s != http.StatusCreated {
 		t.Fatalf("model add: %d %v", s, out)
 	}
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"tiny","source":"`+ckpt+`"}`); s != http.StatusConflict {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/models", admin, `{"name":"tiny","source":"`+ckpt+`"}`); s != http.StatusConflict {
 		t.Fatalf("re-adding without force: %d", s)
 	}
 	// Engine arguments reach host command lines: only the CLI sets them.
-	if s, _ := send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"t2","source":"`+ckpt+`","args":["--x"]}`); s != http.StatusBadRequest {
+	if s, _ := send(t, "POST", srv.URL+"/emx/v1/models", admin, `{"name":"t2","source":"`+ckpt+`","args":["--x"]}`); s != http.StatusBadRequest {
 		t.Fatalf("engine args over HTTP: %d", s)
 	}
-	if s, _ := send(t, "PUT", srv.URL+"/substrate/v1/aliases/chat", admin, `{"model":"tiny"}`); s != http.StatusOK {
+	if s, _ := send(t, "PUT", srv.URL+"/emx/v1/aliases/chat", admin, `{"model":"tiny"}`); s != http.StatusOK {
 		t.Fatalf("alias: %d", s)
 	}
-	if s, _ := send(t, "PUT", srv.URL+"/substrate/v1/teams/research", admin, `{"tokens_per_day":1000,"models":["tiny"]}`); s != http.StatusOK {
+	if s, _ := send(t, "PUT", srv.URL+"/emx/v1/teams/research", admin, `{"tokens_per_day":1000,"models":["tiny"]}`); s != http.StatusOK {
 		t.Fatalf("team: %d", s)
 	}
-	if s, out := send(t, "PUT", srv.URL+"/substrate/v1/prices/tiny", admin, `{"prompt":0.1,"completion":0.4,"currency":"EUR"}`); s != http.StatusOK {
+	if s, out := send(t, "PUT", srv.URL+"/emx/v1/prices/tiny", admin, `{"prompt":0.1,"completion":0.4,"currency":"EUR"}`); s != http.StatusOK {
 		t.Fatalf("price: %d %v", s, out)
 	}
-	if s, _ := send(t, "PUT", srv.URL+"/substrate/v1/prices/other", admin, `{"prompt":0.1}`); s != http.StatusBadRequest {
+	if s, _ := send(t, "PUT", srv.URL+"/emx/v1/prices/other", admin, `{"prompt":0.1}`); s != http.StatusBadRequest {
 		t.Fatalf("price without completion: %d", s)
 	}
 
@@ -240,7 +240,7 @@ func TestSettingsAPIConfigChangesApplyAtOnce(t *testing.T) {
 		t.Fatalf("config.yaml lacks the alias: %v", onDisk.Aliases)
 	}
 
-	for _, p := range []string{"/substrate/v1/prices/tiny", "/substrate/v1/aliases/chat", "/substrate/v1/teams/research", "/substrate/v1/models/tiny"} {
+	for _, p := range []string{"/emx/v1/prices/tiny", "/emx/v1/aliases/chat", "/emx/v1/teams/research", "/emx/v1/models/tiny"} {
 		if s, _ := send(t, "DELETE", srv.URL+p, admin, ""); s != http.StatusOK {
 			t.Fatalf("DELETE %s: %d", p, s)
 		}
@@ -256,24 +256,24 @@ func TestSettingsAPIConfigChangesApplyAtOnce(t *testing.T) {
 // The settings API never lets its caller choose code the host runs or read the host's environment:
 // host-only flags and "$" in a source are refused, and a missing source is named as the caller wrote it.
 func TestSettingsAPIModelAddTakesNoHostCodeOrEnvironment(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
-	t.Setenv("SUBSTRATE_T_SECRET", "hunter2-env-value")
+	t.Setenv("EMX_HOME", t.TempDir())
+	t.Setenv("EMX_T_SECRET", "hunter2-env-value")
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, srv := newGateway(t)
 	ckpt := filepath.ToSlash(filepath.Join(t.TempDir(), "tiny")) // pasted into JSON below: no backslashes
 	os.MkdirAll(ckpt, 0o755)
 	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
 
-	s, out := send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"t","source":"`+ckpt+`","flags":{"trust_remote_code":"true"}}`)
-	if msg := fmt.Sprint(out); s != http.StatusBadRequest || !strings.Contains(msg, "trust_remote_code") || !strings.Contains(msg, "substrate model add") {
+	s, out := send(t, "POST", srv.URL+"/emx/v1/models", admin, `{"name":"t","source":"`+ckpt+`","flags":{"trust_remote_code":"true"}}`)
+	if msg := fmt.Sprint(out); s != http.StatusBadRequest || !strings.Contains(msg, "trust_remote_code") || !strings.Contains(msg, "emx model add") {
 		t.Fatalf("trust_remote_code over HTTP: %d %v", s, out)
 	}
-	s, out = send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"t","source":"/nope/$SUBSTRATE_T_SECRET"}`)
+	s, out = send(t, "POST", srv.URL+"/emx/v1/models", admin, `{"name":"t","source":"/nope/$EMX_T_SECRET"}`)
 	if s != http.StatusBadRequest || strings.Contains(fmt.Sprint(out), "hunter2") {
 		t.Fatalf("source with an environment variable: %d %v", s, out)
 	}
-	s, out = send(t, "POST", srv.URL+"/substrate/v1/models", admin, `{"name":"t","source":"~/nope-substrate-test/m.gguf"}`)
-	if msg := fmt.Sprint(out); s != http.StatusNotFound || !strings.Contains(msg, "~/nope-substrate-test/m.gguf") || strings.Contains(msg, "stat ") {
+	s, out = send(t, "POST", srv.URL+"/emx/v1/models", admin, `{"name":"t","source":"~/nope-emx-test/m.gguf"}`)
+	if msg := fmt.Sprint(out); s != http.StatusNotFound || !strings.Contains(msg, "~/nope-emx-test/m.gguf") || strings.Contains(msg, "stat ") {
 		t.Fatalf("missing source: %d %v", s, out)
 	}
 	if _, ok := g.App.RegisteredModel("t"); ok {
@@ -282,7 +282,7 @@ func TestSettingsAPIModelAddTakesNoHostCodeOrEnvironment(t *testing.T) {
 }
 
 func TestSettingsAPIErasesOneClient(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, srv := newGateway(t)
 	db := mustDB(t, g.App)
@@ -291,7 +291,7 @@ func TestSettingsAPIErasesOneClient(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, out := send(t, "DELETE", srv.URL+"/substrate/v1/clients/alice/data", admin, "")
+	s, out := send(t, "DELETE", srv.URL+"/emx/v1/clients/alice/data", admin, "")
 	if s != http.StatusOK {
 		t.Fatalf("erase: %d %v", s, out)
 	}

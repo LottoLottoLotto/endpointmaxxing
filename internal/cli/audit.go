@@ -6,9 +6,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/LottoLottoLotto/substrate/internal/audit"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/audit"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
 )
 
 func cmdAudit() *command {

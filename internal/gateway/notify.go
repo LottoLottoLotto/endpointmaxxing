@@ -14,12 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/audit"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/audit"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // webhookTimeout bounds one webhook delivery attempt.
@@ -47,7 +47,7 @@ func sendWebhooks(cfg *config.Config, kind, detail, actor string, logf func(stri
 		}
 		var body []byte
 		if w.Format == "text" {
-			text := fmt.Sprintf("[substrate %s] %s: %s", host, kind, detail)
+			text := fmt.Sprintf("[emx %s] %s: %s", host, kind, detail)
 			if actor != "" {
 				text += " (by " + actor + ")"
 			}
@@ -113,9 +113,9 @@ func redactURL(u string) string {
 	return u
 }
 
-// Actor names the person behind a CLI action: $SUBSTRATE_ACTOR, else the OS user.
+// Actor names the person behind a CLI action: $EMX_ACTOR, else the OS user.
 func Actor() string {
-	if a := os.Getenv("SUBSTRATE_ACTOR"); a != "" {
+	if a := os.Getenv("EMX_ACTOR"); a != "" {
 		return a
 	}
 	if u, err := user.Current(); err == nil {
@@ -129,7 +129,7 @@ func Actor() string {
 // webhook delivery, so a CLI process does not exit before sending.
 func RecordAdmin(a *app.App, actor, detail string) {
 	cfg := a.Config()
-	logf := log.New(os.Stderr, "substrate: ", 0).Printf
+	logf := log.New(os.Stderr, "emx: ", 0).Printf
 	if a.Warn != nil {
 		logf = a.Warn
 	}

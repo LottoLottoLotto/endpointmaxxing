@@ -10,7 +10,7 @@ import (
 )
 
 func TestConcurrentUpdatesKeepEveryModel(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
@@ -36,7 +36,7 @@ func TestConcurrentUpdatesKeepEveryModel(t *testing.T) {
 }
 
 func TestStrictFiles(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	os.MkdirAll(filepath.Dir(ConfigPath()), 0o755)
 
 	os.WriteFile(ConfigPath(), []byte("gateway:\n  prot: 8000\n"), 0o644)
@@ -60,7 +60,7 @@ func TestStrictFiles(t *testing.T) {
 }
 
 func TestBodyLimits(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	os.MkdirAll(filepath.Dir(ConfigPath()), 0o755)
 	if c, err := Load(); err != nil || c.Gateway.MaxBodyMB != 64 || c.Gateway.MaxBufferedMB != 1024 {
 		t.Fatalf("defaults: %+v %v", c, err)

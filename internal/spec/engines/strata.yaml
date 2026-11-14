@@ -1,4 +1,4 @@
-spec: substrate.engine/v1
+spec: emx.engine/v1
 id: strata
 name: Strata
 description: >-
@@ -19,7 +19,7 @@ vars:
   server: serve/server.py
 
 install:
-  notes: Strata's setup.sh asks for the model size and context, downloads ~70 GB and writes the config to pass to `substrate model add`.
+  notes: Strata's setup.sh asks for the model size and context, downloads ~70 GB and writes the config to pass to `emx model add`.
   steps:
     - git clone --depth 1 https://github.com/Niko1221/Strata "{data}/engines/strata" || git -C "{data}/engines/strata" pull --ff-only
     - cd "{data}/engines/strata" && ./setup.sh --setup

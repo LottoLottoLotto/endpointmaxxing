@@ -9,17 +9,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LottoLottoLotto/substrate/internal/audit"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/audit"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 )
 
 // audit verify reports the chain's head, holds the chain to a head kept elsewhere (--expect-head,
 // --expect-count) and reads the audit key from gateway.audit_key_file or --key-file.
 func TestAuditVerifyHeadAndKey(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
-	t.Setenv("SUBSTRATE_ACTOR", "carol")
+	t.Setenv("EMX_HOME", t.TempDir())
+	t.Setenv("EMX_ACTOR", "carol")
 	keyFile := filepath.Join(t.TempDir(), "audit.key")
 	if err := os.WriteFile(keyFile, []byte(strings.Repeat("k", audit.MinKeyBytes)+"\n"), 0o600); err != nil {
 		t.Fatal(err)

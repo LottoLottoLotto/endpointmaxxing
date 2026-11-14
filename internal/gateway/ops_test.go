@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // recordingBackend answers chat requests and remembers each request's body and X-Request-Id.
@@ -66,7 +66,7 @@ func do(t *testing.T, method, url, key, body string) *http.Response {
 }
 
 func TestAliasesOutputCapsRequestIDsAndRateLimitHeaders(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	b := newRecordingBackend()
 	defer b.Close()
 	instance(t, "m.fake", "m", b.URL)
@@ -87,15 +87,15 @@ teams:
 	// The alias reaches the engine as the real model, and /v1/models lists it.
 	resp := do(t, "POST", srv.URL+"/v1/chat/completions", capped, `{"model":"chat-default","messages":[],"max_tokens":5000}`)
 	body, id := b.last()
-	if resp.StatusCode != 200 || body["model"] != "m" || resp.Header.Get("X-Substrate-Alias") != "chat-default" {
+	if resp.StatusCode != 200 || body["model"] != "m" || resp.Header.Get("X-Emx-Alias") != "chat-default" {
 		t.Fatalf("alias: status %d, engine saw model %v", resp.StatusCode, body["model"])
 	}
 	// The key's cap (100) is below the gateway's (1000): the request's 5000 is lowered to it.
-	if body["max_tokens"] != 100.0 || resp.Header.Get("X-Substrate-Max-Output-Tokens") != "100" {
+	if body["max_tokens"] != 100.0 || resp.Header.Get("X-Emx-Max-Output-Tokens") != "100" {
 		t.Fatalf("output cap: engine saw max_tokens %v", body["max_tokens"])
 	}
-	if id == "" || id != resp.Header.Get("X-Substrate-Request-Id") {
-		t.Fatalf("engine saw X-Request-Id %q, client got %q", id, resp.Header.Get("X-Substrate-Request-Id"))
+	if id == "" || id != resp.Header.Get("X-Emx-Request-Id") {
+		t.Fatalf("engine saw X-Request-Id %q, client got %q", id, resp.Header.Get("X-Emx-Request-Id"))
 	}
 	if resp.Header.Get("x-ratelimit-limit-requests") != "5" || resp.Header.Get("x-ratelimit-remaining-requests") != "4" {
 		t.Fatalf("rpm headers: %v", resp.Header)
@@ -112,8 +112,8 @@ teams:
 
 	var models struct {
 		Data []struct {
-			ID        string         `json:"id"`
-			Substrate map[string]any `json:"substrate"`
+			ID  string         `json:"id"`
+			EMX map[string]any `json:"emx"`
 		} `json:"data"`
 	}
 	mreq, _ := http.NewRequest("GET", srv.URL+"/v1/models", nil)
@@ -126,7 +126,7 @@ teams:
 	r2.Body.Close()
 	found := false
 	for _, m := range models.Data {
-		found = found || (m.ID == "chat-default" && m.Substrate["alias_for"] == "m")
+		found = found || (m.ID == "chat-default" && m.EMX["alias_for"] == "m")
 	}
 	if !found {
 		t.Fatalf("/v1/models does not list the alias: %+v", models.Data)
@@ -157,7 +157,7 @@ teams:
 // The usage record's id is the gateway's own: a client repeating its X-Request-Id loses no record, and
 // its id is kept beside the gateway's.
 func TestRequestIDsAreGeneratedByTheGateway(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend()
 	defer backend.Close()
 	instance(t, "m.fake", "m", backend.URL)
@@ -173,9 +173,9 @@ func TestRequestIDsAreGeneratedByTheGateway(t *testing.T) {
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-		id := resp.Header.Get("X-Substrate-Request-Id")
+		id := resp.Header.Get("X-Emx-Request-Id")
 		if resp.StatusCode != 200 || id == "" || id == "client-chosen" || resp.Header.Get("X-Request-Id") != id {
-			t.Fatalf("status %d, X-Substrate-Request-Id %q, X-Request-Id %q", resp.StatusCode, id, resp.Header.Get("X-Request-Id"))
+			t.Fatalf("status %d, X-Emx-Request-Id %q, X-Request-Id %q", resp.StatusCode, id, resp.Header.Get("X-Request-Id"))
 		}
 		ids = append(ids, id)
 	}
@@ -194,7 +194,7 @@ func TestRequestIDsAreGeneratedByTheGateway(t *testing.T) {
 }
 
 func TestWebhooksAndAdminRecords(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend()
 	defer backend.Close()
 	instance(t, "m.fake", "m", backend.URL)
@@ -251,7 +251,7 @@ teams:
 	}
 
 	// An administrative call through the management API is recorded under the key and sent to "admin" hooks.
-	if resp := do(t, "POST", srv.URL+"/substrate/v1/reload", admin, ""); resp.StatusCode != 200 {
+	if resp := do(t, "POST", srv.URL+"/emx/v1/reload", admin, ""); resp.StatusCode != 200 {
 		t.Fatalf("reload: %d", resp.StatusCode)
 	}
 	select {
@@ -298,7 +298,7 @@ func TestWebhookFailureLogsNoSecretPath(t *testing.T) {
 }
 
 func TestKeyExpiryAlertsOncePerDay(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	kinds := make(chan string, 8)
 	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var m map[string]any

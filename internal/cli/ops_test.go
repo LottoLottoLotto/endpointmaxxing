@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,7 +33,7 @@ func openApp(t *testing.T) *app.App {
 }
 
 func TestBackupHoldsConfigKeysAndAConsistentDatabase(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	if _, err := config.Update(func(c *config.Config) error { c.Aliases = map[string]string{"x": "y"}; return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestBackupHoldsConfigKeysAndAConsistentDatabase(t *testing.T) {
 }
 
 func TestSecurityFindings(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	if _, err := config.Update(func(c *config.Config) error {
 		c.Gateway.Host = "0.0.0.0"
 		c.Logging.Bodies = true
@@ -136,8 +136,8 @@ func TestCSVTables(t *testing.T) {
 }
 
 func TestAdminChangesAreRecorded(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
-	t.Setenv("SUBSTRATE_ACTOR", "carol")
+	t.Setenv("EMX_HOME", t.TempDir())
+	t.Setenv("EMX_ACTOR", "carol")
 	if _, err := config.Update(func(c *config.Config) error { c.Logging.AuditFile = "audit.jsonl"; return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -167,15 +167,15 @@ func TestAdminChangesAreRecorded(t *testing.T) {
 			t.Fatalf("admin events %q lack %q", joined, want)
 		}
 	}
-	audit, _ := os.ReadFile(filepath.Join(os.Getenv("SUBSTRATE_HOME"), "state", "audit.jsonl"))
-	if strings.Count(string(audit), `"type":"admin"`) != 3 || strings.Contains(string(audit), "sk-sub-") {
+	audit, _ := os.ReadFile(filepath.Join(os.Getenv("EMX_HOME"), "state", "audit.jsonl"))
+	if strings.Count(string(audit), `"type":"admin"`) != 3 || strings.Contains(string(audit), "sk-emx-") {
 		t.Fatalf("audit log: %s", audit)
 	}
 }
 
 // A backup never touches a file that was already there: the previous archive survives a repeated command.
 func TestBackupLeavesAnExistingFileAlone(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	a := openApp(t)
 	out := filepath.Join(t.TempDir(), "b.tar.gz")
 	if err := os.WriteFile(out, []byte("yesterday's backup"), 0o600); err != nil {

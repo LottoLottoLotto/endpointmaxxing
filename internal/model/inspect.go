@@ -14,10 +14,10 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 )
 
-// Info is what substrate knows about a model source.
+// Info is what emx knows about a model source.
 type Info struct {
 	Source string `json:"source"`
 	// Path is the local file or directory engines load ("" for an uncached HF repo).

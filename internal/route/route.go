@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 )
 
 // Model is what routing needs to know about a model.
@@ -89,7 +89,7 @@ func Pick(cands []Candidate) (string, error) {
 		}
 	}
 	if len(compat) > 0 {
-		return "", errs.New(errs.NotFound, "no compatible engine is installed (compatible: %v; see `substrate engine install`)", compat)
+		return "", errs.New(errs.NotFound, "no compatible engine is installed (compatible: %v; see `emx engine install`)", compat)
 	}
-	return "", errs.New(errs.Unsupported, "no engine can serve this model (see `substrate route` for reasons)")
+	return "", errs.New(errs.Unsupported, "no engine can serve this model (see `emx route` for reasons)")
 }

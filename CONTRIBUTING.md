@@ -5,13 +5,13 @@ not open an issue: follow [SECURITY.md](SECURITY.md).
 
 ## Build
 
-substrate needs Go 1.26 or later and has no cgo dependencies.
+emx needs Go 1.26 or later and has no cgo dependencies.
 
 ```sh
-git clone https://github.com/LottoLottoLotto/substrate.git
-cd substrate
-go build -o bin/substrate ./cmd/substrate
-bin/substrate doctor
+git clone https://github.com/LottoLottoLotto/endpointmaxxing.git
+cd emx
+go build -o bin/emx ./cmd/emx
+bin/emx doctor
 ```
 
 Linux, macOS and Windows are supported; CI runs the tests and
@@ -25,7 +25,7 @@ files (`internal/proc`, `internal/lock`); keep it there.
 go test -race ./...
 ```
 
-Set `SUBSTRATE_HOME` to a scratch directory when you try a build by hand, so
+Set `EMX_HOME` to a scratch directory when you try a build by hand, so
 it does not touch your own configuration and state.
 
 ## Style
@@ -43,12 +43,12 @@ darwin/arm64, and runs `govulncheck`.
 
 ## Adding an engine
 
-substrate contains no engine-specific code: an engine is a YAML manifest. The
+emx contains no engine-specific code: an engine is a YAML manifest. The
 format is specified in [docs/SPEC.md](docs/SPEC.md).
 
-1. Write the manifest and try it from `~/.config/substrate/engines/`, where
+1. Write the manifest and try it from `~/.config/emx/engines/`, where
    user manifests live.
-2. Check it with `substrate engines` and `substrate run <model> --dry-run`,
+2. Check it with `emx engines` and `emx run <model> --dry-run`,
    which prints the exact command without starting it.
 3. To propose it as a builtin, add it to `internal/spec/engines/` and add a
    row to the table in [docs/engines.md](docs/engines.md).

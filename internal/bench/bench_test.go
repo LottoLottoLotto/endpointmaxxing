@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 )
 
 func git(t *testing.T, dir string, args ...string) string {

@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/app"
-	"github.com/LottoLottoLotto/substrate/internal/keys"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/spec"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // instance records an instance id serving model at url, alive as this test process.
@@ -95,7 +95,7 @@ func direct(h http.Handler, method, path, key, body string, headers ...string) *
 }
 
 func TestKeysRolesAllowlistAndRate(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend()
 	defer backend.Close()
 	instance(t, "m.fake", "m", backend.URL)
@@ -123,10 +123,10 @@ func TestKeysRolesAllowlistAndRate(t *testing.T) {
 	if got := call(t, "POST", chat, user, `{"model":"m"}`); got != 429 {
 		t.Fatalf("over rpm: %d", got)
 	}
-	if got := call(t, "GET", srv.URL+"/substrate/v1/instances", user, ""); got != 403 {
+	if got := call(t, "GET", srv.URL+"/emx/v1/instances", user, ""); got != 403 {
 		t.Fatalf("user on management API: %d", got)
 	}
-	if got := call(t, "GET", srv.URL+"/substrate/v1/instances", admin, ""); got != 200 {
+	if got := call(t, "GET", srv.URL+"/emx/v1/instances", admin, ""); got != 200 {
 		t.Fatalf("admin on management API: %d", got)
 	}
 	if got := call(t, "GET", srv.URL+"/metrics", user, ""); got != 403 {
@@ -141,9 +141,9 @@ func TestKeysRolesAllowlistAndRate(t *testing.T) {
 	m, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	for _, want := range []string{
-		`substrate_requests_total{model="m",engine="fake",api="chat",status="200"} 2`,
-		`substrate_tokens_total{model="m",engine="fake",kind="completion"} 10`,
-		`substrate_instance_up{instance="m.fake"`,
+		`emx_requests_total{model="m",engine="fake",api="chat",status="200"} 2`,
+		`emx_tokens_total{model="m",engine="fake",kind="completion"} 10`,
+		`emx_instance_up{instance="m.fake"`,
 	} {
 		if !strings.Contains(string(m), want) {
 			t.Fatalf("metrics lack %s:\n%s", want, m)
@@ -163,7 +163,7 @@ func TestKeysRolesAllowlistAndRate(t *testing.T) {
 // and the record it points at is neither loaded nor are its cleanup commands run.
 func TestStopRefusesIDsOutsideTheInstancesDir(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("SUBSTRATE_HOME", home)
+	t.Setenv("EMX_HOME", home)
 	marker := filepath.Join(home, "cleanup-ran")
 	data, _ := json.Marshal(runtime.Instance{ID: "../evil", Name: "evil", PID: 1 << 30, Cleanup: [][]string{{"touch", marker}}})
 	os.MkdirAll(paths.State(), 0o700)
@@ -171,7 +171,7 @@ func TestStopRefusesIDsOutsideTheInstancesDir(t *testing.T) {
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	_, srv := newGateway(t)
 	for _, id := range []string{"../evil", "../../state/evil", "evil"} {
-		if got := call(t, "POST", srv.URL+"/substrate/v1/stop", admin, `{"id":"`+id+`"}`); got != http.StatusNotFound {
+		if got := call(t, "POST", srv.URL+"/emx/v1/stop", admin, `{"id":"`+id+`"}`); got != http.StatusNotFound {
 			t.Fatalf("stop %q: %d", id, got)
 		}
 	}
@@ -183,7 +183,7 @@ func TestStopRefusesIDsOutsideTheInstancesDir(t *testing.T) {
 // The instances listing is open to auditors: it shows which variables an engine got, never their values,
 // and no credential passed as an argument.
 func TestInstancesListingMasksEnvAndSecretArguments(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	in := runtime.Instance{ID: "m.fake", Name: "m", Engine: "fake", APIKey: "sk-engine-key",
 		Argv: []string{"server", "--hf-token", "hf_argvsecret", "--password=pw-secret", "-e", "HF_TOKEN=hf_dockersecret", "--port", "9000"},
 		Env:  map[string]string{"HF_TOKEN": "hf_envsecret", "LLAMA_API_KEY": "sk-engine-key", "CUDA_VISIBLE_DEVICES": "3"}}
@@ -193,7 +193,7 @@ func TestInstancesListingMasksEnvAndSecretArguments(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "m.fake.json"), data, 0o600)
 	auditor, _ := keys.Add(keys.Key{Name: "audit", Role: keys.RoleAuditor})
 	_, srv := newGateway(t)
-	req, _ := http.NewRequest("GET", srv.URL+"/substrate/v1/instances", nil)
+	req, _ := http.NewRequest("GET", srv.URL+"/emx/v1/instances", nil)
 	req.Header.Set("Authorization", "Bearer "+auditor)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -222,7 +222,7 @@ func TestInstancesListingMasksEnvAndSecretArguments(t *testing.T) {
 }
 
 func TestFailoverToAnotherReplica(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	good := okBackend()
 	defer good.Close()
 	dead := httptest.NewServer(http.NotFoundHandler())
@@ -242,7 +242,7 @@ func TestFailoverToAnotherReplica(t *testing.T) {
 }
 
 func TestSwapPolicy(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend()
 	defer backend.Close()
 	instance(t, "a.fake", "a", backend.URL)
@@ -318,11 +318,11 @@ func TestConcurrencyLimitQueuesThenRefuses(t *testing.T) {
 // In open mode every caller is admin, so a web page in the operator's browser must not reach the gateway:
 // requests addressed to a non-loopback name (DNS rebinding) or sent by another origin are refused.
 func TestOpenModeAnswersOnlyLocalSameOriginRequests(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	g, _ := newGateway(t)
 	h := g.Handler()
 	whoami := func(host string, headers ...string) int {
-		r := httptest.NewRequest("GET", "http://"+host+"/substrate/v1/whoami", nil)
+		r := httptest.NewRequest("GET", "http://"+host+"/emx/v1/whoami", nil)
 		for i := 0; i+1 < len(headers); i += 2 {
 			r.Header.Set(headers[i], headers[i+1])
 		}
@@ -365,7 +365,7 @@ func TestOpenModeAnswersOnlyLocalSameOriginRequests(t *testing.T) {
 // Whether the gateway may run open is decided when it starts: removing the last key of a gateway that
 // was not allowed to must lock it, not make every caller admin.
 func TestRemovingTheLastKeyDoesNotOpenTheGateway(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	a, err := app.Open()
 	if err != nil {
@@ -375,7 +375,7 @@ func TestRemovingTheLastKeyDoesNotOpenTheGateway(t *testing.T) {
 	g := New(a, log.New(io.Discard, "", 0)) // AllowOpen unset: as serve leaves it for a non-loopback address
 	defer g.Close()
 	h := g.Handler()
-	if w := direct(h, "GET", "/substrate/v1/whoami", admin, ""); w.Code != 200 {
+	if w := direct(h, "GET", "/emx/v1/whoami", admin, ""); w.Code != 200 {
 		t.Fatalf("with a key: %d", w.Code)
 	}
 	if _, err := keys.Remove("ops"); err != nil {
@@ -383,7 +383,7 @@ func TestRemovingTheLastKeyDoesNotOpenTheGateway(t *testing.T) {
 	}
 	time.Sleep(10 * time.Millisecond) // a distinct mtime on coarse filesystems
 	for _, key := range []string{"", admin} {
-		if w := direct(h, "GET", "/substrate/v1/whoami", key, ""); w.Code != 401 {
+		if w := direct(h, "GET", "/emx/v1/whoami", key, ""); w.Code != 401 {
 			t.Fatalf("no keys left, key %q: %d %s", key, w.Code, w.Body)
 		}
 	}
@@ -392,19 +392,19 @@ func TestRemovingTheLastKeyDoesNotOpenTheGateway(t *testing.T) {
 // A browser can send text/plain or form bodies to another origin without asking: management calls with a
 // body must declare JSON, like settings calls.
 func TestManagementBodiesMustBeJSON(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, _ := newGateway(t)
 	h := g.Handler()
-	for _, path := range []string{"/substrate/v1/stop", "/substrate/v1/ensure", "/substrate/v1/reload", "/substrate/v1/policy/test"} {
+	for _, path := range []string{"/emx/v1/stop", "/emx/v1/ensure", "/emx/v1/reload", "/emx/v1/policy/test"} {
 		if w := direct(h, "POST", path, admin, `{"id":"nope"}`, "Content-Type", "text/plain"); w.Code != http.StatusUnsupportedMediaType {
 			t.Errorf("POST %s with a text/plain body: %d", path, w.Code)
 		}
 	}
-	if w := direct(h, "POST", "/substrate/v1/stop", admin, `{"id":"nope"}`); w.Code == http.StatusUnsupportedMediaType || w.Code < 400 {
+	if w := direct(h, "POST", "/emx/v1/stop", admin, `{"id":"nope"}`); w.Code == http.StatusUnsupportedMediaType || w.Code < 400 {
 		t.Errorf("stop with a JSON body naming no instance: %d", w.Code)
 	}
-	if w := direct(h, "POST", "/substrate/v1/reload", admin, ""); w.Code != 200 {
+	if w := direct(h, "POST", "/emx/v1/reload", admin, ""); w.Code != 200 {
 		t.Errorf("reload without a body: %d", w.Code)
 	}
 }
@@ -412,7 +412,7 @@ func TestManagementBodiesMustBeJSON(t *testing.T) {
 // A request without a model is routed to the only ready one: the key's allow-list applies to that model,
 // and the engine is told which. Bodies an engine could read differently from the gateway are refused.
 func TestModelLessRequestsAndAmbiguousBodies(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	b := newRecordingBackend()
 	defer b.Close()
 	instance(t, "other.fake", "other", b.URL)
@@ -449,7 +449,7 @@ func TestModelLessRequestsAndAmbiguousBodies(t *testing.T) {
 
 // A key over its rate is refused before its body is read (here: before the body is found to be garbage).
 func TestRateLimitIsCheckedBeforeTheBody(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	backend := okBackend()
 	defer backend.Close()
 	instance(t, "m.fake", "m", backend.URL)
@@ -467,7 +467,7 @@ func TestRateLimitIsCheckedBeforeTheBody(t *testing.T) {
 // gateway.max_body_mb bounds one body (413), and the bodies of all in-flight requests share a memory
 // budget: a request that does not fit is told to retry (503), and the budget is returned when one ends.
 func TestBodyLimitAndBufferBudget(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	writeConfig(t, "gateway:\n    max_body_mb: 1\n    max_buffered_mb: 8\n")
 	backend := okBackend()
 	defer backend.Close()
@@ -555,7 +555,7 @@ func TestBodyBudgetIsTakenAsBytesArriveAndSharedBetweenKeys(t *testing.T) {
 // What a client chooses is stored and labelled within bounds: a model name that could not be a model's is
 // "invalid" in usage rows and metric labels, and paths and user agents are cut.
 func TestClientChosenTextIsBounded(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	g, _ := newGateway(t)
 	h := g.Handler()
 	long := strings.Repeat("a", 1000)
@@ -586,12 +586,12 @@ func TestClientChosenTextIsBounded(t *testing.T) {
 
 // Refused keys cost nothing to send: only so many a minute are stored, the rest are counted.
 func TestUnauthenticatedDenialsAreStoredAtALimitedRate(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
 	g, _ := newGateway(t)
 	h := g.Handler()
 	for range maxStoredDenials + 10 {
-		if w := direct(h, "GET", "/substrate/v1/whoami", "sk-sub-wrong", ""); w.Code != 401 {
+		if w := direct(h, "GET", "/emx/v1/whoami", "sk-emx-wrong", ""); w.Code != 401 {
 			t.Fatalf("wrong key: %d", w.Code)
 		}
 	}
@@ -644,7 +644,7 @@ func TestRoutedModelsKeepTheirMetricSeries(t *testing.T) {
 
 // One model served by two instances is still one model: a request without a model goes to it.
 func TestModelLessRequestWithReplicas(t *testing.T) {
-	t.Setenv("SUBSTRATE_HOME", t.TempDir())
+	t.Setenv("EMX_HOME", t.TempDir())
 	b := newRecordingBackend()
 	defer b.Close()
 	instance(t, "m.a", "m", b.URL)

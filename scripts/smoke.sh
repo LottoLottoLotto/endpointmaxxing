@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Run a substrate binary through the path every platform must get right: start an engine process, see it
+# Run a emx binary through the path every platform must get right: start an engine process, see it
 # ready, list it, serve the gateway, stop the engine and see it gone. The "engine" is Python's http.server
 # (scripts/smoke/pyhttp.yaml), so this needs only Python and curl; it touches nothing outside a temp dir.
 #
-#   scripts/smoke.sh ./substrate
+#   scripts/smoke.sh ./emx
 set -euo pipefail
 
 bin="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d)"
-export SUBSTRATE_HOME="$work/home"
+export EMX_HOME="$work/home"
 port=7795
 serve_pid=""
 cleanup() {
@@ -48,15 +48,15 @@ step "gateway serves and lists the instance"
 "$bin" serve --port "$port" > "$work/serve.log" 2>&1 &
 serve_pid=$!
 for _ in $(seq 1 50); do
-  curl -fsS -o /dev/null "http://127.0.0.1:$port/substrate/v1/whoami" 2>/dev/null && break
+  curl -fsS -o /dev/null "http://127.0.0.1:$port/emx/v1/whoami" 2>/dev/null && break
   sleep 0.2
 done
 # Responses go to a file first: grep -q stops reading at its first match, which curl reports as a failure.
-curl -fsS -o "$work/instances.json" "http://127.0.0.1:$port/substrate/v1/instances"
+curl -fsS -o "$work/instances.json" "http://127.0.0.1:$port/emx/v1/instances"
 grep -q '"smoke.pyhttp"' "$work/instances.json" || fail "gateway does not list the instance: $(cat "$work/serve.log")"
 curl -fsS -o /dev/null "http://127.0.0.1:$port/admin/" || fail "admin UI is not served"
 curl -fsS -o "$work/metrics.txt" "http://127.0.0.1:$port/metrics"
-grep -q '^substrate_' "$work/metrics.txt" || fail "no metrics"
+grep -q '^emx_' "$work/metrics.txt" || fail "no metrics"
 kill "$serve_pid" 2>/dev/null || true
 wait "$serve_pid" 2>/dev/null || true
 serve_pid=""

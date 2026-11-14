@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 )
 
 func open(t *testing.T, p string, maxMB int, keyFile string) *Log {

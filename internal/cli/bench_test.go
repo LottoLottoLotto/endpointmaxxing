@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/config"
-	"github.com/LottoLottoLotto/substrate/internal/paths"
-	"github.com/LottoLottoLotto/substrate/internal/runtime"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // fakeLMXScript answers like lmx; verified decides the server's verdict. It returns the arguments file.
@@ -42,7 +42,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SUBSTRATE_LMX", bin)
+	t.Setenv("EMX_LMX", bin)
 	return args
 }
 
@@ -59,8 +59,8 @@ func selfStart(t *testing.T) uint64 {
 
 func TestBenchRunUploadsOnlyVerifiedRuns(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("SUBSTRATE_HOME", home)
-	t.Setenv("SUBSTRATE_ACTOR", "tester")
+	t.Setenv("EMX_HOME", home)
+	t.Setenv("EMX_ACTOR", "tester")
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer backend.Close()
 
@@ -102,7 +102,7 @@ func TestBenchRunUploadsOnlyVerifiedRuns(t *testing.T) {
 	}
 	args, _ := os.ReadFile(argsFile)
 	for _, want := range []string{"--served-model m", "--concurrency 4", "--spec-method MTP", "--hardware " + filepath.Join(paths.State(), "benchmarks"),
-		"--canonical-prompt reasoning-v1", "Served by substrate"} {
+		"--canonical-prompt reasoning-v1", "Served by emx"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("lmx arguments lack %q:\n%s", want, args)
 		}

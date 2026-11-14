@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LottoLottoLotto/substrate/internal/audit"
-	"github.com/LottoLottoLotto/substrate/internal/errs"
-	"github.com/LottoLottoLotto/substrate/internal/gateway"
-	"github.com/LottoLottoLotto/substrate/internal/policy"
-	"github.com/LottoLottoLotto/substrate/internal/settings"
-	"github.com/LottoLottoLotto/substrate/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/audit"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/policy"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/settings"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // filterFlags are shared by the usage-database commands.
@@ -34,7 +34,7 @@ func addFilterFlags(fs *flag.FlagSet, defSince string, defLimit int) *filterFlag
 		model:    fs.String("model", "", "only this model"),
 		engine:   fs.String("engine", "", "only this engine"),
 		instance: fs.String("instance", "", "only this instance"),
-		client:   fs.String("client", "", "only this client (X-Substrate-Client header or request user)"),
+		client:   fs.String("client", "", "only this client (X-Emx-Client header or request user)"),
 	}
 	if defLimit >= 0 {
 		f.limit = fs.Int("limit", defLimit, "max rows (0 = all)")
@@ -46,7 +46,7 @@ func addFilterFlags(fs *flag.FlagSet, defSince string, defLimit int) *filterFlag
 func (f *filterFlags) addRequestFilters(fs *flag.FlagSet) *filterFlags {
 	f.category = fs.String("category", "", "only this prompt category")
 	f.team = fs.String("team", "", "only this team's keys")
-	f.errorKind = fs.String("error-kind", "", "only this error kind (see `substrate errors --kinds`)")
+	f.errorKind = fs.String("error-kind", "", "only this error kind (see `emx errors --kinds`)")
 	f.errors = fs.Bool("errors", false, "only failed requests")
 	f.flagged = fs.Bool("flagged", false, "only requests that matched a policy rule")
 	f.minSeverity = fs.String("min-severity", "", "only flagged requests at or above this severity: "+strings.Join(policy.Severities, ", "))
@@ -157,7 +157,7 @@ func cmdUsage() *command {
 				}
 				return e.out(map[string]any{"by": *by, "since": *ff.since, "rows": rows}, func(w io.Writer) {
 					if len(rows) == 0 {
-						fmt.Fprintln(w, "no requests recorded in this window (only traffic through `substrate serve` or `substrate chat` is metered)")
+						fmt.Fprintln(w, "no requests recorded in this window (only traffic through `emx serve` or `emx chat` is metered)")
 						return
 					}
 					t := make([][]string, len(rows))

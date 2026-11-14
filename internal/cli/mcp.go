@@ -16,7 +16,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/LottoLottoLotto/substrate/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
 )
 
 // MCP (Model Context Protocol) over stdio: newline-delimited JSON-RPC 2.0.
@@ -26,7 +26,7 @@ import (
 // An agent acts on what it reads, and what it reads may be written by someone else. So by default the tools
 // leave out every input that chooses what this host runs or which of its files are read (host-only commands
 // and flags, engine arguments): an agent can start, stop, measure and inspect models, but cannot be talked
-// into running a program. `substrate mcp --allow-host` offers everything the CLI does.
+// into running a program. `emx mcp --allow-host` offers everything the CLI does.
 
 const mcpProtocol = "2025-06-18"
 
@@ -43,7 +43,7 @@ type rpcErr struct {
 }
 
 func cmdMCP() *command {
-	return &command{name: "mcp", summary: "serve substrate's commands as MCP tools over stdio (for agents)",
+	return &command{name: "mcp", summary: "serve emx's commands as MCP tools over stdio (for agents)",
 		build: func(fs *flag.FlagSet) action {
 			allowHost := fs.Bool("allow-host", false, "also offer the inputs that choose what this host runs or reads (engine manifests and overrides, engine arguments, manifest vars, file paths): the agent then has the access of a shell")
 			return func(e *env, pos, _ []string) error {
@@ -109,7 +109,7 @@ func tools(allowHost bool) []mcpTool {
 			props["engine_args"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"},
 				"description": "arguments passed verbatim to the engine (after --)"}
 		}
-		desc := s.Summary + ". Usage: substrate " + s.Command + " " + s.Synopsis
+		desc := s.Summary + ". Usage: emx " + s.Command + " " + s.Synopsis
 		out = append(out, mcpTool{
 			Name: s.MCPTool, Description: desc,
 			InputSchema: map[string]any{"type": "object", "properties": props, "additionalProperties": false},
@@ -292,10 +292,10 @@ func serveMCP(ctx context.Context, in io.Reader, out, logw io.Writer, allowHost 
 			reply(m.ID, map[string]any{
 				"protocolVersion": ver,
 				"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-				"serverInfo":      map[string]any{"name": "substrate", "version": Version},
-				"instructions": "substrate manages local inference engines (llama.cpp, vLLM, SGLang, Strata, ...). " +
-					"Typical flow: substrate_model_list or substrate_route, then substrate_ensure to get a ready OpenAI-compatible " +
-					"endpoint (api_url), substrate_chat for a quick request, substrate_usage for token accounting. " +
+				"serverInfo":      map[string]any{"name": "emx", "version": Version},
+				"instructions": "emx manages local inference engines (llama.cpp, vLLM, SGLang, Strata, ...). " +
+					"Typical flow: emx_model_list or emx_route, then emx_ensure to get a ready OpenAI-compatible " +
+					"endpoint (api_url), emx_chat for a quick request, emx_usage for token accounting. " +
 					"Errors carry a stable code: usage, not_found, timeout, engine_failed, conflict, unsupported.",
 			})
 		case "ping":

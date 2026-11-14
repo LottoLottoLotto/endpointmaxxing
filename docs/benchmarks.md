@@ -2,14 +2,14 @@
 
 [← README](../README.md) · [Documentation index](../README.md#documentation)
 
-`substrate bench` measures a served model and publishes the result to
+`emx bench` measures a served model and publishes the result to
 [LocalMaxxing](https://localmaxxing.com). Measuring, verification evidence and
 upload are done by [`lmx`](https://github.com/LottoLottoLotto/localmaxxing-cli)
-(v0.1.56 or later, logged in with `lmx login`; `$SUBSTRATE_LMX` points at a
-copy off `PATH`). substrate supplies what `lmx` would otherwise ask for.
+(v0.1.56 or later, logged in with `lmx login`; `$EMX_LMX` points at a
+copy off `PATH`). emx supplies what `lmx` would otherwise ask for.
 
 When the model's endpoint needs a key (an engine started with `--api-key`, or
-`--via gateway` with `$SUBSTRATE_API_KEY`), substrate hands it to `lmx` in the
+`--via gateway` with `$EMX_API_KEY`), emx hands it to `lmx` in the
 environment variable `LMX_MODEL_API_KEY`, not on its command line, which every
 user of the host can read. That needs an `lmx` that lists the feature
 `model-api-key-env` in `lmx version --json` (releases after v0.1.60). With an
@@ -17,15 +17,15 @@ older `lmx`, `bench run` stops and says so; `--key-in-args` accepts the key on
 the command line.
 
 ```sh
-substrate bench config flash-next-iq3s --hf-id ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
+emx bench config flash-next-iq3s --hf-id ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
     --spec-method MTP --spec-num-tokens 3 --context-length 32768 --notes "..."   # once per model
-substrate bench config flash-next-iq3s            # what a submission would say, and where each value comes from
-substrate bench run flash-next-iq3s --validate    # measure; ask LocalMaxxing whether it would be verified
-substrate bench run flash-next-iq3s --submit      # measure, validate, upload when verified
-substrate bench run qwen3.8-27b-8u --concurrency 1,4,8,16
-substrate bench list [--model M]                  # history: tok/s, prefill, TTFT, verdict, submission id
-substrate bench show <id>                         # one run with its LocalMaxxing payload
-substrate bench submit <id>...                    # upload recorded runs later
+emx bench config flash-next-iq3s            # what a submission would say, and where each value comes from
+emx bench run flash-next-iq3s --validate    # measure; ask LocalMaxxing whether it would be verified
+emx bench run flash-next-iq3s --submit      # measure, validate, upload when verified
+emx bench run qwen3.8-27b-8u --concurrency 1,4,8,16
+emx bench list [--model M]                  # history: tok/s, prefill, TTFT, verdict, submission id
+emx bench show <id>                         # one run with its LocalMaxxing payload
+emx bench submit <id>...                    # upload recorded runs later
 ```
 
 - **Metadata** (`bench:` on the model in `models.yaml`, set with
@@ -49,10 +49,10 @@ substrate bench submit <id>...                    # upload recorded runs later
   run --mode remote` once per `--concurrency` level on the canonical prompt
   (`--canonical-prompt`, default `reasoning-v1`; `--prompt-file` for your own,
   never verified). It measures the engine's own endpoint by default; `--via
-  gateway` goes through `substrate serve`, where gateway policies, output caps
+  gateway` goes through `emx serve`, where gateway policies, output caps
   and keys apply. A warning names gateway requests sharing the engine. Every
   run is recorded in the `benchmarks` table, and its payload and hardware file
-  are kept in `~/.local/state/substrate/benchmarks/`.
+  are kept in `~/.local/state/emx/benchmarks/`.
 - **Publishing:** `--validate` asks LocalMaxxing for its verdict without
   uploading. `--submit` uploads only runs it would mark verified (batch 1, the
   canonical prompt, complete evidence); `--force` uploads anyway. Uploads are
