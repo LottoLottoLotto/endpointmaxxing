@@ -578,7 +578,9 @@ func (g *Gateway) monitor() {
 		if in.ExitNoted || in.Alive() {
 			continue
 		}
-		in.NoteExit()
+		if !in.NoteExit() {
+			continue // stopped on purpose meanwhile (emx stop from another process): not a crash
+		}
 		g.setStatus(in.ID, runtime.StatusExited)
 		g.Log.Printf("%s (%s) exited unexpectedly; log: %s", in.ID, in.Engine, in.Log)
 		if in.ReadyAt != nil { // a crash after serving, not a failed start (those already errored)

@@ -20,7 +20,22 @@ install:
     - '"{data}/venvs/sglang/bin/pip" install -U "sglang[all]"'
 
 launch:
-  command: ["{bin}", -m, sglang.launch_server, --model-path, "{model}", --host, "{host}", --port, "{port}", --served-model-name, "{name}"]
+  # SGLang takes its API key only as an argument, which every user of the host could read in the process
+  # list. So it is started through one line of Python that reads the key from the environment and hands it
+  # to SGLang's own argument parser inside the process; otherwise this is `python -m sglang.launch_server`.
+  command:
+    - "{bin}"
+    - -c
+    - "import os, runpy, sys; k = os.environ.get('SGLANG_API_KEY'); sys.argv = ['sglang.launch_server'] + sys.argv[1:] + (['--api-key', k] if k else []); runpy.run_module('sglang.launch_server', run_name='__main__', alter_sys=True)"
+    - --model-path
+    - "{model}"
+    - --host
+    - "{host}"
+    - --port
+    - "{port}"
+    - --served-model-name
+    - "{name}"
+  api_key_env: SGLANG_API_KEY
   # Activate the virtualenv: kernel JIT needs the venv's ninja.
   env: {PATH: "{bin_dir}:{env.PATH}"}
   stop_signal: SIGINT
@@ -42,7 +57,6 @@ flags:
     values: {f16: auto, bf16: bf16, fp8: fp8_e4m3, q8_0: fp8_e4m3}
   quantization: [--quantization, "{value}"]
   dtype: [--dtype, "{value}"]
-  api_key: [--api-key, "{value}"]
   trust_remote_code: [--trust-remote-code]
   embeddings: [--is-embedding]
 

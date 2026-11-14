@@ -476,3 +476,20 @@ func (m *Models) Remove(name string) bool {
 	}
 	return false
 }
+
+// Redacted returns the model as it may be shown: the values of flags that hold credentials (the engine's
+// api_key) are masked. models.yaml keeps them, readable by its owner only.
+func (m Model) Redacted() Model {
+	if len(m.Flags) == 0 {
+		return m
+	}
+	flags := make(map[string]string, len(m.Flags))
+	for k, v := range m.Flags {
+		if k == "api_key" || strings.Contains(k, "token") || strings.Contains(k, "secret") || strings.Contains(k, "password") {
+			v = "***"
+		}
+		flags[k] = v
+	}
+	m.Flags = flags
+	return m
+}

@@ -335,7 +335,7 @@ func serviceInstallCmd() *command {
 		build: func(fs *flag.FlagSet) action {
 			enable := fs.Bool("enable", false, "also daemon-reload, enable and start it now")
 			var envs multi
-			fs.Var(&envs, "env", "extra Environment= line, e.g. EMX_API_KEY=... (repeatable)")
+			fs.Var(&envs, "env", "extra Environment= line, KEY=VALUE (repeatable). Not for the master key: a value typed here is on this command line; give the gateway a key file instead (-- --api-key-file F)")
 			return func(e *env, pos, extra []string) error {
 				if err := wantArgs("service install", pos, 0, 0); err != nil {
 					return err

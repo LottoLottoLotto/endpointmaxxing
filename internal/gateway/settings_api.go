@@ -380,7 +380,7 @@ func (g *Gateway) listRegistry(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(ms, func(i, j int) bool { return ms[i].Name < ms[j].Name })
 	out := make([]registryEntry, len(ms))
 	for i, m := range ms {
-		out[i] = registryEntry{Model: m, SourceMissing: model.MissingLocal(m.Source)}
+		out[i] = registryEntry{Model: m.Redacted(), SourceMissing: model.MissingLocal(m.Source)} // no engine key: auditors read this
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -436,7 +436,7 @@ func (g *Gateway) addModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.reloadNow()
-	g.changed(w, r, http.StatusCreated, res, map[string]any{"model": added.Model, "engine": added.Engine, "route": added.Route})
+	g.changed(w, r, http.StatusCreated, res, map[string]any{"model": added.Model.Redacted(), "engine": added.Engine, "route": added.Route})
 }
 
 func (g *Gateway) removeModel(w http.ResponseWriter, r *http.Request) {

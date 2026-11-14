@@ -29,7 +29,7 @@ forwarded). How the engine receives it depends on its manifest
 | `llama.cpp`, `buun-llama-cpp` | environment variable `LLAMA_API_KEY` |
 | `strata` | environment variable `STRATA_API_KEY` |
 | `tt-vllm` | environment variable `VLLM_API_KEY`, forwarded into the container by docker (`-e VLLM_API_KEY`) |
-| `sglang` | `--api-key` on the command line, visible in the host's process list |
+| `sglang` | environment variable `SGLANG_API_KEY`. SGLang itself only takes the key as an argument, so the manifest starts it through one line of Python that reads the variable and hands the key to SGLang inside the process |
 | `tt-multihost` | no key (a multi-model host takes no flags) |
 
 ## Tenstorrent

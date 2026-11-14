@@ -299,3 +299,34 @@ func TestSettingsAPIErasesOneClient(t *testing.T) {
 		t.Fatalf("after erasing alice: %+v", rows)
 	}
 }
+
+// An engine key registered with a model is not handed back by the registry listing, which auditors read.
+func TestRegistryListingMasksEngineKeys(t *testing.T) {
+	t.Setenv("EMX_HOME", t.TempDir())
+	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
+	aud, _ := keys.Add(keys.Key{Name: "aud", Role: keys.RoleAuditor})
+	g, srv := newGateway(t)
+	ckpt := filepath.ToSlash(filepath.Join(t.TempDir(), "tiny"))
+	os.MkdirAll(ckpt, 0o755)
+	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
+	s, out := send(t, "POST", srv.URL+"/emx/v1/models", admin, `{"name":"tiny","source":"`+ckpt+`","flags":{"ctx":"4096","api_key":"sk-engine-secret"}}`)
+	if s != http.StatusCreated || strings.Contains(fmt.Sprint(out), "sk-engine-secret") {
+		t.Fatalf("model add: %d %v", s, out)
+	}
+	for who, key := range map[string]string{"admin": admin, "auditor": aud} {
+		req, _ := http.NewRequest("GET", srv.URL+"/emx/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "sk-engine-secret") || !strings.Contains(string(body), "4096") {
+			t.Errorf("registry as %s: %d %s", who, resp.StatusCode, body)
+		}
+	}
+	if m, ok := g.App.RegisteredModel("tiny"); !ok || m.Flags["api_key"] != "sk-engine-secret" {
+		t.Fatalf("the registry itself must keep the key to launch with: %v", m.Flags)
+	}
+}

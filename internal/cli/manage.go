@@ -65,7 +65,7 @@ func modelListCmd() *command {
 				var list []listed
 				for _, m := range a.RegisteredModels() {
 					o := a.Offer(m)
-					list = append(list, listed{m, o.Context, o.Parallel, o.Unavailable})
+					list = append(list, listed{m.Redacted(), o.Context, o.Parallel, o.Unavailable})
 				}
 				return e.out(list, func(w io.Writer) {
 					if len(list) == 0 {
@@ -133,6 +133,7 @@ func modelAddCmd() *command {
 					return err
 				}
 				e.applied(res)
+				added.Model = added.Model.Redacted() // the engine key, if one was given, is not echoed
 				m := added.Model
 				return e.out(added, func(w io.Writer) {
 					fmt.Fprintf(w, "added %s (%s %s %s)", name, m.Format, dash(m.Arch), dash(m.Quant))

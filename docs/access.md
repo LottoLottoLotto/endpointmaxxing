@@ -69,10 +69,16 @@ emx key rm alice
   serves plain HTTP. `--insecure` allows open mode on that address and lets
   open-mode requests be addressed to any host name.
 - **Engine keys:** the client's key is never forwarded. The engine receives
-  its own key, set with `--api-key` at launch. Engines whose manifest sets
-  `launch.api_key_env` get it in their environment; the others get it on
-  their command line, where the host's process list shows it (see
-  [Builtin engines](engines.md#builtin-engines)).
+  its own key, set with `--api-key` at launch or registered with the model.
+  Every builtin engine gets it in its environment (`launch.api_key_env`); an
+  engine whose manifest maps it to an argument gets it on its command line,
+  where the host's process list shows it (see
+  [Builtin engines](engines.md#builtin-engines)). A registered key is kept in
+  `models.yaml` (owner-only) and shown as `***` everywhere else: listings,
+  `run --dry-run`, `emx logs`, error messages and event records. Typing
+  `--api-key VALUE` puts the value on *your* command line and in your shell
+  history; registering through the settings API (`POST /emx/v1/models`)
+  avoids that.
 
 ## Teams, prices and budgets
 

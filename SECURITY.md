@@ -71,8 +71,9 @@ Out of scope:
   engine.
 - **Engine keys.** An engine's own key (`--api-key`) is passed in the
   engine's environment where its manifest sets `launch.api_key_env` (builtin:
-  `vllm`, `llama.cpp`, `buun-llama-cpp`, `strata`, `tt-vllm`). `sglang`
-  still receives it on the command line, which every user of the host can
+  `vllm`, `llama.cpp`, `buun-llama-cpp`, `strata`, `tt-vllm`, `sglang`). An
+  engine added with a manifest that maps `api_key` to an argument receives it
+  on the command line, which every user of the host can
   read in the process list. Instance listings (`ps`, `inspect`,
   `/emx/v1/instances`) show environment values and secret-looking
   argument values as `***`; the full values are only in the owner-only

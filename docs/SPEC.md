@@ -173,8 +173,11 @@ not allowed in a multi-model host manifest. Of the builtin engines, `vllm`
 uses `VLLM_API_KEY`, `llama.cpp` and `buun-llama-cpp` use `LLAMA_API_KEY`,
 `strata` uses `STRATA_API_KEY`, and `tt-vllm` uses `VLLM_API_KEY` (its docker
 command has `-e VLLM_API_KEY`, which forwards the variable into the
-container without putting its value on a command line). Only `sglang` maps
-`flags.api_key` to `--api-key` and so receives the key on the command line.
+container without putting its value on a command line). `sglang` takes its key
+only as an argument, so its manifest launches it with a line of Python
+(`python -c ...`) that reads `SGLANG_API_KEY` and appends `--api-key` to
+SGLang's arguments inside the process: an engine without an environment
+variable for its key can be wrapped the same way.
 
 `context` tells the gateway how to report a model's context window in
 `/v1/models`, so that a client does not have to guess it. For a running

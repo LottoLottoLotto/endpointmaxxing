@@ -472,7 +472,7 @@ func start(p *Plan, id, owner string) (*Instance, error) {
 		}
 	}
 	if in.StartTick == 0 {
-		return nil, errs.New(errs.EngineFailed, "%s exited immediately; log: %s\n%s", p.Engine, logPath, Tail(logPath, 20))
+		return nil, errs.New(errs.EngineFailed, "%s exited immediately; log: %s\n%s", p.Engine, logPath, scrub(Tail(logPath, 20), p.apiKey, p.Env))
 	}
 	return in, in.save()
 }
@@ -485,7 +485,7 @@ func (in *Instance) WaitReady(ctx context.Context, timeout time.Duration) error 
 	deadline := time.Now().Add(timeout)
 	for {
 		if !in.Alive() {
-			return errs.New(errs.EngineFailed, "%s exited during startup; log: %s\n%s", in.ID, in.Log, Tail(in.Log, 30))
+			return errs.New(errs.EngineFailed, "%s exited during startup; log: %s\n%s", in.ID, in.Log, in.Scrub(Tail(in.Log, 30)))
 		}
 		if in.Healthy(ctx) {
 			return nil
@@ -528,8 +528,10 @@ func (in *Instance) AwaitStart(ctx context.Context, timeout time.Duration) error
 	return err
 }
 
-// NoteExit records an exited instance's exit once (ps, the gateway's monitor).
-func (in *Instance) NoteExit() {
+// NoteExit records an exited instance's exit once (ps, the gateway's monitor) and reports whether it did.
+// It waits for a stop in progress and then finds the record gone: false means the exit was already noted,
+// or was a stop somebody asked for, not a crash to react to.
+func (in *Instance) NoteExit() (noted bool) {
 	lock.With(lockFor(in.ID), func() error {
 		cur, err := Get(in.ID)
 		if err != nil || cur.PID != in.PID || cur.ExitNoted || cur.Alive() {
@@ -537,8 +539,10 @@ func (in *Instance) NoteExit() {
 		}
 		cur.noteExit()
 		*in = *cur
+		noted = true
 		return nil
 	})
+	return noted
 }
 
 func (in *Instance) noteExit() {
@@ -546,7 +550,8 @@ func (in *Instance) noteExit() {
 		return
 	}
 	up := time.Since(in.StartedAt)
-	detail := Tail(in.Log, 5)
+	in.scrubLog()
+	detail := in.Scrub(Tail(in.Log, 5))
 	// The leader is gone, but its workers (vLLM EngineCore, SGLang scheduler) may still hold
 	// the GPU. Skip when the pid was reused: that process leads somebody else's session.
 	if proc.Start(in.PID) == 0 {
@@ -615,6 +620,7 @@ func (in *Instance) stop(reason string) error {
 			detail += "; " + in.reset("killed")
 		}
 		record("stop", in, &up, detail)
+		in.scrubLog()
 	} else {
 		in.noteExit()
 	}

@@ -87,15 +87,10 @@ func cmdRun() *command {
 					if err != nil {
 						return err
 					}
-					// The plan is for reading and pasting: the key is masked wherever the engine takes it.
-					plan.Argv = runtime.Redact(plan.Argv, l.flags["api_key"])
-					if key := l.flags["api_key"]; key != "" {
-						for k, v := range plan.Env {
-							if v == key {
-								plan.Env[k] = "***"
-							}
-						}
-					}
+					// The plan is for reading: keys and tokens are masked wherever the engine takes them, whether
+					// they came from this command line, the model's registration or the engine's settings. An
+					// agent (MCP) sees no environment value at all.
+					plan = plan.Redacted(e.owner != "cli")
 					return e.out(map[string]any{"id": iid, "plan": plan}, func(w io.Writer) { printPlan(w, iid, plan) })
 				}
 				if a.HostEngine(t, opts.Engine) != nil {
@@ -362,9 +357,9 @@ func cmdLogs() *command {
 					in = &runtime.Instance{ID: pos[0], Log: path}
 				}
 				if e.json || e.owner != "cli" {
-					return e.out(map[string]string{"id": in.ID, "log": in.Log, "tail": runtime.Tail(in.Log, *n)}, nil)
+					return e.out(map[string]string{"id": in.ID, "log": in.Log, "tail": in.Scrub(runtime.Tail(in.Log, *n))}, nil)
 				}
-				if t := runtime.Tail(in.Log, *n); t != "" {
+				if t := in.Scrub(runtime.Tail(in.Log, *n)); t != "" {
 					fmt.Fprintln(e.stdout, t)
 				}
 				if !*follow {
@@ -381,10 +376,15 @@ func cmdLogs() *command {
 				ctx, stop := e.interruptible()
 				defer stop()
 				buf := make([]byte, 64<<10)
+				var pending []byte // an unfinished line: a secret must not be split between two writes
 				for ctx.Err() == nil {
 					k, _ := f.Read(buf)
 					if k > 0 {
-						e.stdout.Write(buf[:k])
+						pending = append(pending, buf[:k]...)
+						if i := bytes.LastIndexByte(pending, '\n'); i >= 0 {
+							io.WriteString(e.stdout, in.Scrub(string(pending[:i+1])))
+							pending = append(pending[:0], pending[i+1:]...)
+						}
 						continue
 					}
 					if in.PID > 0 && !in.Alive() {

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
@@ -264,12 +265,82 @@ func TestAPIKeyTravelsInTheEnvironmentWhereTheEngineReadsIt(t *testing.T) {
 	if paths.Windows {
 		return // sglang is detected by running its Python, and the fake is a shell script
 	}
-	// An engine without launch.api_key_env still takes the key as an argument.
+	// SGLang only takes its key as an argument, so its manifest starts it through a line of Python that
+	// reads the key from the environment: the launch command itself carries no key.
 	p, err := engine(t, "sglang", config.EngineOverride{}).Build(req(map[string]string{"api_key": "sk-engine"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(p.Argv, " "), "--api-key sk-engine") {
-		t.Fatalf("sglang argv %v", p.Argv)
+	if p.Env["SGLANG_API_KEY"] != "sk-engine" || strings.Contains(strings.Join(p.Argv, " "), "sk-engine") {
+		t.Fatalf("sglang: key must be in $SGLANG_API_KEY only: env %v argv %v", p.Env, p.Argv)
+	}
+}
+
+// Secrets an engine prints into its own log (SGLang logs its arguments) are replaced where log text leaves
+// the file, and in the file once the engine has stopped.
+func TestLogTextAndStoppedLogsCarryNoSecrets(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "engine.log")
+	in := &Instance{ID: "m.e", Log: logPath, APIKey: "sk-engine-123456", Env: map[string]string{"HF_TOKEN": "hf_abcdefgh", "CUDA_VISIBLE_DEVICES": "0"}}
+	text := "args: {'api_key': 'sk-engine-123456', 'port': 0}\ntoken hf_abcdefgh used on device 0\n"
+	if err := os.WriteFile(logPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := in.Scrub(Tail(logPath, 10))
+	if strings.Contains(got, "sk-engine-123456") || strings.Contains(got, "hf_abcdefgh") || !strings.Contains(got, "device 0") {
+		t.Fatalf("scrubbed tail: %q", got)
+	}
+	in.scrubLog()
+	data, _ := os.ReadFile(logPath)
+	if strings.Contains(string(data), "sk-engine-123456") || strings.Contains(string(data), "hf_abcdefgh") || !strings.Contains(string(data), "'port': 0") {
+		t.Fatalf("log file after the engine stopped: %q", data)
+	}
+	if st, _ := os.Stat(logPath); !paths.OwnerOnly(st.Mode()) {
+		t.Fatalf("scrubbed log mode %v", st.Mode().Perm())
+	}
+}
+
+func TestPlanRedactedMasksKeysWhereverTheyTravel(t *testing.T) {
+	p := &Plan{Argv: []string{"server", "--api-key", "sk-engine-123456", "--port", "1"}, apiKey: "sk-engine-123456",
+		Env: map[string]string{"LLAMA_API_KEY": "sk-engine-123456", "HF_TOKEN": "hf_abcdefgh", "CUDA_VISIBLE_DEVICES": "0"}}
+	r := p.Redacted(false)
+	if s := strings.Join(r.Argv, " "); strings.Contains(s, "sk-engine") || !strings.Contains(s, "--port 1") {
+		t.Fatalf("argv %q", s)
+	}
+	if r.Env["LLAMA_API_KEY"] != "***" || r.Env["HF_TOKEN"] != "***" || r.Env["CUDA_VISIBLE_DEVICES"] != "0" {
+		t.Fatalf("env %v", r.Env)
+	}
+	if all := p.Redacted(true); all.Env["CUDA_VISIBLE_DEVICES"] != "***" {
+		t.Fatalf("for an agent every value is masked: %v", all.Env)
+	}
+	if p.Env["HF_TOKEN"] != "hf_abcdefgh" {
+		t.Fatal("the plan itself was changed: the launch needs the real values")
+	}
+}
+
+// The gateway's monitor restarts a model whose engine died. An engine that died because somebody stopped it
+// (emx stop from another process, which removes the record when it is done) is not such a case: NoteExit
+// says so, having waited for that stop to finish.
+func TestNoteExitTellsACrashFromAStop(t *testing.T) {
+	t.Setenv("EMX_HOME", t.TempDir())
+	dead := &Instance{ID: "m.e", Name: "m", Engine: "e", PID: 1 << 30, StartTick: 1, StartedAt: time.Now(), Log: filepath.Join(t.TempDir(), "x.log")}
+	if err := dead.save(); err != nil {
+		t.Fatal(err)
+	}
+	seen := *dead // what a monitor read before looking closer
+	if !seen.NoteExit() {
+		t.Fatal("a crashed engine's exit was not noted")
+	}
+	again := *dead
+	if again.NoteExit() {
+		t.Fatal("the same exit was noted twice")
+	}
+	stopped := &Instance{ID: "n.e", Name: "n", Engine: "e", PID: 1 << 30, StartTick: 1, StartedAt: time.Now()}
+	if err := stopped.save(); err != nil {
+		t.Fatal(err)
+	}
+	seen = *stopped
+	os.Remove(stopped.path()) // the stop finished and removed the record
+	if seen.NoteExit() {
+		t.Fatal("an engine that was stopped on purpose was reported as an exit to react to")
 	}
 }
