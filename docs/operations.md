@@ -6,13 +6,14 @@
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/emx/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`, `audit_key_file`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts` |
-| `~/.config/emx/keys.yaml` | gateway API keys (hashes only, mode 0600) |
+| `~/.config/emx/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`, `audit_key_file`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts`, `mesh` |
+| `~/.config/emx/keys.yaml` | gateway API keys (hashes only, mode 0600); on a mesh follower, the copy from `mesh.keys_from` |
+| `~/.config/emx/mesh-shared.yaml` | a mesh follower's copy of the teams, prices and aliases ([Mesh](mesh.md)) |
 | `~/.config/emx/models.yaml` | model registry: source, format, pinned engine, default flags, engine args |
 | `~/.config/emx/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |
 | `~/.local/state/emx/instances/` | one JSON record per instance (mode 0600; the only place holding unmasked environment and arguments) |
 | `~/.local/state/emx/logs/` | engine logs (kept after stop) |
-| `~/.local/state/emx/usage.db` | usage database (schema version 6) |
+| `~/.local/state/emx/usage.db` | usage database (schema version 7) |
 | `~/.local/state/emx/audit.jsonl` | audit log, when `logging.audit_file` is set |
 | `~/.local/state/emx/audit.jsonl.head` | the audit log's head anchor (see [Audit file integrity](governance.md#audit-file-integrity)) |
 | `~/.local/share/emx/` | engines installed by `emx engine install` |
@@ -20,8 +21,9 @@
 Set `EMX_HOME` to keep all of these under one directory.
 
 The usage database is migrated when a newer emx first opens it.
-Schema version 6 adds the column `requests.client_request_id`; an older
-emx binary refuses a database that this version has migrated.
+Schema version 7 adds the columns `requests.node` and `requests.mesh_from`
+([Mesh](mesh.md#limits-and-records)); an older emx binary refuses a database
+that this version has migrated.
 
 Here is a `config.yaml` with every setting at its default:
 
@@ -65,6 +67,14 @@ tenstorrent:
   lock: /var/tmp/tenstorrent/chip-{n}.lock   # every job on the card must use the same file
   locks: {0: /var/lock/my-other-tool.lock}   # per-chip overrides, to match existing scripts
   tt_smi: tt-smi
+mesh:                        # absent: this gateway is on its own (see mesh.md)
+  node: box1
+  secret_file: mesh.secret   # >= 32 bytes, mode 0600, the same on every machine
+  keys_from: box1            # the machine that holds keys, teams, prices and aliases
+  peers:
+    - {name: box2, url: https://box2.lan:7777}
+  ca_file: ""                # extra CA for the peers' certificates
+  interval: 5s
 ```
 
 ## TLS

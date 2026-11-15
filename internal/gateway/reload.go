@@ -134,7 +134,7 @@ func changedSections(a, b *config.Config) []string {
 
 // watchConfig reloads when config.yaml or models.yaml change on disk (checked every interval).
 func (g *Gateway) watchConfig(ctx context.Context, interval time.Duration) {
-	files := []string{config.ConfigPath(), config.ModelsPath()}
+	files := []string{config.ConfigPath(), config.ModelsPath(), config.SharedPath()}
 	stamp := func() map[string]fileStamp {
 		out := map[string]fileStamp{}
 		for _, f := range files {

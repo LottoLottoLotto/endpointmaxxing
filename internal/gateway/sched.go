@@ -36,6 +36,7 @@ func (g *Gateway) Run(ctx context.Context) {
 	go g.every(ctx, 24*time.Hour, g.retention)
 	go g.watchConfig(ctx, 2*time.Second)
 	go g.every(ctx, time.Hour, g.checkKeyExpiry)
+	go g.meshLoop(ctx)
 }
 
 // retention prunes usage records past logging.retention_days, and the admin trail and rotated audit files

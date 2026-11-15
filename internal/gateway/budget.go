@@ -87,11 +87,12 @@ func (a *authState) admitTeam(t *config.Team, currency string) (time.Duration, e
 	if t == nil {
 		return 0, nil
 	}
+	pu := a.peerUse()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var wait time.Duration
 	var refusal error
-	for _, l := range teamLimits(t, a.teamUsage(t.Name)) {
+	for _, l := range teamLimits(t, pu.team(t.Name, a.teamUsage(t.Name))) {
 		if l.used < l.max {
 			continue
 		}
@@ -128,7 +129,7 @@ type budgetAlert struct {
 
 // chargeTeam adds a finished request to its team's totals and returns alerts newly crossed.
 // The caller holds a.mu.
-func (a *authState) chargeTeam(r *store.Request, t *config.Team) []budgetAlert {
+func (a *authState) chargeTeam(r *store.Request, t *config.Team, pu peerUse) []budgetAlert {
 	if t == nil {
 		return nil
 	}
@@ -146,7 +147,7 @@ func (a *authState) chargeTeam(r *store.Request, t *config.Team) []budgetAlert {
 		u.monthCost += *r.Cost
 	}
 	var out []budgetAlert
-	for _, l := range teamLimits(t, u) {
+	for _, l := range teamLimits(t, pu.team(t.Name, u)) {
 		if l.used >= t.AlertFraction()*l.max && u.alerted[l.name] != l.period {
 			u.alerted[l.name] = l.period
 			out = append(out, budgetAlert{t.Name, l})

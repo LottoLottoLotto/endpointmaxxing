@@ -23,6 +23,10 @@ under `/emx/v1/`:
 | POST | `/emx/v1/policy/test` | `{"text"}` or `{"body"}`, optionally `model`, `client`, `api` (at most `gateway.max_body_mb`) | category and flags, nothing sent to a model |
 | GET / POST | `/emx/v1/reload` | | last reload outcome / re-read the config now (400 with the error if it is invalid) |
 | GET | `/emx/v1/whoami` | | the caller's key name, role and team |
+| GET | `/emx/v1/mesh` | | this machine's mesh: its name, where keys come from, each peer's status, round trip, version and models ([Mesh](mesh.md)) |
+
+`GET /emx/v1/mesh/state` and `GET /emx/v1/mesh/shared` answer only signed
+calls from the machines of the mesh.
 
 - **JSON bodies only.** Every POST, PUT, PATCH or DELETE under
   `/emx/v1/` that has a body must send `Content-Type:

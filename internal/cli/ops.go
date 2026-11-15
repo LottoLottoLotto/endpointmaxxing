@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/mesh"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/settings"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
@@ -268,6 +270,19 @@ func securityFindings(a *app.App) []securityFinding {
 	}
 	if c.Gateway.MetricsPublic && exposed {
 		add("metrics_public", "metrics_public exposes model, team and key names to anyone who can reach %s", c.Gateway.Host)
+	}
+	if m := c.Mesh; m.Enabled() {
+		if _, err := mesh.LoadSecret(m.Secret()); err != nil {
+			add("mesh_secret", "%v", err)
+		}
+		for _, p := range m.Peers {
+			if u, err := url.Parse(p.URL); err == nil && u.Scheme == "http" && !isLoopback(u.Hostname()) {
+				add("mesh_plain_http", "mesh peer %s is reached over plain HTTP (%s): prompts and outputs cross the network unencrypted (set gateway.tls on it, https:// here)", p.Name, p.URL)
+			}
+		}
+		if exposed && !c.Gateway.TLS.Enabled() {
+			add("mesh_plain_http_in", "the other machines reach this one over plain HTTP: set gateway.tls")
+		}
 	}
 	if c.Logging.Bodies && c.Logging.RetentionDays == 0 {
 		add("bodies_kept_forever", "logging.bodies stores every prompt and response with no logging.retention_days")

@@ -92,6 +92,9 @@ func noteUnknownTeam(cfg *config.Config, team string, res *Result) {
 
 // AddKey creates k and returns its secret (the only time it is visible).
 func AddKey(cfg *config.Config, k keys.Key) (string, Result, error) {
+	if err := managedHere(); err != nil {
+		return "", Result{}, err
+	}
 	var res Result
 	noteUnknownTeam(cfg, k.Team, &res)
 	secret, err := keys.Add(k)
@@ -117,6 +120,9 @@ type KeyPatch struct {
 
 // SetKey applies p to the key called name.
 func SetKey(cfg *config.Config, name string, p KeyPatch) (keys.Key, Result, error) {
+	if err := managedHere(); err != nil {
+		return keys.Key{}, Result{}, err
+	}
 	var res Result
 	if p.Team != nil {
 		noteUnknownTeam(cfg, *p.Team, &res)
@@ -158,6 +164,9 @@ func SetKey(cfg *config.Config, name string, p KeyPatch) (keys.Key, Result, erro
 
 // RotateKey gives the key a new secret; the old one keeps working for grace (0 revokes it now).
 func RotateKey(name string, grace time.Duration) (string, keys.Key, Result, error) {
+	if err := managedHere(); err != nil {
+		return "", keys.Key{}, Result{}, err
+	}
 	if grace < 0 {
 		return "", keys.Key{}, Result{}, errs.New(errs.Usage, "grace must be >= 0")
 	}
@@ -170,6 +179,9 @@ func RotateKey(name string, grace time.Duration) (string, keys.Key, Result, erro
 
 // SetKeysDisabled disables (refused at once, history kept) or re-enables keys.
 func SetKeysDisabled(names []string, disabled bool) (Result, error) {
+	if err := managedHere(); err != nil {
+		return Result{}, err
+	}
 	for _, n := range names {
 		if _, err := keys.Update(n, func(k *keys.Key) error { k.Disabled = disabled; return nil }); err != nil {
 			return Result{}, keyErr(err)
@@ -184,6 +196,9 @@ func SetKeysDisabled(names []string, disabled bool) (Result, error) {
 
 // RemoveKeys revokes keys.
 func RemoveKeys(names []string) (Result, error) {
+	if err := managedHere(); err != nil {
+		return Result{}, err
+	}
 	for _, n := range names {
 		ok, err := keys.Remove(n)
 		if err != nil {
@@ -210,6 +225,9 @@ type TeamPatch struct {
 
 // SetTeam creates the team called name or changes it.
 func SetTeam(name string, p TeamPatch) (config.Team, Result, error) {
+	if err := managedHere(); err != nil {
+		return config.Team{}, Result{}, err
+	}
 	var t config.Team
 	var res Result
 	for _, v := range []*int64{p.TokensPerDay, p.TokensPerMonth} {
@@ -269,6 +287,9 @@ func SetTeam(name string, p TeamPatch) (config.Team, Result, error) {
 
 // RemoveTeam deletes a team (its keys keep the label but lose the budgets).
 func RemoveTeam(name string) (Result, error) {
+	if err := managedHere(); err != nil {
+		return Result{}, err
+	}
 	ok, err := config.RemoveTeam(name)
 	if err != nil {
 		return Result{}, err
@@ -283,6 +304,9 @@ func RemoveTeam(name string) (Result, error) {
 
 // SetPrice prices a model name, glob or "default" per million tokens; a non-empty currency relabels all prices.
 func SetPrice(pattern string, p config.Price, currency string) (Result, error) {
+	if err := managedHere(); err != nil {
+		return Result{}, err
+	}
 	if pattern == "" {
 		return Result{}, errs.New(errs.Usage, "price: a model name, glob or default is required")
 	}
@@ -314,6 +338,9 @@ func SetPrice(pattern string, p config.Price, currency string) (Result, error) {
 
 // RemovePrice removes the price of a model name, glob or "default".
 func RemovePrice(pattern string) (Result, error) {
+	if err := managedHere(); err != nil {
+		return Result{}, err
+	}
 	found := false
 	if _, err := config.Update(func(c *config.Config) error {
 		if strings.EqualFold(pattern, "default") {
@@ -336,6 +363,9 @@ func RemovePrice(pattern string) (Result, error) {
 
 // SetAlias points alias at a model.
 func SetAlias(a *app.App, alias, target string) (Result, error) {
+	if err := managedHere(); err != nil {
+		return Result{}, err
+	}
 	var res Result
 	if !config.NameRe.MatchString(alias) {
 		return res, errs.New(errs.Usage, "alias %q must match %s", alias, config.NameRe)
@@ -366,6 +396,9 @@ func SetAlias(a *app.App, alias, target string) (Result, error) {
 
 // RemoveAlias removes an alias.
 func RemoveAlias(alias string) (Result, error) {
+	if err := managedHere(); err != nil {
+		return Result{}, err
+	}
 	found := false
 	if _, err := config.Update(func(c *config.Config) error {
 		_, found = c.Aliases[alias]
@@ -499,4 +532,17 @@ func EraseClient(db *store.DB, client string) (Result, map[string]int64, error) 
 		return Result{}, nil, err
 	}
 	return Result{Detail: fmt.Sprintf("erase client %s (%d requests, %d bodies)", client, n["requests"], n["bodies"])}, n, nil
+}
+
+// managedHere refuses changes to keys, teams, prices and aliases on a mesh follower: they are copied from the
+// machine that holds them, and a local change would be overwritten by the next copy.
+func managedHere() error {
+	if err := config.ManagedElsewhere(); err != nil {
+		var elsewhere config.ErrManagedElsewhere
+		if errors.As(err, &elsewhere) {
+			return errs.Wrap(errs.Conflict, err)
+		}
+		return err
+	}
+	return nil
 }

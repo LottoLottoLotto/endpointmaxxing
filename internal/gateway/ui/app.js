@@ -16,7 +16,7 @@ function el(tag, attrs, ...kids) {
     else if (k === 'class') e.className = v;
     else e.setAttribute(k, v === true ? '' : v);
   }
-  for (const k of kids.flat()) {
+  for (const k of kids.flat(Infinity)) {
     if (k == null || k === false) continue;
     e.append(k instanceof Node ? k : document.createTextNode(String(k)));
   }
@@ -384,6 +384,7 @@ async function models() {
           { h: 'Engine', v: (m) => m.emx.engine || (m.emx.alias_for ? '' : el('span', { class: 'muted' }, 'auto')) },
           { h: 'Format', v: (m) => m.emx.format || '' },
           { h: 'Context', v: (m) => m.max_model_len ? m.max_model_len.toLocaleString() : '' },
+          ...(ms_.data.some((m) => m.emx.nodes) ? [{ h: 'Machines', v: (m) => (m.emx.nodes || []).join(', ') }] : []), // in a mesh
           { h: 'At once', v: (m) => {
             const c = m.emx.concurrency || {};
             if (!c.serves) return '';
@@ -398,7 +399,7 @@ async function models() {
           } },
           { h: '', v: (m) => {
             if (m.emx.alias_for || !m.emx.registered) return '';
-            const is = m.emx.instances || [];
+            const is = (m.emx.instances || []).filter((i) => !i.node); // another machine's instances are its own to stop
             const rm = adminAction('Remove', 'danger', () => remove(m.id), `Remove ${m.id} from the registry? Running instances keep running; its files stay.`);
             if (is.some((i) => alive(i.status))) return [...is.filter((i) => alive(i.status)).map((i) => adminBtn('Stop', 'secondary', (e) => stop(e.target, i.id))), ' ', rm];
             if (m.emx.unavailable) return rm;

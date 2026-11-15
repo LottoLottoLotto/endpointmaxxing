@@ -113,6 +113,10 @@ emx usage --by model --since 7d
   Anthropic-compatible gateway. It routes each request by its `model` field
   across every engine and accelerator, and starts registered models on
   demand ([Gateway](docs/gateway.md)).
+- **Several machines.** Gateways on different machines form a mesh: a
+  client can use any of them, and each request is served by a machine that
+  has the model, started there if needed. One machine holds the keys
+  ([Mesh](docs/mesh.md)).
 - **GPU placement.** Before each start, emx checks free GPU memory,
   picks a GPU, and evicts the least recently used models if needed, so
   several models share the hardware without crashing for lack of memory
@@ -148,6 +152,7 @@ emx usage --by model --since 7d
 | --- | --- |
 | [docs/engines.md](docs/engines.md) | builtin engines, Tenstorrent chips, locks and swapping, several models on one chip group |
 | [docs/gateway.md](docs/gateway.md) | routing, limits, timeouts and health, placement, model aliases, configuration reload |
+| [docs/mesh.md](docs/mesh.md) | several machines as one endpoint: setup, routing, shared keys, limits, security |
 | [docs/access.md](docs/access.md) | keys, roles, quotas, output caps, teams, prices and budgets |
 | [docs/governance.md](docs/governance.md) | prompt policy, classification, error kinds, data protection, retention, audit file, alerts and the admin trail |
 | [docs/usage.md](docs/usage.md) | usage database tables, how tokens are counted, reporting commands |

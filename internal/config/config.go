@@ -45,6 +45,8 @@ type Config struct {
 	Alerts Alerts `yaml:"alerts,omitempty" json:"alerts,omitempty"`
 	// Aliases map stable model names clients use (chat-default) to registered or running models.
 	Aliases map[string]string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	// Mesh joins gateways on several machines into one endpoint.
+	Mesh Mesh `yaml:"mesh,omitempty" json:"mesh,omitempty"`
 }
 
 // Tenstorrent configures how emx shares Tenstorrent chips with other jobs.
@@ -214,8 +216,21 @@ func decodeStrict(path string, data []byte, v any) error {
 	return nil
 }
 
-// Load reads config.yaml, filling unset fields from Default.
+// Load reads config.yaml, filling unset fields from Default. On a mesh follower the teams, prices and
+// aliases are the copy received from the machine that holds them.
 func Load() (*Config, error) {
+	c, err := loadRaw()
+	if err != nil {
+		return nil, err
+	}
+	if err := c.overlayShared(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// loadRaw reads config.yaml as it is on disk.
+func loadRaw() (*Config, error) {
 	c := Default()
 	data, err := os.ReadFile(ConfigPath())
 	if errors.Is(err, os.ErrNotExist) {
@@ -266,7 +281,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("%s: gateway.max_output_tokens must be >= 0", ConfigPath())
 	}
 	for _, check := range []func() error{c.Gateway.TLS.Validate, c.Pricing.validate, func() error { return validateTeams(c.Teams) },
-		c.Alerts.validate, func() error { return validateAliases(c.Aliases) }} {
+		c.Alerts.validate, func() error { return validateAliases(c.Aliases) }, c.Mesh.validate} {
 		if err := check(); err != nil {
 			return fmt.Errorf("%s: %w", ConfigPath(), err)
 		}
@@ -284,7 +299,7 @@ func (c *Config) validate() error {
 func Update(fn func(*Config) error) (*Config, error) {
 	var out *Config
 	err := lock.With(lockPath(), func() error {
-		c, err := Load()
+		c, err := loadRaw() // a follower's copy of the shared settings is not written into config.yaml
 		if err != nil {
 			return err
 		}
@@ -294,8 +309,12 @@ func Update(fn func(*Config) error) (*Config, error) {
 		if err := c.validate(); err != nil {
 			return err
 		}
-		out = c
-		return writeYAML(ConfigPath(), c)
+		if err := writeYAML(ConfigPath(), c); err != nil {
+			return err
+		}
+		shown := *c
+		out = &shown
+		return out.overlayShared()
 	})
 	return out, err
 }

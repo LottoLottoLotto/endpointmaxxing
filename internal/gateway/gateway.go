@@ -27,6 +27,7 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/app"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/mesh"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/meter"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
@@ -50,7 +51,9 @@ type Gateway struct {
 	AllowOpen bool
 	// Insecure (serve --insecure) lets open-mode requests be addressed to a non-loopback host name.
 	Insecure bool
-	Log      *log.Logger
+	// Version is this emx's version (told to mesh peers).
+	Version string
+	Log     *log.Logger
 
 	transport *http.Transport
 
@@ -78,6 +81,8 @@ type Gateway struct {
 	buffered byteBudget  // request bodies in memory, all in-flight requests together
 	reports  sync.Map    // instance id/start -> what its engine reported about the model (engineReport)
 	denials  denialLimit // stored 401 records this minute
+
+	mesh meshState
 
 	expiryMu      sync.Mutex
 	expiryAlerted map[string]string // key -> day of its last key_expiring alert
@@ -114,6 +119,7 @@ func New(a *app.App, logger *log.Logger) *Gateway {
 	if a.Config().Logging.Enabled {
 		g.auth.dbFunc = a.DB
 	}
+	g.auth.peers = g.peerUsage
 	g.transport = &http.Transport{
 		Proxy:                 nil, // engines are local; never route through HTTP_PROXY
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -155,7 +161,9 @@ func (g *Gateway) logRequest(r *store.Request) {
 	if r.Team != "" {
 		team, _ = cfg.Team(r.Team)
 	}
-	g.raiseBudgetAlerts(g.auth.charge(r, team), cfg.Pricing.CurrencyOrDefault())
+	if r.MeshFrom == "" { // a request forwarded here counts against its limits on the machine it entered
+		g.raiseBudgetAlerts(g.auth.charge(r, team), cfg.Pricing.CurrencyOrDefault())
+	}
 	auditRequest(g.live().audit, r)
 	g.recMu.RLock()
 	defer g.recMu.RUnlock()
@@ -215,6 +223,9 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /emx/v1/reload", g.authed(roleRead, g.mgmtReloadStatus))
 	mux.HandleFunc("POST /emx/v1/reload", g.authed(roleAdmin, g.mgmtReload))
 	mux.HandleFunc("GET /emx/v1/whoami", g.authed(roleAny, g.whoami))
+	mux.HandleFunc("GET /emx/v1/mesh", g.authed(roleRead, g.meshStatus))
+	mux.HandleFunc("GET /emx/v1/mesh/state", g.meshOnly(g.meshStateOf))
+	mux.HandleFunc("GET /emx/v1/mesh/shared", g.meshOnly(g.meshShared))
 	g.settingsRoutes(mux)
 	mux.Handle("GET /admin/", uiHandler())
 	mux.Handle("GET /admin", http.RedirectHandler("/admin/", http.StatusMovedPermanently))
@@ -322,6 +333,9 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if p.key != nil {
 		rec.Team = p.key.Team
 	}
+	if p.call != nil { // forwarded by another machine of the mesh, which checked the key and its limits
+		rec.Team, rec.MeshFrom = clip(p.call.Team, maxStoredField), p.call.From
+	}
 	fail := func(status int, err error) {
 		apiError(w, status, errType(status, err), err.Error())
 		rec.Status, rec.Error, rec.ErrorKind = status, clip(err.Error(), maxStoredError), gatewayErrorKind(status, err)
@@ -366,6 +380,9 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(http.StatusBadRequest, fmt.Errorf("reading body: %w", err))
 		return
+	case p.call != nil && !p.call.BodyMatches(body):
+		fail(http.StatusUnauthorized, errs.New(errs.Forbidden, "mesh call: the body is not the one signed"))
+		return
 	}
 	req, err := parseRequest(body)
 	if err != nil {
@@ -403,7 +420,15 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, policyBlocked(rec.Flags))
 		return
 	}
-	cands, started, err := g.pick(r.Context(), req.Model, api)
+	var cands []*runtime.Instance
+	var started bool
+	if p.call == nil { // a forwarded request is served here, never sent on
+		cands = g.meshTargets(r.Context(), req.Model, api)
+	}
+	forwarded := len(cands) > 0
+	if !forwarded {
+		cands, started, err = g.pick(r.Context(), req.Model, api)
+	}
 	rec.Autostarted = started
 	if err != nil {
 		if c := errs.CodeOf(err); c == errs.Timeout || c == errs.Capacity {
@@ -416,7 +441,10 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	rec.Model = req.Model // routed: the name of a model that exists
 	g.metrics.markRouted(rec.Model)
-	release, err := g.lim.acquire(r.Context(), rec.Model, g.maxConcurrency(rec.Model), g.gw().MaxQueue, time.Duration(g.gw().QueueTimeout))
+	release := func() {}
+	if !forwarded { // the machine that serves it applies its own concurrency limit
+		release, err = g.lim.acquire(r.Context(), rec.Model, g.maxConcurrency(rec.Model), g.gw().MaxQueue, time.Duration(g.gw().QueueTimeout))
+	}
 	queue := time.Since(start).Milliseconds()
 	rec.QueueMS = &queue
 	if err != nil {
@@ -454,9 +482,16 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}()
 	for attempt := 0; attempt < maxAttempts && attempt < len(cands); attempt++ {
 		in = cands[attempt]
-		lastErr = g.forward(mw, r, in, api, body, rec.ID)
+		var call *meshCall
+		if in.Engine == meshEngine {
+			call = &meshCall{peer: in.Owner, client: rec.Client, team: rec.Team}
+		}
+		lastErr = g.forward(mw, r, in, api, body, rec.ID, call)
 		if lastErr == nil || mw.status != 0 || r.Context().Err() != nil {
 			break
+		}
+		if call != nil {
+			g.peerDown(call.peer, lastErr)
 		}
 		// Nothing reached the client: mark the replica suspect and try the next one.
 		g.Log.Printf("%s: %v; failing over", in.ID, lastErr)
@@ -464,14 +499,21 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		g.metrics.failover(in)
 	}
 	if lastErr != nil && mw.status == 0 && r.Context().Err() == nil {
-		apiError(mw, http.StatusBadGateway, "api_error", fmt.Sprintf("%s (%s): %v", in.ID, in.Engine, lastErr))
+		what := fmt.Sprintf("%s (%s)", in.ID, in.Engine)
+		if in.Engine == meshEngine {
+			what = "mesh peer " + in.Owner
+		}
+		apiError(mw, http.StatusBadGateway, "api_error", fmt.Sprintf("%s: %v", what, lastErr))
 	}
 }
 
 // forward proxies one attempt to in; it writes nothing to the client when the
 // engine could not be reached, so the caller may fail over. The engine sees the gateway's request id as
 // X-Request-Id, so its logs can be matched to the usage record.
-func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instance, api string, body []byte, reqID string) error {
+// meshCall is a forward to another machine of the mesh, on behalf of client (of team).
+type meshCall struct{ peer, client, team string }
+
+func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instance, api string, body []byte, reqID string, call *meshCall) error {
 	g.acquire(in.ID)
 	defer g.release(in.ID)
 	target, _ := url.Parse(in.BaseURL)
@@ -499,8 +541,18 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 	}()
 
 	var proxyErr error
+	transport := http.RoundTripper(g.transport)
+	var secret []byte
+	if call != nil {
+		g.mesh.mu.Lock()
+		secret = g.mesh.secret
+		if g.mesh.client != nil {
+			transport = g.mesh.client.Transport
+		}
+		g.mesh.mu.Unlock()
+	}
 	rp := &httputil.ReverseProxy{
-		Transport: g.transport,
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
@@ -518,6 +570,14 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 					pr.Out.Header.Set("x-api-key", in.APIKey)
 				}
 			}
+			for k := range pr.Out.Header {
+				if strings.HasPrefix(k, "X-Emx-Mesh-") {
+					pr.Out.Header.Del(k) // only this gateway signs what it sends
+				}
+			}
+			if call != nil {
+				mesh.Sign(secret, pr.Out.Header, g.meshCfg().Node, call.client, call.team, http.MethodPost, pr.Out.URL.RequestURI(), body, time.Now())
+			}
 		},
 		FlushInterval: -1, // stream SSE tokens as they arrive
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -525,6 +585,20 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("X-Request-Id") // the client gets the gateway's id, set already
+			if call != nil {
+				// What the peer served it with, named by machine; its limits and ids are its own business.
+				mw.peerInstance = call.peer + "/" + resp.Header.Get("X-Emx-Instance")
+				mw.peerEngine = resp.Header.Get("X-Emx-Engine")
+				for k := range resp.Header {
+					if strings.HasPrefix(k, "X-Emx-") || strings.HasPrefix(k, "X-Ratelimit-") {
+						resp.Header.Del(k)
+					}
+				}
+				mw.Header().Set("X-Emx-Node", call.peer)
+				mw.Header().Set("X-Emx-Instance", mw.peerInstance)
+				mw.Header().Set("X-Emx-Engine", mw.peerEngine)
+				return nil
+			}
 			mw.Header().Set("X-Emx-Instance", in.ID)
 			mw.Header().Set("X-Emx-Engine", in.Engine)
 			return nil
@@ -541,6 +615,12 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 func (g *Gateway) finish(rec *store.Request, mw *meteredWriter, in *runtime.Instance, proxyErr error, aborted bool, start time.Time) {
 	if in != nil {
 		rec.Instance, rec.Engine = in.ID, in.Engine
+		if in.Engine == meshEngine {
+			rec.Node, rec.Instance, rec.Engine = in.Owner, mw.peerInstance, mw.peerEngine
+			if rec.Instance == "" {
+				rec.Instance = in.Owner + "/"
+			}
+		}
 	}
 	u := mw.finish()
 	rec.Status = mw.status
@@ -644,6 +724,8 @@ type meteredWriter struct {
 	body      bytes.Buffer // captured body (bodies on), or the head of an error body
 	truncated bool
 	onWrite   func()
+	// peerInstance and peerEngine: what served a request forwarded to another machine of the mesh.
+	peerInstance, peerEngine string
 }
 
 func (w *meteredWriter) WriteHeader(code int) {

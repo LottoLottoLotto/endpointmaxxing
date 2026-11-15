@@ -26,6 +26,7 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/gateway"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/gpu"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/mesh"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/model"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/route"
@@ -851,7 +852,14 @@ func cmdServe() *command {
 				if err != nil {
 					return err
 				}
-				if !isLoopback(*host) && key == "" && len(ks.Keys) == 0 && !*insecure {
+				m := a.Config().Mesh
+				if m.Enabled() {
+					if _, err := mesh.LoadSecret(m.Secret()); err != nil {
+						return errs.Wrap(errs.Usage, err)
+					}
+				}
+				// A mesh follower gets its keys from the machine that holds them, shortly after it starts.
+				if !isLoopback(*host) && key == "" && len(ks.Keys) == 0 && !*insecure && !m.Follower() {
 					return errs.New(errs.Usage, "serve: %s is reachable from other machines; create keys (emx key add) or set a master key ($EMX_API_KEY or --api-key-file), or pass --insecure", *host)
 				}
 				logger := log.New(e.stderr, "emx: ", log.LstdFlags)
@@ -872,7 +880,7 @@ func cmdServe() *command {
 				}
 				gw := gateway.New(a, logger)
 				defer gw.Close()
-				gw.NoAutostart, gw.APIKey = *noAuto, key
+				gw.NoAutostart, gw.APIKey, gw.Version = *noAuto, key, Version
 				// Whether the gateway may run open is decided once, here: removing the last key later must not
 				// turn a gateway that other machines reach into one where everyone is admin.
 				gw.AllowOpen, gw.Insecure = isLoopback(*host) || *insecure, *insecure
@@ -905,6 +913,13 @@ func cmdServe() *command {
 				mtls := ""
 				if g.TLS.ClientCA != "" {
 					mtls = " mtls=on"
+				}
+				if m.Enabled() {
+					from := "here"
+					if m.Follower() {
+						from = "copied from " + m.KeysFrom
+					}
+					mtls += fmt.Sprintf(" mesh=%s peers=%d keys:%s", m.Node, len(m.Peers), from)
 				}
 				logger.Printf("gateway on %s://%s/v1 (placement=%s autostart=%v keys=%d logging=%v bodies=%v%s; config reloads on change or SIGHUP)",
 					scheme, ln.Addr(), a.Config().Gateway.Placement, g.Autostart && !*noAuto, len(ks.Keys), a.Config().Logging.Enabled,

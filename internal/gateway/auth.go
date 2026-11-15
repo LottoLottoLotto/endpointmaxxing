@@ -14,6 +14,7 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/mesh"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
@@ -26,7 +27,13 @@ type principal struct {
 	role string
 	key  *keys.Key // nil for the master key and open mode
 	open bool      // open mode: no master key and no keys, so nothing was checked
+	// call is a request another machine of the mesh forwarded (role roleMeshCall): that machine checked the
+	// client's key, model access and limits; name is the client it acts for.
+	call *mesh.Call
 }
+
+// roleMeshCall is the role of a forwarded mesh call: inference only.
+const roleMeshCall = "mesh"
 
 // team is the key's team in cfg; nil without a key, without a team, or for a team not configured.
 func (p *principal) team(cfg *config.Config) *config.Team {
@@ -48,7 +55,7 @@ func (p *principal) allows(model string, cfg *config.Config) bool {
 
 // client is the usage attribution: the key name, or the self-reported client in open/master mode.
 func (p *principal) client(r *http.Request) string {
-	if p.key != nil {
+	if p.key != nil || p.call != nil {
 		return p.name
 	}
 	return r.Header.Get("X-Emx-Client")
@@ -76,7 +83,9 @@ const (
 func permits(level int, role string) bool {
 	switch level {
 	case roleInfer:
-		return role == keys.RoleUser || role == keys.RoleAdmin
+		return role == keys.RoleUser || role == keys.RoleAdmin || role == roleMeshCall
+	case roleAny:
+		return role != roleMeshCall
 	case roleRead, roleMetrics:
 		return role == keys.RoleAdmin || role == keys.RoleAuditor
 	case roleAdmin:
@@ -96,6 +105,32 @@ type authState struct {
 	tokens map[string]tokenUse    // tokens used today, per key
 	teams  map[string]*teamUse    // team totals for the day and month
 	dbFunc func() (*store.DB, error)
+	// peers returns what keys and teams used on the other machines of a mesh (nil outside one): limits are
+	// for the whole mesh, whichever machine a request enters.
+	peers func() (keysDay map[string]int64, teamsDay, teamsMonth map[string]store.TeamUse)
+}
+
+// peerUse is what keys and teams used on other machines of the mesh.
+type peerUse struct {
+	keysDay              map[string]int64
+	teamsDay, teamsMonth map[string]store.TeamUse
+}
+
+func (a *authState) peerUse() peerUse {
+	if a.peers == nil {
+		return peerUse{}
+	}
+	kd, td, tm := a.peers()
+	return peerUse{kd, td, tm}
+}
+
+// team is team's totals here plus on the other machines.
+func (pu peerUse) team(name string, u *teamUse) *teamUse {
+	c := *u
+	c.dayTokens += pu.teamsDay[name].Tokens
+	c.monthTokens += pu.teamsMonth[name].Tokens
+	c.monthCost += pu.teamsMonth[name].Cost
+	return &c
 }
 
 type tokenUse struct {
@@ -156,6 +191,14 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 	g.auth.mu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("keys.yaml: %w", err)
+	}
+	if mesh.IsCall(r.Header) {
+		m := g.meshCfg()
+		call, err := g.mesh.verifier.Verify(g.meshSecret(), r.Header, r.Method, r.URL.RequestURI(), func(n string) bool { _, ok := m.Peer(n); return ok }, time.Now())
+		if err != nil {
+			return nil, errs.Wrap(errs.Forbidden, err)
+		}
+		return &principal{name: call.Client, role: roleMeshCall, call: call}, nil
 	}
 	secret := secretOf(r)
 	if g.APIKey != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(g.APIKey)) == 1 {
@@ -264,6 +307,7 @@ func (a *authState) admit(p *principal) (quota, time.Duration, error) {
 		return q, 0, nil
 	}
 	k := p.key
+	elsewhere := a.peerUse().keysDay[k.Name]
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if k.RPM > 0 {
@@ -303,9 +347,10 @@ func (a *authState) admit(p *principal) (quota, time.Duration, error) {
 			}
 			a.tokens[k.Name] = u
 		}
-		q.tighter(k.TokensPerDay, u.used, untilNextDay())
-		if u.used >= k.TokensPerDay {
-			return q, untilNextDay(), errs.Wrap(errs.Capacity, fmt.Errorf("key %s: %d of %d tokens used today: %w", k.Name, u.used, k.TokensPerDay, errQuota))
+		used := u.used + elsewhere
+		q.tighter(k.TokensPerDay, used, untilNextDay())
+		if used >= k.TokensPerDay {
+			return q, untilNextDay(), errs.Wrap(errs.Capacity, fmt.Errorf("key %s: %d of %d tokens used today: %w", k.Name, used, k.TokensPerDay, errQuota))
 		}
 	}
 	return q, 0, nil
@@ -314,6 +359,7 @@ func (a *authState) admit(p *principal) (quota, time.Duration, error) {
 // charge adds a finished request's tokens to its key's day total and its team's totals, and returns
 // the team budget alerts it crossed.
 func (a *authState) charge(r *store.Request, team *config.Team) []budgetAlert {
+	pu := a.peerUse()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if u, ok := a.tokens[r.Client]; ok {
@@ -325,5 +371,5 @@ func (a *authState) charge(r *store.Request, team *config.Team) []budgetAlert {
 		}
 		a.tokens[r.Client] = u
 	}
-	return a.chargeTeam(r, team)
+	return a.chargeTeam(r, team, pu)
 }

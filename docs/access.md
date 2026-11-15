@@ -4,6 +4,10 @@
 
 ## Keys and access
 
+In a [mesh](mesh.md), keys, teams, prices and aliases are made on the
+machine named by `mesh.keys_from` and copied to the others. Daily token
+quotas and team budgets count use on every machine of the mesh.
+
 ```sh
 emx key add alice --team research --models 'qwen*' --rpm 60 --expires 90d   # prints the key once
 emx key add ops --role admin

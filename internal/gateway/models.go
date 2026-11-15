@@ -119,7 +119,54 @@ func (g *Gateway) instanceReport(ctx context.Context, in *runtime.Instance) engi
 func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	cfg := g.App.Config()
-	withUnavailable := r.URL.Query().Get("unavailable") == "1"
+	allows := func(name string) bool { return p.allows(name, cfg) }
+	byName := g.modelEntries(r.Context(), allows, r.URL.Query().Get("unavailable") == "1")
+	g.addPeerModels(byName, allows) // what the other machines of a mesh serve
+	// The most one reply can hold: the output cap of the gateway and of the caller's key, within the context.
+	keyCap := 0
+	if p.key != nil {
+		keyCap = p.key.MaxOutputTokens
+	}
+	limit := outputCap(cfg.Gateway.MaxOutputTokens, keyCap)
+	for _, e := range byName {
+		out := e.MaxModelLen
+		if limit > 0 && (out == 0 || limit < out) {
+			out = limit
+		}
+		if out > 0 {
+			e.Limits = &modelLimits{MaxOutputTokens: out}
+		}
+	}
+	for alias, target := range cfg.Aliases {
+		t, listed := byName[target]
+		if !listed || !allows(target) {
+			continue // an alias for a model that is not offered is not offered either
+		}
+		e := &modelEntry{ID: alias, Object: "model", OwnedBy: "emx", EMX: map[string]any{"alias_for": target}}
+		byName[alias] = e
+		e.setContext(t.MaxModelLen)
+		e.Limits, e.Architecture = t.Limits, t.Architecture
+		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware", "concurrency", "nodes"} {
+			if v, ok := t.EMX[k]; ok {
+				e.EMX[k] = v
+			}
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for n := range byName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	data := make([]*modelEntry, len(names))
+	for i, n := range names {
+		data[i] = byName[n]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// modelEntries lists the models of this machine that allows lets through: running instances, and registered
+// models that could be started (with withUnavailable, also those that could not), with what is known of each.
+func (g *Gateway) modelEntries(ctx context.Context, allows func(string) bool, withUnavailable bool) map[string]*modelEntry {
 	byName := map[string]*modelEntry{}
 	entry := func(name string, created int64) *modelEntry {
 		e := byName[name]
@@ -153,14 +200,14 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		g.activeMu.Unlock()
 		names := []string{in.Name}
 		if in.Hosting { // a multi-model host is listed under the models it holds
-			names = g.hosted(r.Context(), in)
+			names = g.hosted(ctx, in)
 		}
 		for _, n := range names {
-			if !p.allows(n, cfg) {
+			if !allows(n) {
 				continue
 			}
 			e := entry(n, in.StartedAt.Unix())
-			status := g.instanceStatus(r.Context(), in)
+			status := g.instanceStatus(ctx, in)
 			e.EMX["instances"] = append(e.EMX["instances"].([]map[string]any),
 				map[string]any{"id": in.ID, "engine": in.Engine, "status": status, "apis": in.APIs, "gpus": in.GPUs})
 			addAPIs(e, in.APIs)
@@ -175,7 +222,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 				active[n] += busy
 			}
 			if status == runtime.StatusReady && !in.Hosting {
-				rep := g.instanceReport(r.Context(), in)
+				rep := g.instanceReport(ctx, in)
 				e.setContext(rep.context)
 				if rep.images != nil {
 					e.setImages(*rep.images)
@@ -187,7 +234,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	g.Reload() // see models added since; an invalid config keeps the running one (logged)
 	free := g.freeHardware()
 	for _, m := range g.App.RegisteredModels() {
-		if !p.allows(m.Name, cfg) {
+		if !allows(m.Name) {
 			continue
 		}
 		offer := g.App.Offer(m)
@@ -225,46 +272,12 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		e.EMX["concurrency"] = concurrency(parallel[name], g.maxConcurrency(name), active[name], queued[name])
 	}
 	g.addHistory(byName)
-	// The most one reply can hold: the output cap of the gateway and of the caller's key, within the context.
-	keyCap := 0
-	if p.key != nil {
-		keyCap = p.key.MaxOutputTokens
-	}
-	limit := outputCap(cfg.Gateway.MaxOutputTokens, keyCap)
-	for _, e := range byName {
-		out := e.MaxModelLen
-		if limit > 0 && (out == 0 || limit < out) {
-			out = limit
-		}
-		if out > 0 {
-			e.Limits = &modelLimits{MaxOutputTokens: out}
+	if node := g.App.Config().Mesh; node.Enabled() {
+		for _, e := range byName {
+			e.EMX["nodes"] = []string{node.Node}
 		}
 	}
-	for alias, target := range cfg.Aliases {
-		t, listed := byName[target]
-		if !listed || !p.allows(target, cfg) {
-			continue // an alias for a model that is not offered is not offered either
-		}
-		e := entry(alias, 0)
-		e.EMX["alias_for"] = target
-		e.setContext(t.MaxModelLen)
-		e.Limits, e.Architecture = t.Limits, t.Architecture
-		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware", "concurrency"} {
-			if v, ok := t.EMX[k]; ok {
-				e.EMX[k] = v
-			}
-		}
-	}
-	names := make([]string, 0, len(byName))
-	for n := range byName {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	data := make([]*modelEntry, len(names))
-	for i, n := range names {
-		data[i] = byName[n]
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+	return byName
 }
 
 // concurrency tells a client how many others it shares a model with. parallel is how many requests the

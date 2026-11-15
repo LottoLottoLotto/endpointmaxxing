@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
+### Added
+
+- Mesh: gateways on several machines form one endpoint (`mesh` in
+  `config.yaml`, [docs/mesh.md](docs/mesh.md)). A client can send any
+  request to any machine. The request is served by this machine or by a peer
+  that has the model ready (the least busy first), or started on one that
+  can start it. `/v1/models` lists the models of every machine, with
+  `emx.nodes`. Calls between machines are signed with a shared secret
+  (HMAC-SHA256, 60 s window, no replays).
+- One machine holds the keys, teams, prices and aliases; the others copy
+  them and refuse local changes (409). Daily token quotas and team budgets
+  count use on every machine.
+- `emx mesh` and `GET /emx/v1/mesh` show the machines, whether they answer,
+  and what each serves. `emx doctor` checks the mesh secret and warns about
+  plain HTTP between machines.
+- Request records have `node` (where a forwarded request was served) and
+  `mesh_from` (where it came from); `emx usage --by node`. The usage
+  database moves to schema version 7.
+
+### Fixed
+
+- Admin UI: the State column of the models page showed
+  `[object HTMLSpanElement]` instead of the status of running instances.
+
 ## [0.1.5] - 2026-11-14
 
 ### Security
@@ -252,7 +278,8 @@ Entries marked "breaking" can break existing clients.
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.2...v0.1.3

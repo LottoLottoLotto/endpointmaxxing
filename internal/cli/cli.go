@@ -201,7 +201,7 @@ func commands() []*command {
 		cmdRoute(), cmdModel(), aliasOf("models", "list registered models", modelListCmd()),
 		cmdEngine(), aliasOf("engines", "list engines", engineListCmd()),
 		cmdUsage(), cmdRequests(), cmdReport(), cmdFlagged(), cmdErrorStats(), cmdPolicy(), cmdEvents(), cmdSamples(), cmdPrune(), cmdAudit(),
-		cmdKey(), cmdTeam(), cmdPrice(), cmdAlias(), cmdReload(), cmdBackup(), cmdBench(), cmdService(),
+		cmdKey(), cmdTeam(), cmdPrice(), cmdAlias(), cmdReload(), cmdMesh(), cmdBackup(), cmdBench(), cmdService(),
 		cmdFlags(), cmdDoctor(), cmdVersion(), cmdCommands(),
 	}
 }

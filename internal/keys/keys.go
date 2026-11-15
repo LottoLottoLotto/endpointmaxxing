@@ -267,3 +267,30 @@ func Remove(name string) (bool, error) {
 	})
 	return found, err
 }
+
+// Replace makes data (a keys.yaml received from the mesh machine that holds the keys) the key store, after
+// checking every entry. Only secret hashes travel: the file holds no secret.
+func Replace(data []byte) error {
+	var f File
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return fmt.Errorf("keys from the mesh: %w", err)
+	}
+	for i := range f.Keys {
+		if err := f.Keys[i].Validate(); err != nil {
+			return fmt.Errorf("keys from the mesh: %w", err)
+		}
+		if _, err := hex.DecodeString(f.Keys[i].Hash); err != nil || len(f.Keys[i].Hash) != 64 {
+			return fmt.Errorf("keys from the mesh: key %s has no valid secret hash", f.Keys[i].Name)
+		}
+	}
+	return lock.With(lockPath(), f.save)
+}
+
+// Raw returns keys.yaml as stored (nil when absent).
+func Raw() ([]byte, error) {
+	data, err := os.ReadFile(Path())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return data, err
+}
