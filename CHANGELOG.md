@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The resource sampler logged the same GPU listing error every sample on a
+  machine where `nvidia-smi` is installed but has no working driver; it is
+  logged once until it changes.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

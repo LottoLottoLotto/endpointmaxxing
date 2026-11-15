@@ -62,6 +62,27 @@ box1  up            1ms  v0.2.0   flash-next-iq3s
 box3  up            2ms  v0.2.0   qwen3-0.6b-q8, qwen3.8-27b-q4
 ```
 
+### Certificates on a home or office network
+
+Without certificates from a public CA, make a private one and a
+certificate for each machine (its address in `subjectAltName`), then point
+`mesh.ca_file` at `ca.pem` on every machine:
+
+```sh
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825 \
+  -keyout ca-key.pem -out ca.pem -subj "/CN=emx mesh CA" \
+  -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
+for m in box1:192.168.1.10 box2:192.168.1.11; do
+  n=${m%%:*}; ip=${m##*:}
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout $n-key.pem -out $n.csr -subj "/CN=$n"
+  openssl x509 -req -in $n.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -days 825 -out $n.pem \
+    -extfile <(printf "subjectAltName=IP:%s,DNS:%s\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth,clientAuth\n" $ip $n)
+done
+```
+
+The `keyUsage` lines matter to clients: Python 3.13 and later refuse a CA
+without them. Clients of the mesh trust `ca.pem` too.
+
 ## Routing
 
 For each request, the machine it entered chooses, in this order:

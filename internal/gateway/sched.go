@@ -721,8 +721,12 @@ func (l *limiters) queued() map[string]int {
 func (g *Gateway) sample() {
 	now := time.Now().UnixMilli()
 	gs, err := gpu.List()
-	if err != nil {
-		g.Log.Printf("sampler: %v", err)
+	if msg := fmt.Sprint(err); err != nil && msg != g.sampleErr {
+		// Logged once until it changes: a machine with nvidia-smi but no working driver fails every sample.
+		g.Log.Printf("sampler: listing GPUs: %v (no GPU samples until this changes)", err)
+		g.sampleErr = msg
+	} else if err == nil {
+		g.sampleErr = ""
 	}
 	usage, _ := gpu.ProcessUsage(gs)
 	var gss []store.GPUSample

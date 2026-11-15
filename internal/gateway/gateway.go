@@ -83,6 +83,8 @@ type Gateway struct {
 	denials  denialLimit // stored 401 records this minute
 
 	mesh meshState
+	// sampleErr is the last GPU listing error the sampler logged (only the sampler goroutine uses it).
+	sampleErr string
 
 	expiryMu      sync.Mutex
 	expiryAlerted map[string]string // key -> day of its last key_expiring alert
