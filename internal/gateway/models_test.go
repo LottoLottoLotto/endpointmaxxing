@@ -301,7 +301,10 @@ func TestModelListShowsPricesToAdminsOnly(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.UpdateModels(func(m *config.Models) error { m.Put(config.Model{Name: "tiny", Source: ckpt, Format: "safetensors"}); return nil }); err != nil {
+	if err := config.UpdateModels(func(m *config.Models) error {
+		m.Put(config.Model{Name: "tiny", Source: ckpt, Format: "safetensors"})
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	g.Reload()
