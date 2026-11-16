@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/v1/models` shows each model's `emx price` as `emx.price` to admin and
+  auditor keys, so a rental listing can be priced from it (`lmx rent
+  publish`).
+
 ## [0.2.1] - 2026-11-15
 
 ### Added

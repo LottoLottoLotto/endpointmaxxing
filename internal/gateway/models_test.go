@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
@@ -282,5 +283,55 @@ func TestModelListCarriesWhatAClientChoosesBy(t *testing.T) {
 				t.Errorf("capped: concurrency %+v, want 2 at once of 8 slots", c)
 			}
 		}
+	}
+}
+
+// A model's price (emx price) is shown to admins and auditors, who publish and audit it, not to users.
+func TestModelListShowsPricesToAdminsOnly(t *testing.T) {
+	t.Setenv("EMX_HOME", t.TempDir())
+	admin, _ := keys.Add(keys.Key{Name: "ops", Role: keys.RoleAdmin})
+	user, _ := keys.Add(keys.Key{Name: "u", Role: keys.RoleUser})
+	g, srv := newGateway(t)
+	ckpt := filepath.Join(t.TempDir(), "tiny")
+	os.MkdirAll(ckpt, 0o755)
+	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
+	if _, err := config.Update(func(c *config.Config) error {
+		c.Pricing.Models = map[string]config.Price{"tiny": {Prompt: 3, Completion: 12}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.UpdateModels(func(m *config.Models) error { m.Put(config.Model{Name: "tiny", Source: ckpt, Format: "safetensors"}); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	g.Reload()
+	price := func(key string) any {
+		req, _ := http.NewRequest("GET", srv.URL+"/v1/models?unavailable=1", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out struct {
+			Data []struct {
+				ID  string         `json:"id"`
+				EMX map[string]any `json:"emx"`
+			} `json:"data"`
+		}
+		json.NewDecoder(resp.Body).Decode(&out)
+		for _, m := range out.Data {
+			if m.ID == "tiny" {
+				return m.EMX["price"]
+			}
+		}
+		t.Fatalf("tiny not listed: %+v", out)
+		return nil
+	}
+	if p, ok := price(admin).(map[string]any); !ok || p["prompt"] != 3.0 || p["completion"] != 12.0 || p["currency"] != "USD" {
+		t.Fatalf("admin sees price %v", price(admin))
+	}
+	if p := price(user); p != nil {
+		t.Fatalf("a user key sees the price: %v", p)
 	}
 }

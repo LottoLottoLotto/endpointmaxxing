@@ -122,6 +122,18 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	allows := func(name string) bool { return p.allows(name, cfg) }
 	byName := g.modelEntries(r.Context(), allows, r.URL.Query().Get("unavailable") == "1")
 	g.addPeerModels(byName, allows) // what the other machines of a mesh serve
+	// Admins and auditors also see each model's price (emx price): what `lmx rent publish` offers renters.
+	if permits(roleRead, p.role) {
+		for name, e := range byName {
+			if pr, ok := cfg.Pricing.For(name); ok {
+				price := map[string]any{"prompt": pr.Prompt, "completion": pr.Completion, "currency": cfg.Pricing.CurrencyOrDefault(), "per": "1M tokens"}
+				if pr.Cached != nil {
+					price["cached"] = *pr.Cached
+				}
+				e.EMX["price"] = price
+			}
+		}
+	}
 	// The most one reply can hold: the output cap of the gateway and of the caller's key, within the context.
 	keyCap := 0
 	if p.key != nil {
