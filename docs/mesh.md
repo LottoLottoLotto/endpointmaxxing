@@ -50,8 +50,8 @@ On every machine:
 3. Register on each machine the models it runs (`emx model add`), and start
    `emx serve`.
 
-`emx mesh` (or `GET /emx/v1/mesh`, admin or auditor) shows which machines
-answer, how fast, and what each serves:
+`emx mesh status` (or `GET /emx/v1/mesh`, admin or auditor) shows which
+machines answer, how fast, and what each serves:
 
 ```text
 this machine: box2; keys, teams, prices and aliases: copied from box1
@@ -87,18 +87,27 @@ without them. Clients of the mesh trust `ca.pem` too.
 
 For each request, the machine it entered chooses, in this order:
 
-1. **Itself**, when it has the model ready and no other machine has it ready
-   with fewer requests per slot.
-2. **Another machine that has the model ready**, the least busy first
-   (requests running and waiting, per slot the engine has).
+1. **Itself**, when it has the model ready and no other machine that has it
+   ready would answer sooner.
+2. **Another machine that has the model ready**, the soonest first.
 3. **Itself**, when it has the model registered and can start it.
 4. **Another machine that can start it.** That machine starts the model.
 
-A model that runs on several machines is spread over them as they get busy.
+"Sooner" is the rounds of requests ahead (running and waiting, per slot
+the engine has, this one included) divided by the model's decode speed
+measured on that machine over the last 30 days. A GPU at 400 tok/s with
+three requests queued is chosen over an idle CPU at 30 tok/s, and an idle
+machine wins over a long queue. Until every machine has a measured speed
+for the model, only the requests ahead per slot are compared.
+
 A model this machine can start is not started while another machine has it
-ready: start it yourself (`emx run`) to add capacity. If a machine cannot
-be reached, the request goes to the next one, and the machine is left out
-until it answers again.
+ready: start it yourself (`emx mesh run`) to add capacity. If a machine
+cannot be reached, or answers 5xx (it could not start the model, say),
+the request goes to the next machine that has it; an unreachable machine is
+left out until it answers again.
+
+A client can name the machine with the header `X-Emx-Node: box2`; then
+nothing is decided and nothing fails over.
 
 A forwarded request is served where it arrives and never forwarded again.
 The response carries `X-Emx-Node` (the machine that served it) and
@@ -106,11 +115,14 @@ The response carries `X-Emx-Node` (the machine that served it) and
 
 ## Keys, teams, prices and aliases
 
-One machine holds them (`mesh.keys_from`). Make every change to keys,
-teams, prices and aliases there, with the CLI, the settings API or the admin
-UI. The other machines copy them every `interval`. They refuse changes of
-their own with a `conflict` error (409) naming the machine to use. Each
-machine keeps its own `models.yaml`, engines and other settings.
+One machine holds them (`mesh.keys_from`). Change them there with the CLI,
+or through the settings API or admin UI of any machine: a machine that
+copies them takes the change to the machine that holds them. The holder
+tells the others to copy at once (they also copy every `interval`); in
+tests on a home network a disabled key was refused on the other machine
+0.5 s later. The CLI of a copying machine refuses the change with a
+`conflict` error (409) naming the machine to use. Each machine keeps its own
+`models.yaml`, engines and other settings.
 
 Only key hashes are copied, never secrets. A follower stores the copy in
 `keys.yaml` and `mesh-shared.yaml`. If the machine that holds the keys is
@@ -121,8 +133,10 @@ down, the others keep using their last copy.
 The machine a request enters checks the client's key, its model access and
 the key's and team's limits, and meters the tokens. Daily token quotas and
 team budgets count what the key and team used on every machine. Each machine
-learns the others' totals every `interval`, so a burst on several machines
-at once can overshoot a limit by what was used in the meantime. Requests per
+learns the others' totals every `interval`, so use on another machine counts
+here after up to about `interval` plus a second (6 to 7 s in tests with the
+default 5 s), and a burst on several machines at once can overshoot a limit
+by what was used in the meantime. Requests per
 minute (`rpm`) are counted on each machine separately.
 
 Both machines record a forwarded request:
@@ -133,6 +147,28 @@ Both machines record a forwarded request:
 | where it was served | `mesh_from` is the machine that forwarded it; same client and team; does not count against limits there |
 
 `emx usage --by node` splits a machine's traffic by where it was served.
+`emx usage --entered` (API: `entered=1`) leaves out what another machine
+forwarded, so the machines' totals add up to the mesh's without counting a
+request twice; `emx mesh usage` does that sum.
+
+## Managing every machine from one
+
+Management calls go to any machine of the mesh with `?node=NAME`: that
+machine relays the call, signed and acting for the caller with its role, and
+the other machine checks the role again and records admin changes as
+`alice (via box1)`. A relayed call is never relayed again.
+
+```sh
+emx mesh status                       # machines, round trip, version, models
+emx mesh ps                           # instances on every machine
+emx mesh run box2 qwen3.8-27b-q4      # start a model there (waits until ready)
+emx mesh stop box2 qwen3.8-27b-q4     # stop it after its requests finish
+emx mesh usage --by model --since 7d  # the whole mesh, each request once
+curl -H "Authorization: Bearer $KEY" "https://box1:7777/emx/v1/requests?node=box2&limit=20"
+```
+
+These commands talk to the gateway on this machine with the key in
+`$EMX_API_KEY`. The admin UI has a Mesh page with the same view.
 
 ## Security
 
@@ -154,7 +190,7 @@ Both machines record a forwarded request:
 
 ## Not covered
 
-- Management and observability (`ps`, `usage`, `requests`, `events`) are per
-  machine. Ask each machine, or use its API.
-- Models are started and stopped by the machine that has them.
-  `emx run`, `stop` and `ensure` act on the local machine.
+- `emx ps`, `run`, `stop`, `usage` and the other commands without `mesh`
+  act on the local machine only; use `emx mesh ...` or `?node=`.
+- Engine logs (`emx logs`) are only on the machine that runs the engine.
+- Requests per minute (`rpm`) are counted on each machine separately.

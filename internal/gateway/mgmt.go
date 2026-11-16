@@ -98,7 +98,8 @@ func filterFrom(r *http.Request) (store.Filter, error) {
 	f := store.Filter{Model: q.Get("model"), Engine: q.Get("engine"), Instance: q.Get("instance"), Client: q.Get("client"),
 		Category: q.Get("category"), ErrorKind: q.Get("error_kind"), MinSeverity: q.Get("min_severity"), Rule: q.Get("rule"),
 		ID: q.Get("id"), Kind: q.Get("kind"),
-		Errors: q.Get("errors") == "true" || q.Get("errors") == "1", Flagged: q.Get("flagged") == "true" || q.Get("flagged") == "1"}
+		Errors: q.Get("errors") == "true" || q.Get("errors") == "1", Flagged: q.Get("flagged") == "true" || q.Get("flagged") == "1",
+		Entered: q.Get("entered") == "true" || q.Get("entered") == "1"}
 	if f.MinSeverity != "" && !contains(policy.Severities, f.MinSeverity) {
 		return f, errs.New(errs.Usage, "min_severity %q: want %s", f.MinSeverity, strings.Join(policy.Severities, ", "))
 	}

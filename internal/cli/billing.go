@@ -9,8 +9,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
-	"time"
 
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
@@ -265,87 +263,6 @@ func cmdReload() *command {
 					return errs.New(errs.Usage, "reload: %s: %v", resp.Status, out["error"])
 				}
 				return e.out(out, func(w io.Writer) { fmt.Fprintf(w, "gateway at %s reloaded its configuration\n", base) })
-			}
-		}}
-}
-
-// ---- mesh ----
-
-func cmdMesh() *command {
-	return &command{name: "mesh", summary: "show the machines of this gateway's mesh: which answer, what each serves, where keys come from", tool: true,
-		build: func(fs *flag.FlagSet) action {
-			return func(e *env, pos, _ []string) error {
-				if err := wantArgs("mesh", pos, 0, 0); err != nil {
-					return err
-				}
-				a, err := e.app()
-				if err != nil {
-					return err
-				}
-				base, client := gateway.Client(&a.Config().Gateway)
-				req, _ := http.NewRequestWithContext(e.ctx, http.MethodGet, base+"/emx/v1/mesh", nil)
-				if key := os.Getenv("EMX_API_KEY"); key != "" {
-					req.Header.Set("Authorization", "Bearer "+key)
-				}
-				resp, err := client.Do(req)
-				if err != nil {
-					return errs.New(errs.NotFound, "no gateway answering at %s: %v", base, err)
-				}
-				defer resp.Body.Close()
-				var out struct {
-					Enabled      bool       `json:"enabled"`
-					Node         string     `json:"node"`
-					KeysFrom     string     `json:"keys_from"`
-					Follower     bool       `json:"follower"`
-					KeysCopiedAt *time.Time `json:"keys_copied_at"`
-					KeysCopyErr  string     `json:"keys_copy_error"`
-					Models       []string   `json:"models"`
-					Peers        []struct {
-						Name     string     `json:"name"`
-						URL      string     `json:"url"`
-						Up       bool       `json:"up"`
-						LastSeen *time.Time `json:"last_seen"`
-						Error    string     `json:"error"`
-						RTTMS    int64      `json:"rtt_ms"`
-						Version  string     `json:"version"`
-						Models   []string   `json:"models"`
-					} `json:"peers"`
-					Error any `json:"error"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-					return err
-				}
-				if resp.StatusCode != http.StatusOK {
-					return errs.New(errs.Forbidden, "mesh: %s: %v", resp.Status, out.Error)
-				}
-				return e.out(out, func(w io.Writer) {
-					if !out.Enabled {
-						fmt.Fprintln(w, "not in a mesh (no mesh.peers in config.yaml)")
-						return
-					}
-					keys := out.KeysFrom + " (this machine)"
-					if out.Follower {
-						keys = "copied from " + out.KeysFrom
-						switch {
-						case out.KeysCopyErr != "":
-							keys += ", last copy failed: " + out.KeysCopyErr
-						case out.KeysCopiedAt == nil:
-							keys += ", not copied yet"
-						}
-					}
-					fmt.Fprintf(w, "this machine: %s; keys, teams, prices and aliases: %s\n\n", out.Node, keys)
-					tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-					fmt.Fprintln(tw, "NODE\tSTATUS\tRTT\tVERSION\tMODELS")
-					fmt.Fprintf(tw, "%s\tthis machine\t-\t%s\t%s\n", out.Node, Version, dash(strings.Join(out.Models, ", ")))
-					for _, p := range out.Peers {
-						status, rtt := "up", fmt.Sprintf("%dms", p.RTTMS)
-						if !p.Up {
-							status, rtt = "DOWN: "+p.Error, "-"
-						}
-						fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.Name, status, rtt, dash(p.Version), dash(strings.Join(p.Models, ", ")))
-					}
-					tw.Flush()
-				})
 			}
 		}}
 }

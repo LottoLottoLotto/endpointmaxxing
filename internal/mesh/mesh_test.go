@@ -16,7 +16,7 @@ func peers(n string) bool { return n == "b" }
 func signed(t *testing.T, body []byte, now time.Time) http.Header {
 	t.Helper()
 	h := http.Header{}
-	Sign(secret, h, "b", "alice", "ml", http.MethodPost, "/v1/chat/completions", body, now)
+	Sign(secret, h, "b", As{Client: "alice", Team: "ml"}, http.MethodPost, "/v1/chat/completions", body, now)
 	return h
 }
 
@@ -62,8 +62,12 @@ func TestCallsThatMustNotVerify(t *testing.T) {
 			h.Set(HeaderClient, "admin")
 			return h, "/v1/chat/completions", secret, now
 		},
+		"role raised": func(h http.Header) (http.Header, string, []byte, time.Time) {
+			h.Set(HeaderRole, "admin")
+			return h, "/v1/chat/completions", secret, now
+		},
 		"unknown sender": func(h http.Header) (http.Header, string, []byte, time.Time) {
-			Sign(secret, h, "z", "", "", http.MethodPost, "/v1/chat/completions", nil, now)
+			Sign(secret, h, "z", As{}, http.MethodPost, "/v1/chat/completions", nil, now)
 			return h, "/v1/chat/completions", secret, now
 		},
 		"no mesh secret here": func(h http.Header) (http.Header, string, []byte, time.Time) {

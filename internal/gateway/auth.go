@@ -1,12 +1,15 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -198,7 +201,14 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 		if err != nil {
 			return nil, errs.Wrap(errs.Forbidden, err)
 		}
-		return &principal{name: call.Client, role: roleMeshCall, call: call}, nil
+		role := roleMeshCall // forwarded inference
+		if call.Role != "" { // a management call an admin, auditor or user made on the peer, relayed here
+			if !slices.Contains(keys.Roles, call.Role) {
+				return nil, errs.New(errs.Forbidden, "mesh call: unknown role %q", call.Role)
+			}
+			role = call.Role
+		}
+		return &principal{name: call.Client, role: role, call: call}, nil
 	}
 	secret := secretOf(r)
 	if g.APIKey != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(g.APIKey)) == 1 {
@@ -262,6 +272,23 @@ func (g *Gateway) authed(level int, h http.HandlerFunc) http.HandlerFunc {
 		}
 		if needsJSON(r) {
 			deny(http.StatusUnsupportedMediaType, "invalid_request_error", "management and settings calls take a JSON body (Content-Type: application/json)")
+			return
+		}
+		if p.call != nil && level != roleInfer { // inference checks its (large) body itself, against its budget
+			body, err := io.ReadAll(io.LimitReader(r.Body, maxRelayBody+1))
+			if err != nil || len(body) > maxRelayBody || !p.call.BodyMatches(body) {
+				deny(http.StatusUnauthorized, "authentication_error", "mesh call: the body is not the one signed")
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		// ?node= sends a management call to another machine of the mesh; a relayed call is never relayed again.
+		if node := r.URL.Query().Get("node"); node != "" && level != roleInfer && node != g.meshCfg().Node {
+			if p.call != nil {
+				deny(http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("this is %s, not %s: a relayed call is not relayed again", g.meshCfg().Node, node))
+				return
+			}
+			g.relay(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)), node)
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))

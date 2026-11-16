@@ -25,8 +25,13 @@ under `/emx/v1/`:
 | GET | `/emx/v1/whoami` | | the caller's key name, role and team |
 | GET | `/emx/v1/mesh` | | this machine's mesh: its name, where keys come from, each peer's status, round trip, version and models ([Mesh](mesh.md)) |
 
-`GET /emx/v1/mesh/state` and `GET /emx/v1/mesh/shared` answer only signed
-calls from the machines of the mesh.
+In a [mesh](mesh.md), add `node=NAME` to any management or settings call to
+send it to that machine (it checks the caller's role again), and
+`entered=1` to the usage and request calls to leave out requests another
+machine forwarded. Inference requests may name the machine with the header
+`X-Emx-Node`. `GET /emx/v1/mesh/state`, `GET /emx/v1/mesh/shared` and
+`POST /emx/v1/mesh/sync` answer only signed calls from the machines of the
+mesh.
 
 - **JSON bodies only.** Every POST, PUT, PATCH or DELETE under
   `/emx/v1/` that has a body must send `Content-Type:

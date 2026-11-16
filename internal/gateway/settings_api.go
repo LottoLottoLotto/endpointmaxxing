@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,7 +70,16 @@ func (g *Gateway) settingsWrite(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxSettingsBody)
+		// A mesh follower takes changes to keys, teams, prices and aliases to the machine that holds them.
+		if m := g.meshCfg(); m.Follower() && principalOf(r).call == nil && sharedSetting(r.URL.Path) {
+			g.relay(w, r, m.KeysFrom)
+			go g.syncShared(context.WithoutCancel(r.Context())) // copy the change back now, not at the next interval
+			return
+		}
 		h(w, r)
+		if sharedSetting(r.URL.Path) {
+			g.tellFollowers() // they copy it now rather than at their next interval
+		}
 	})
 }
 
@@ -467,4 +477,14 @@ func (g *Gateway) eraseClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.changed(w, r, http.StatusOK, res, map[string]any{"client": name, "deleted": n})
+}
+
+// sharedSetting reports whether path changes keys, teams, prices or aliases (what a mesh shares).
+func sharedSetting(path string) bool {
+	for _, p := range []string{"/emx/v1/keys", "/emx/v1/teams/", "/emx/v1/prices/", "/emx/v1/aliases/"} {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }

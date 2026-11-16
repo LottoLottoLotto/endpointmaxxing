@@ -228,6 +228,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /emx/v1/mesh", g.authed(roleRead, g.meshStatus))
 	mux.HandleFunc("GET /emx/v1/mesh/state", g.meshOnly(g.meshStateOf))
 	mux.HandleFunc("GET /emx/v1/mesh/shared", g.meshOnly(g.meshShared))
+	mux.HandleFunc("POST /emx/v1/mesh/sync", g.meshOnly(g.meshSyncNow))
 	g.settingsRoutes(mux)
 	mux.Handle("GET /admin/", uiHandler())
 	mux.Handle("GET /admin", http.RedirectHandler("/admin/", http.StatusMovedPermanently))
@@ -424,7 +425,14 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 	var cands []*runtime.Instance
 	var started bool
-	if p.call == nil { // a forwarded request is served here, never sent on
+	if pin := r.Header.Get("X-Emx-Node"); pin != "" && p.call == nil && pin != g.meshCfg().Node {
+		// The client names the machine: no routing decision, no failover.
+		if _, ok := g.meshCfg().Peer(pin); !ok {
+			fail(http.StatusNotFound, errs.New(errs.NotFound, "X-Emx-Node: no mesh peer called %q", clip(pin, 64)))
+			return
+		}
+		cands = []*runtime.Instance{g.peerInstance(pin, req.Model)}
+	} else if p.call == nil { // a forwarded request is served here, never sent on
 		cands = g.meshTargets(r.Context(), req.Model, api)
 	}
 	forwarded := len(cands) > 0
@@ -486,13 +494,17 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		in = cands[attempt]
 		var call *meshCall
 		if in.Engine == meshEngine {
-			call = &meshCall{peer: in.Owner, client: rec.Client, team: rec.Team}
+			// Another machine may take over when this one answers 5xx (it could not start the model, say),
+			// unless it is the last one there is.
+			last := attempt == maxAttempts-1 || attempt == len(cands)-1
+			call = &meshCall{peer: in.Owner, client: rec.Client, team: rec.Team, failover: !last}
 		}
 		lastErr = g.forward(mw, r, in, api, body, rec.ID, call)
 		if lastErr == nil || mw.status != 0 || r.Context().Err() != nil {
 			break
 		}
-		if call != nil {
+		var refused errPeerFailed
+		if call != nil && !errors.As(lastErr, &refused) { // a peer that answered is up, just unable this time
 			g.peerDown(call.peer, lastErr)
 		}
 		// Nothing reached the client: mark the replica suspect and try the next one.
@@ -513,7 +525,18 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 // engine could not be reached, so the caller may fail over. The engine sees the gateway's request id as
 // X-Request-Id, so its logs can be matched to the usage record.
 // meshCall is a forward to another machine of the mesh, on behalf of client (of team).
-type meshCall struct{ peer, client, team string }
+type meshCall struct {
+	peer, client, team string
+	failover           bool // a 5xx answer is not passed on: the caller tries the next machine
+}
+
+// errPeerFailed is a peer's 5xx answer, not passed to the client because another machine is tried.
+type errPeerFailed struct {
+	status int
+	msg    string
+}
+
+func (e errPeerFailed) Error() string { return fmt.Sprintf("answered %d: %s", e.status, e.msg) }
 
 func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instance, api string, body []byte, reqID string, call *meshCall) error {
 	g.acquire(in.ID)
@@ -563,6 +586,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 			pr.Out.Header.Del("x-api-key")
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del("X-Emx-Client")
+			pr.Out.Header.Del("X-Emx-Node") // the choice of machine is made: the peer serves it
 			pr.Out.Header.Set("X-Request-Id", reqID)
 			// The body parsed as JSON; strict engines (vLLM) reject other declared types.
 			pr.Out.Header.Set("Content-Type", "application/json")
@@ -578,7 +602,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 				}
 			}
 			if call != nil {
-				mesh.Sign(secret, pr.Out.Header, g.meshCfg().Node, call.client, call.team, http.MethodPost, pr.Out.URL.RequestURI(), body, time.Now())
+				mesh.Sign(secret, pr.Out.Header, g.meshCfg().Node, mesh.As{Client: call.client, Team: call.team}, http.MethodPost, pr.Out.URL.RequestURI(), body, time.Now())
 			}
 		},
 		FlushInterval: -1, // stream SSE tokens as they arrive
@@ -587,6 +611,10 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("X-Request-Id") // the client gets the gateway's id, set already
+			if call != nil && call.failover && resp.StatusCode >= 500 {
+				head, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				return errPeerFailed{resp.StatusCode, upstreamError(head)}
+			}
 			if call != nil {
 				// What the peer served it with, named by machine; its limits and ids are its own business.
 				mw.peerInstance = call.peer + "/" + resp.Header.Get("X-Emx-Instance")

@@ -24,7 +24,7 @@ type filterFlags struct {
 	limit                                         *int
 	// request-only filters (nil unless addRequestFilters registered them)
 	category, errorKind, minSeverity, rule, team *string
-	errors, flagged                              *bool
+	errors, flagged, entered                     *bool
 }
 
 func addFilterFlags(fs *flag.FlagSet, defSince string, defLimit int) *filterFlags {
@@ -51,6 +51,7 @@ func (f *filterFlags) addRequestFilters(fs *flag.FlagSet) *filterFlags {
 	f.flagged = fs.Bool("flagged", false, "only requests that matched a policy rule")
 	f.minSeverity = fs.String("min-severity", "", "only flagged requests at or above this severity: "+strings.Join(policy.Severities, ", "))
 	f.rule = fs.String("rule", "", "only requests flagged by this policy rule")
+	f.entered = fs.Bool("entered", false, "only requests clients sent to this machine (in a mesh: leaves out those another machine forwarded)")
 	return f
 }
 
@@ -72,7 +73,7 @@ func (f *filterFlags) filter() (store.Filter, error) {
 	}
 	if f.category != nil {
 		out.Category, out.ErrorKind, out.Rule, out.Team = *f.category, *f.errorKind, *f.rule, *f.team
-		out.Errors, out.Flagged, out.MinSeverity = *f.errors, *f.flagged, *f.minSeverity
+		out.Errors, out.Flagged, out.MinSeverity, out.Entered = *f.errors, *f.flagged, *f.minSeverity, *f.entered
 		if out.MinSeverity != "" && !slices.Contains(policy.Severities, out.MinSeverity) {
 			return out, errs.New(errs.Usage, "--min-severity %q: want %s", out.MinSeverity, strings.Join(policy.Severities, ", "))
 		}

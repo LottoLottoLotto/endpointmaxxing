@@ -153,9 +153,13 @@ func RecordAdmin(a *app.App, actor, detail string) {
 
 // admin records a change made through the management API by the request's key.
 func (g *Gateway) admin(r *http.Request, detail string) {
-	actor := principalOf(r).name
+	p := principalOf(r)
+	actor := p.name
 	if actor == "" {
 		actor = "open-mode client " + clientIP(r)
+	}
+	if p.call != nil {
+		actor += " (via " + p.call.From + ")"
 	}
 	go RecordAdmin(g.App, actor, detail)
 }

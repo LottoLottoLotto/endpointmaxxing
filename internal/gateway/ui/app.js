@@ -780,7 +780,47 @@ async function config() {
   load();
 }
 
-const PAGES = { overview, models, requests, events, policy, access, config };
+// The machines of a mesh: each one's status, instances and the usage clients sent to it. Every call goes to
+// this gateway, which relays it to the others (?node=).
+async function mesh() {
+  const body = page('Mesh', [sinceSelect(() => load()), refreshToggle(() => load())]);
+  const load = () => {
+    const gen = S.gen;
+    guarded(gen, body, async () => {
+      const m = await get('/emx/v1/mesh');
+      if (!m.enabled) return el('p', { class: 'muted' }, 'This gateway is not in a mesh. Add a mesh block to config.yaml (see docs/mesh.md).');
+      const nodes = [{ name: m.node, up: true, here: true, models: m.models, version: m.version }, ...m.peers];
+      const q = (n) => (n.here ? '' : '&node=' + enc(n.name));
+      const per = await Promise.all(nodes.map(async (n) => {
+        if (!n.up) return { n, ins: [], usage: [] };
+        try {
+          const [ins, usage] = await Promise.all([
+            get('/emx/v1/instances' + (n.here ? '' : '?node=' + enc(n.name))),
+            get('/emx/v1/usage?by=model&entered=1&since=' + enc(S.since) + q(n))]);
+          return { n, ins, usage };
+        } catch (e) { return { n, ins: [], usage: [], err: e.message }; }
+      }));
+      const keys = m.follower ? `copied from ${m.keys_from}` + (m.keys_copy_error ? ` (last copy failed: ${m.keys_copy_error})` : '') : `held here (${m.node})`;
+      return [
+        el('p', {}, `This machine: `, el('b', {}, m.node), `. Keys, teams, prices and aliases: ${keys}.`),
+        table([
+          { h: 'Machine', v: (r) => r.n.name + (r.n.here ? ' (this one)' : '') },
+          { h: 'Status', v: (r) => (r.n.up ? pill('up', 'ok') : pill('down: ' + (r.n.error || ''), 'err')) },
+          { h: 'Round trip', n: 1, v: (r) => (r.n.here ? '' : ms(r.n.rtt_ms)) },
+          { h: 'Version', v: (r) => r.n.version || '' },
+          { h: 'Models', cls: 'wrap', v: (r) => (r.n.models || []).join(', ') },
+          { h: 'Running', v: (r) => r.err ? el('span', { class: 'error' }, r.err) : r.ins.map((i) => [statusPill(i.status), ' ', i.instance.name, ' ']) },
+          { h: 'Requests sent here', n: 1, v: (r) => num(r.usage.reduce((a, u) => a + u.requests, 0)) },
+          { h: 'Output tok', n: 1, v: (r) => num(r.usage.reduce((a, u) => a + u.completion_tokens, 0)) },
+        ], per),
+        el('p', { class: 'muted' }, 'Requests are counted on the machine a client sent them to, wherever they were served, so the rows add up to the whole mesh.'),
+      ];
+    });
+  };
+  load();
+}
+
+const PAGES = { overview, models, mesh, requests, events, policy, access, config };
 
 function route() {
   S.gen++;

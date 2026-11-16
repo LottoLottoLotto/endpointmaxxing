@@ -41,6 +41,7 @@ usage.
 
 ```sh
 emx usage --by model|engine|instance|client|team|node|api|category|error_kind|flag_severity|status|day|hour|total --since 24h
+emx usage --entered --since 7d                   # in a mesh: only what clients sent to this machine (see mesh.md)
 emx requests --since 1h --model qwen3-0.6b       # recent requests
 emx requests --flagged --min-severity high       # flagged requests (also --rule, --category, --errors, --error-kind)
 emx requests --id req_...                          # one request, with bodies if captured (the gateway's id or the client's X-Request-Id)

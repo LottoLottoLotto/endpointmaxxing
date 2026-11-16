@@ -67,6 +67,8 @@ type servingState struct {
 	Active int      `json:"active"`
 	Queued int      `json:"queued"`
 	Serves int      `json:"serves"` // requests it works on at once (at least 1)
+	// Speed is the model's measured decode speed there (tok/s over the last 30 days; 0: not measured).
+	Speed float64 `json:"speed,omitempty"`
 }
 
 type meshUsage struct {
@@ -97,6 +99,10 @@ type meshState struct {
 	syncAt  *time.Time
 	syncErr string
 	synced  []byte
+	// speeds caches this machine's measured decode speed per model (routing).
+	speeds  map[string]float64
+	speedAt time.Time
+	wake    chan struct{}
 }
 
 func (g *Gateway) meshCfg() config.Mesh { return g.App.Config().Mesh }
@@ -118,7 +124,7 @@ func (g *Gateway) meshRefresh() error {
 		return nil
 	}
 	secret, err := mesh.LoadSecret(m.Secret())
-	tlsKey := m.CAFile + "|" + g.gw().TLS.Cert + "|" + g.gw().TLS.Key
+	tlsKey := fmt.Sprint(m.CAFile, "|", g.gw().TLS.Cert, "|", g.gw().TLS.Key, "|", g.gw().UpstreamHeaderTimeout)
 	g.mesh.mu.Lock()
 	defer g.mesh.mu.Unlock()
 	if err != nil {
@@ -126,7 +132,7 @@ func (g *Gateway) meshRefresh() error {
 	}
 	g.mesh.secret = secret
 	if g.mesh.client == nil || g.mesh.clientOf != tlsKey {
-		c, err := meshClient(m.CAFile, g.gw().TLS)
+		c, err := meshClient(m.CAFile, g.gw().TLS, time.Duration(g.gw().UpstreamHeaderTimeout))
 		if err != nil {
 			return err
 		}
@@ -151,7 +157,7 @@ func (g *Gateway) meshRefresh() error {
 
 // meshClient trusts the system's roots and ca_file, and presents this gateway's own certificate (for peers
 // that require client certificates).
-func meshClient(caFile string, t config.TLS) (*http.Client, error) {
+func meshClient(caFile string, t config.TLS, headerTimeout time.Duration) (*http.Client, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil {
 		pool = x509.NewCertPool()
@@ -177,7 +183,7 @@ func meshClient(caFile string, t config.TLS) (*http.Client, error) {
 		TLSClientConfig:       conf,
 		MaxIdleConnsPerHost:   64,
 		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: 0, // set per call: a peer may be starting the model
+		ResponseHeaderTimeout: headerTimeout, // as for local engines: the peer may be starting the model
 	}}, nil
 }
 
@@ -197,12 +203,53 @@ func (g *Gateway) meshLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(g.meshCfg().Every()):
+		case <-g.mesh.wakeCh():
 		}
+	}
+}
+
+// wakeCh is signalled when the machine that holds the keys says they changed.
+func (s *meshState) wakeCh() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wake == nil {
+		s.wake = make(chan struct{}, 1)
+	}
+	return s.wake
+}
+
+// meshSyncNow answers the key holder's note that keys or shared settings changed: copy them now.
+func (g *Gateway) meshSyncNow(*http.Request) (any, error) {
+	select {
+	case g.mesh.wakeCh() <- struct{}{}:
+	default:
+	}
+	return map[string]bool{"ok": true}, nil
+}
+
+// tellFollowers asks the other machines to copy the keys and shared settings now, after a change here.
+func (g *Gateway) tellFollowers() {
+	m := g.meshCfg()
+	if !m.Enabled() || m.Follower() {
+		return
+	}
+	for _, p := range g.upPeers() {
+		go func() {
+			var out map[string]bool
+			if err := g.meshCall(context.Background(), http.MethodPost, p.URL, "/emx/v1/mesh/sync", &out); err != nil {
+				g.Log.Printf("mesh: telling %s the keys changed: %v (it copies them within %s)", p.Name, err, m.Every())
+			}
+		}()
 	}
 }
 
 // meshGet makes a signed GET to peer and checks the signed answer.
 func (g *Gateway) meshGet(ctx context.Context, peerURL, path string, out any) error {
+	return g.meshCall(ctx, http.MethodGet, peerURL, path, out)
+}
+
+// meshCall makes a signed call without a body to peer and checks the signed answer.
+func (g *Gateway) meshCall(ctx context.Context, method, peerURL, path string, out any) error {
 	g.mesh.mu.Lock()
 	secret, client := g.mesh.secret, g.mesh.client
 	g.mesh.mu.Unlock()
@@ -211,11 +258,11 @@ func (g *Gateway) meshGet(ctx context.Context, peerURL, path string, out any) er
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, peerURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, peerURL+path, nil)
 	if err != nil {
 		return err
 	}
-	mesh.Sign(secret, req.Header, g.meshCfg().Node, "", "", http.MethodGet, path, nil, time.Now())
+	mesh.Sign(secret, req.Header, g.meshCfg().Node, mesh.As{}, method, path, nil, time.Now())
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -392,6 +439,7 @@ func (g *Gateway) meshStateOf(r *http.Request) (any, error) {
 			s.Serves, _ = c["serves"].(int)
 		}
 		s.Serves = max(s.Serves, 1)
+		s.Speed, _ = e.EMX["decode_tok_per_sec"].(float64)
 		st.Serving[name] = s
 	}
 	sort.Slice(st.Models, func(i, j int) bool { return st.Models[i].ID < st.Models[j].ID })
@@ -416,13 +464,13 @@ func (g *Gateway) meshShared(*http.Request) (any, error) {
 	return sharedCopy{Keys: string(data), Shared: config.SharedOf(g.App.Config())}, nil
 }
 
-// enteredUsage is what clients sent to this machine today and this month (cached for an interval).
+// enteredUsage is what clients sent to this machine today and this month (cached for a second).
 func (g *Gateway) enteredUsage() meshUsage {
 	g.mesh.mu.Lock()
 	defer g.mesh.mu.Unlock()
 	day, dayStart := today()
 	month, monthStart := thisMonth()
-	if g.mesh.usage.Day == day && g.mesh.usage.Month == month && time.Since(g.mesh.usageAt) < g.meshCfg().Every() {
+	if g.mesh.usage.Day == day && g.mesh.usage.Month == month && time.Since(g.mesh.usageAt) < time.Second {
 		return g.mesh.usage
 	}
 	u := meshUsage{Day: day, Month: month}
@@ -475,7 +523,7 @@ func (g *Gateway) meshStatus(w http.ResponseWriter, r *http.Request) {
 	if keysFrom == "" {
 		keysFrom = m.Node
 	}
-	out["node"], out["keys_from"], out["follower"] = m.Node, keysFrom, m.Follower()
+	out["node"], out["keys_from"], out["follower"], out["version"] = m.Node, keysFrom, m.Follower(), g.Version
 	if m.Follower() {
 		out["keys_copied_at"], out["keys_copy_error"] = g.mesh.syncAt, g.mesh.syncErr
 	}
@@ -525,33 +573,32 @@ func (g *Gateway) addPeerModels(byName map[string]*modelEntry, allows func(strin
 }
 
 // meshTargets decides whether a request for model goes to other machines: nil keeps it here. It prefers,
-// in order: this machine when it has the model ready and no peer has it ready with less load; a peer that
-// has it ready (least loaded first); this machine when it can start it; a peer that can start it.
+// in order: this machine when it has the model ready and no peer that has it ready would serve it sooner; a
+// peer that has it ready (soonest first); this machine when it can start it; a peer that can start it.
+//
+// "Sooner" compares the rounds of requests ahead (running and waiting, per slot) divided by the model's
+// measured decode speed on each machine, so a fast GPU is preferred over a CPU that is just as idle. When a
+// machine has no measured speed yet, only the requests ahead per slot are compared.
 func (g *Gateway) meshTargets(ctx context.Context, model, api string) []*runtime.Instance {
 	if !g.meshCfg().Enabled() {
 		return nil
 	}
-	type cand struct {
-		name string
-		load float64
-	}
-	var ready, startable []cand
+	var ready, startable []routeCand
 	for _, p := range g.upPeers() {
 		s, ok := p.state.Serving[model]
 		if !ok || (len(s.APIs) > 0 && api != "" && !slices.Contains(s.APIs, api)) {
 			continue
 		}
 		if !s.Ready {
-			startable = append(startable, cand{p.Name, 0})
+			startable = append(startable, routeCand{name: p.Name})
 			continue
 		}
 		g.activeMu.Lock()
 		sent := g.active[meshID(p.Name, model)] // forwarded since its last answer, or still in flight
 		g.activeMu.Unlock()
-		ready = append(ready, cand{p.Name, float64(max(s.Active+s.Queued, sent)) / float64(max(s.Serves, 1))})
+		ready = append(ready, routeCand{name: p.Name, busy: max(s.Active+s.Queued, sent), serves: max(s.Serves, 1), speed: s.Speed})
 	}
-	sort.SliceStable(ready, func(i, j int) bool { return ready[i].load < ready[j].load })
-	out := func(cs ...[]cand) []*runtime.Instance {
+	out := func(cs ...[]routeCand) []*runtime.Instance {
 		var ins []*runtime.Instance
 		for _, list := range cs {
 			for _, c := range list {
@@ -561,11 +608,15 @@ func (g *Gateway) meshTargets(ctx context.Context, model, api string) []*runtime
 		return ins
 	}
 	if local, _ := g.ready(ctx, model, api); len(local) > 0 {
-		if len(ready) > 0 && ready[0].load < g.localLoad(ctx, model, local) {
+		busy, slots := g.localBusy(ctx, model, local)
+		here := routeCand{busy: busy, serves: slots, speed: g.localSpeed(model)}
+		sortCands(ready, here)
+		if len(ready) > 0 && ready[0].cost(useSpeed(ready, here)) < here.cost(useSpeed(ready, here)) {
 			return out(ready)
 		}
 		return nil
 	}
+	sortCands(ready)
 	if len(ready) > 0 {
 		return out(ready, startable)
 	}
@@ -573,6 +624,37 @@ func (g *Gateway) meshTargets(ctx context.Context, model, api string) []*runtime
 		return nil
 	}
 	return out(startable)
+}
+
+// routeCand is one machine that could serve a request.
+type routeCand struct {
+	name         string
+	busy, serves int     // requests running and waiting; requests it works on at once
+	speed        float64 // measured decode tok/s (0: not measured)
+}
+
+// cost is how long the request would take there, relatively: rounds of requests ahead (this one included)
+// over the speed; or, without speeds, the requests ahead per slot.
+func (c routeCand) cost(bySpeed bool) float64 {
+	if bySpeed {
+		return float64(c.busy/c.serves+1) / c.speed
+	}
+	return float64(c.busy) / float64(c.serves)
+}
+
+// useSpeed reports whether every candidate has a measured speed.
+func useSpeed(cs []routeCand, more ...routeCand) bool {
+	for _, c := range append(append([]routeCand{}, cs...), more...) {
+		if c.speed <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func sortCands(cs []routeCand, more ...routeCand) {
+	bySpeed := useSpeed(cs, more...)
+	sort.SliceStable(cs, func(i, j int) bool { return cs[i].cost(bySpeed) < cs[j].cost(bySpeed) })
 }
 
 func meshID(peer, model string) string { return "mesh:" + peer + "/" + model }
@@ -588,9 +670,8 @@ func (g *Gateway) peerInstance(peer, model string) *runtime.Instance {
 	return &runtime.Instance{ID: meshID(peer, model), Name: model, Engine: meshEngine, BaseURL: u, Owner: peer}
 }
 
-// localLoad is the requests running and waiting per slot for model on this machine.
-func (g *Gateway) localLoad(ctx context.Context, model string, ins []*runtime.Instance) float64 {
-	slots, busy := 0, 0
+// localBusy is the requests running and waiting for model on this machine, and the slots serving it.
+func (g *Gateway) localBusy(ctx context.Context, model string, ins []*runtime.Instance) (busy, slots int) {
 	for _, in := range ins {
 		g.activeMu.Lock()
 		busy += g.active[in.ID]
@@ -600,8 +681,27 @@ func (g *Gateway) localLoad(ctx context.Context, model string, ins []*runtime.In
 	if lim := g.maxConcurrency(model); lim > 0 && lim < slots {
 		slots = lim
 	}
-	busy += g.lim.queued()[model]
-	return float64(busy) / float64(max(slots, 1))
+	return busy + g.lim.queued()[model], max(slots, 1)
+}
+
+// localSpeed is model's measured decode speed here over the last 30 days (0 when not measured), refreshed
+// once a minute.
+func (g *Gateway) localSpeed(model string) float64 {
+	g.mesh.mu.Lock()
+	defer g.mesh.mu.Unlock()
+	if time.Since(g.mesh.speedAt) > time.Minute {
+		g.mesh.speeds, g.mesh.speedAt = map[string]float64{}, time.Now()
+		if db, err := g.App.DB(); err == nil && g.App.Config().Logging.Enabled {
+			if rows, err := db.Usage("model", store.Filter{Since: time.Now().Add(-historyWindow)}); err == nil {
+				for _, r := range rows {
+					if r.DecodeTokPerSec != nil {
+						g.mesh.speeds[r.Key] = *r.DecodeTokPerSec
+					}
+				}
+			}
+		}
+	}
+	return g.mesh.speeds[model]
 }
 
 // peerInstances are a peer's instances of a model, named node/id and marked with their node.
@@ -619,4 +719,70 @@ func peerInstances(node string, pe *modelEntry) []map[string]any {
 		}
 	}
 	return out
+}
+
+// maxRelayBody bounds a management call relayed between machines.
+const maxRelayBody = 1 << 20
+
+// relayTimeout bounds a relayed management call (model starts excepted).
+const relayTimeout = time.Minute
+
+// relay sends a management call to peer node as a signed call acting for the caller (with its role), and
+// passes the answer back. The peer checks the role again and records the change as made via this machine.
+func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, node string) {
+	m := g.meshCfg()
+	peer, ok := m.Peer(node)
+	if !m.Enabled() || !ok {
+		apiError(w, http.StatusNotFound, "not_found_error", fmt.Sprintf("no mesh peer called %q (see GET /emx/v1/mesh)", node))
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRelayBody+1))
+	if err != nil || len(body) > maxRelayBody {
+		apiError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "a call relayed to another machine is at most 1 MiB")
+		return
+	}
+	g.mesh.mu.Lock()
+	secret, client := g.mesh.secret, g.mesh.client
+	g.mesh.mu.Unlock()
+	if secret == nil || client == nil {
+		apiError(w, http.StatusServiceUnavailable, "api_error", "mesh: no secret loaded")
+		return
+	}
+	// A peer that accepts the connection and never answers must not hold the caller: a minute, except for
+	// starting a model, which may take as long as the load does.
+	ctx := r.Context()
+	if !strings.HasSuffix(r.URL.Path, "/ensure") {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, relayTimeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, r.Method, strings.TrimSuffix(peer.URL, "/")+r.URL.RequestURI(), bytes.NewReader(body))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	p := principalOf(r)
+	team := ""
+	if p.key != nil {
+		team = p.key.Team
+	}
+	mesh.Sign(secret, req.Header, m.Node, mesh.As{Client: p.name, Team: team, Role: p.role}, r.Method, r.URL.RequestURI(), body, time.Now())
+	resp, err := client.Do(req)
+	if err != nil {
+		g.peerDown(node, err)
+		apiError(w, http.StatusBadGateway, "api_error", fmt.Sprintf("mesh peer %s: %v", node, err))
+		return
+	}
+	defer resp.Body.Close()
+	for _, k := range []string{"Content-Type", "Retry-After", "Cache-Control"} {
+		if v := resp.Header.Get(k); v != "" {
+			w.Header().Set(k, v)
+		}
+	}
+	w.Header().Set("X-Emx-Node", node)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }

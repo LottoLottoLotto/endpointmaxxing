@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-15
+
+### Added
+
+- Mesh routing compares how soon each machine would answer: requests ahead
+  per slot over the model's measured decode speed there, so a fast GPU is
+  chosen over an idle CPU.
+- A machine that answers 5xx (it could not start the model, say) is
+  followed by the next machine that has the model.
+- `X-Emx-Node` on an inference request names the machine to serve it.
+- Management calls take `?node=NAME` to act on another machine, relayed
+  with the caller's role and checked again there. New commands: `emx mesh
+  status`, `ps`, `run`, `stop`, `usage` (`emx mesh` alone was the status).
+- Changes to keys, teams, prices and aliases can be made through any
+  machine's API; it takes them to the machine that holds them. That
+  machine tells the others to copy at once instead of at their next poll.
+- `entered=1` / `emx usage --entered` leaves out forwarded requests, so
+  machine totals add up; `emx mesh usage` sums them.
+- Admin UI: a Mesh page with each machine's status, instances and usage.
+
 ### Fixed
+
+- A relayed management call or forwarded request to a peer that accepts
+  the connection but never answers no longer waits forever: relayed calls
+  stop after a minute (model starts excepted), forwarded requests after
+  `gateway.upstream_header_timeout`.
+- `emx service install` suggested `loginctl enable-linger` when lingering
+  was already on.
 
 - The resource sampler logged the same GPU listing error every sample on a
   machine where `nvidia-smi` is installed but has no working driver; it is
@@ -284,7 +311,8 @@ Entries marked "breaking" can break existing clients.
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.3...v0.1.4

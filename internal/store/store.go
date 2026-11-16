@@ -503,10 +503,13 @@ type Filter struct {
 	MinSeverity string
 	// Rule keeps requests flagged by this policy rule.
 	Rule string
+	// Entered keeps requests clients sent to this gateway (leaves out those another mesh machine forwarded):
+	// summed over every machine, each request counts once.
+	Entered bool
 }
 
 // requestExtras are the Filter fields that apply to the requests table.
-var requestExtras = []string{"model", "engine", "instance", "client", "team", "id", "category", "error_kind", "errors", "flagged", "rule"}
+var requestExtras = []string{"model", "engine", "instance", "client", "team", "id", "category", "error_kind", "errors", "flagged", "rule", "entered"}
 
 func (f Filter) where(tsCol string, extra ...string) (string, []any) {
 	var conds []string
@@ -560,6 +563,10 @@ func (f Filter) where(tsCol string, extra ...string) (string, []any) {
 				for _, s := range sev {
 					args = append(args, s)
 				}
+			}
+		case "entered":
+			if f.Entered {
+				conds = append(conds, "mesh_from = ''")
 			}
 		case "rule":
 			if f.Rule != "" {

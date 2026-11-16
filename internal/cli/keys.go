@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -376,7 +377,9 @@ func serviceInstallCmd() *command {
 					if !*enable {
 						fmt.Fprintln(w, "start it: systemctl --user daemon-reload && systemctl --user enable --now emx")
 					}
-					fmt.Fprintln(w, "keep it running after logout: loginctl enable-linger $USER")
+					if !lingering(e) {
+						fmt.Fprintln(w, "keep it running after logout: loginctl enable-linger $USER")
+					}
 				})
 			}
 		}}
@@ -424,4 +427,10 @@ func serviceStatusCmd() *command {
 				})
 			}
 		}}
+}
+
+// lingering reports whether systemd keeps this user's services running without a login session.
+func lingering(e *env) bool {
+	out, err := exec.CommandContext(e.ctx, "loginctl", "show-user", strconv.Itoa(os.Getuid()), "-p", "Linger", "--value").Output()
+	return err == nil && strings.TrimSpace(string(out)) == "yes"
 }
