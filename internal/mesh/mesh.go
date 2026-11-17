@@ -29,8 +29,9 @@ const (
 	HeaderTime      = "X-Emx-Mesh-Time"
 	HeaderClient    = "X-Emx-Mesh-Client"
 	HeaderTeam      = "X-Emx-Mesh-Team"
-	HeaderRole      = "X-Emx-Mesh-Role" // the caller's role, for management calls relayed to a peer
-	HeaderSub       = "X-Emx-Mesh-Sub"  // the client a delegating key acts for
+	HeaderRole      = "X-Emx-Mesh-Role"  // the caller's role, for management calls relayed to a peer
+	HeaderSub       = "X-Emx-Mesh-Sub"   // the client a delegating key acts for
+	HeaderDomain    = "X-Emx-Mesh-Cache" // the prompt-cache domain the request belongs to (cache isolation)
 	HeaderBody      = "X-Emx-Mesh-Body"
 	HeaderNonce     = "X-Emx-Mesh-Nonce" // makes two identical calls in one second two different calls
 	HeaderSignature = "X-Emx-Mesh-Signature"
@@ -84,12 +85,12 @@ func mac(secret []byte, parts ...string) string {
 }
 
 func canonical(secret []byte, h http.Header, method, uri string) string {
-	return mac(secret, "emx-mesh-v1", method, uri, h.Get(HeaderTime), h.Get(HeaderNonce), h.Get(HeaderFrom), h.Get(HeaderClient), h.Get(HeaderTeam), h.Get(HeaderRole), h.Get(HeaderSub), h.Get(HeaderBody))
+	return mac(secret, "emx-mesh-v1", method, uri, h.Get(HeaderTime), h.Get(HeaderNonce), h.Get(HeaderFrom), h.Get(HeaderClient), h.Get(HeaderTeam), h.Get(HeaderRole), h.Get(HeaderSub), h.Get(HeaderDomain), h.Get(HeaderBody))
 }
 
 // As is whom a call acts for: the client (key name) and its team; Role is set on management calls relayed
 // to a peer (the caller's role there), empty on forwarded inference.
-type As struct{ Client, Team, Role, Sub string }
+type As struct{ Client, Team, Role, Sub, Domain string }
 
 // Sign makes h a signed call from node, acting for as, of method uri (path and query) with body.
 func Sign(secret []byte, h http.Header, node string, as As, method, uri string, body []byte, now time.Time) {
@@ -102,6 +103,7 @@ func Sign(secret []byte, h http.Header, node string, as As, method, uri string, 
 	setOrDel(h, HeaderTeam, as.Team)
 	setOrDel(h, HeaderRole, as.Role)
 	setOrDel(h, HeaderSub, as.Sub)
+	setOrDel(h, HeaderDomain, as.Domain)
 	h.Set(HeaderBody, bodyHash(body))
 	h.Set(HeaderSignature, canonical(secret, h, method, uri))
 }
@@ -119,9 +121,9 @@ func IsCall(h http.Header) bool { return h.Get(HeaderSignature) != "" }
 
 // Call is a verified mesh call.
 type Call struct {
-	From, Client, Team, Role, Sub string
-	Signature                     string
-	bodyHash                      string
+	From, Client, Team, Role, Sub, Domain string
+	Signature                             string
+	bodyHash                              string
 }
 
 // BodyMatches reports whether body is the one the call was signed with.
@@ -174,7 +176,7 @@ func (v *Verifier) Verify(secret []byte, h http.Header, method, uri string, know
 		}
 	}
 	v.seen[sig] = now
-	return &Call{From: from, Client: h.Get(HeaderClient), Team: h.Get(HeaderTeam), Role: h.Get(HeaderRole), Sub: h.Get(HeaderSub), Signature: sig, bodyHash: h.Get(HeaderBody)}, nil
+	return &Call{From: from, Client: h.Get(HeaderClient), Team: h.Get(HeaderTeam), Role: h.Get(HeaderRole), Sub: h.Get(HeaderSub), Domain: h.Get(HeaderDomain), Signature: sig, bodyHash: h.Get(HeaderBody)}, nil
 }
 
 // SignReply signs an answer to the call with signature callSig.

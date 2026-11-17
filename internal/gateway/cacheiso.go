@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"hash/fnv"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 // Prompt-cache isolation (gateway.cache_isolation). Engines reuse the computed start of a prompt they saw
@@ -29,6 +32,12 @@ import (
 //   - The first byte of the answer is held back until the time the engine would take to compute the part of
 //     the prompt not explained by `own`, at the model's measured prompt speed. An answer sped up by another
 //     client's cache then starts no sooner than one that was not; the client's own cache hits stay fast.
+//
+// Prompts many clients share (an agent's system prompt, common tool definitions) are not secret: once a
+// prompt prefix has come from gateway.cache_share_after different cache domains, a cache hit on it says
+// only that several clients use it, so it counts as everyone's own (cached count and speed). A prefix only
+// one client sent never qualifies. A key with cache_shared, or a group a delegating key names, is a single
+// domain: its clients share all of their cache.
 //
 // Until a model has a few measured uncached prompts the gateway cannot estimate prompt time and does not
 // hold answers back; counts are lowered from the first request.
@@ -91,14 +100,29 @@ type cacheIsolation struct {
 	mu     sync.Mutex
 	prints map[string]map[string]*clientPrints // model -> client -> prompts
 	speed  map[string]*modelSpeed
+	common map[string]map[uint64]*prefixSeen // model -> prefix (chunk-chain hash) -> who sent it
 }
 
-// promptKey is the client a request belongs to for cache isolation: the key and the client it acts for.
-func promptKey(client, sub string) string {
-	if sub == "" {
-		return client
+// prefixSeen is a prompt prefix and the distinct cache domains that sent it, until enough have.
+type prefixSeen struct {
+	domains []uint64
+	shared  bool
+	at      time.Time
+}
+
+const (
+	commonMaxChunks  = 2048    // prefixes tracked for sharing: the first 128 KiB of a prompt
+	commonMaxEntries = 1 << 18 // per model
+	commonMaxAge     = time.Hour
+)
+
+// cacheDomain is the prompt-cache domain of a request: the principal's (see principal.domain), else, for
+// the master key and open mode, the client the request names.
+func cacheDomain(p *principal, rec *store.Request) string {
+	if p.domain != "" {
+		return p.domain
 	}
-	return client + "/" + sub
+	return rec.Client
 }
 
 // promptBytes is the part of a request body an engine's prefix cache keys on, in a stable form: tools and
@@ -197,6 +221,76 @@ func (c *cacheIsolation) ownCached(model, client string, fp promptFP) (tokens in
 		}
 	}
 	return tokens, covered
+}
+
+// sharedPrefix is how many bytes of a prompt are a prefix at least shareAfter cache domains sent (0: off),
+// and the prompt tokens they are, by the model's measured bytes per token (0 until it is measured).
+func (c *cacheIsolation) sharedPrefix(model string, fp promptFP, shareAfter int) (tokens int64, covered int) {
+	if shareAfter < 2 {
+		return 0, 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := c.common[model]
+	n := 0
+	for n < len(fp.chain) && n < commonMaxChunks {
+		if e := seen[fp.chain[n]]; e == nil || !e.shared {
+			break
+		}
+		n++
+	}
+	covered = min(n*cacheChunk, len(fp.b))
+	if s := c.speed[model]; s != nil && s.bytesPerTok > 0 {
+		tokens = int64(float64(covered) / s.bytesPerTok)
+	}
+	return tokens, covered
+}
+
+// seenBy records that a cache domain sent a prompt, for sharedPrefix.
+func (c *cacheIsolation) seenBy(model, domain string, fp promptFP, shareAfter int) {
+	if shareAfter < 2 || len(fp.chain) == 0 {
+		return
+	}
+	d := hashBytes([]byte(domain))
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.common == nil {
+		c.common = map[string]map[uint64]*prefixSeen{}
+	}
+	seen := c.common[model]
+	if seen == nil {
+		seen = map[uint64]*prefixSeen{}
+		c.common[model] = seen
+	}
+	for _, h := range fp.chain[:min(len(fp.chain), commonMaxChunks)] {
+		e := seen[h]
+		if e == nil {
+			e = &prefixSeen{}
+			seen[h] = e
+		}
+		e.at = now
+		if e.shared || slices.Contains(e.domains, d) {
+			continue
+		}
+		e.domains = append(e.domains, d)
+		if len(e.domains) >= shareAfter {
+			e.shared, e.domains = true, nil
+		}
+	}
+	if len(seen) > commonMaxEntries { // forget old prefixes, then any, down to 90%
+		for h, e := range seen {
+			if now.Sub(e.at) > commonMaxAge {
+				delete(seen, h)
+			}
+		}
+		for h := range seen {
+			if len(seen) <= commonMaxEntries*9/10 {
+				break
+			}
+			delete(seen, h)
+		}
+	}
 }
 
 // remember records a prompt the client sent to model with the prompt tokens the engine counted.

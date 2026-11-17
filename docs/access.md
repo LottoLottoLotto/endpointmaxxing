@@ -26,7 +26,9 @@ app. Its requests may name the user in `X-Emx-Client` (letters, digits and
 `._:@-`, up to 64). That client is recorded as the request's `sub_client`
 (`emx usage --by sub_client`) and gets its own prompt-cache domain under
 `gateway.cache_isolation`. The key's role, models and limits still cover all
-of its clients together.
+of its clients together. A delegating key may also name a cache group in
+`X-Emx-Cache-Group`: requests in one group share their prompt cache. A key
+with `--cache-shared` is a single cache domain with all of its clients.
 
 - **Open mode:** with no keys and no master key, the gateway is open: every
   caller is admin. Whether it may run open is decided when `serve` starts:

@@ -118,6 +118,9 @@ type Gateway struct {
 	// its own earlier prompts explain, and an answer sped up by someone else's cache starts no sooner than
 	// one computed in full. Works with every engine; costs the speed-up of cache hits between clients.
 	CacheIsolation bool `yaml:"cache_isolation,omitempty" json:"cache_isolation,omitempty"`
+	// CacheShareAfter lets a prompt prefix count as everyone's cache once this many different clients sent
+	// it (a common system prompt): a hit on it then says only that several clients use it. 0 never shares.
+	CacheShareAfter int `yaml:"cache_share_after" json:"cache_share_after"`
 	// MaxBodyMB bounds one inference request body in MiB (1-256); larger bodies are refused with 413.
 	MaxBodyMB int `yaml:"max_body_mb" json:"max_body_mb"`
 	// MaxBufferedMB bounds the request bodies held in memory by all in-flight requests together, in MiB;
@@ -188,7 +191,7 @@ func Default() *Config {
 			EvictOwners: []string{"gateway"}, RestartCrashed: true, HealthInterval: spec.Duration(15 * time.Second),
 			MaxQueue: 64, QueueTimeout: spec.Duration(5 * time.Minute),
 			UpstreamHeaderTimeout: spec.Duration(10 * time.Minute), UpstreamIdleTimeout: spec.Duration(5 * time.Minute),
-			StreamUsage: true, MaxBodyMB: 64, MaxBufferedMB: 1024,
+			StreamUsage: true, MaxBodyMB: 64, MaxBufferedMB: 1024, CacheShareAfter: 5,
 			Swap: Swap{MinResidency: spec.Duration(30 * time.Second), MaxResidency: spec.Duration(10 * time.Minute),
 				WaitTimeout: spec.Duration(15 * time.Minute)}},
 		Tenstorrent: Tenstorrent{Lock: "/var/tmp/tenstorrent/chip-{n}.lock", TTSmi: "tt-smi"},
@@ -281,6 +284,9 @@ func (c *Config) validate() error {
 	}
 	if c.Logging.RetentionDays < 0 || c.Logging.AuditRetentionDays < 0 || c.Logging.AuditMaxMB < 0 {
 		return fmt.Errorf("%s: logging.retention_days, audit_retention_days and audit_max_mb must be >= 0", ConfigPath())
+	}
+	if c.Gateway.CacheShareAfter < 0 || c.Gateway.CacheShareAfter == 1 {
+		return fmt.Errorf("%s: gateway.cache_share_after must be 0 (never) or at least 2: one client's prompt is never everyone's", ConfigPath())
 	}
 	if c.Gateway.MaxOutputTokens < 0 {
 		return fmt.Errorf("%s: gateway.max_output_tokens must be >= 0", ConfigPath())

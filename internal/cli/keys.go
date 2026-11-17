@@ -46,6 +46,7 @@ func keyAddCmd() *command {
 			tpd := fs.Int64("tokens-per-day", 0, "prompt+completion tokens per calendar day (0 unlimited)")
 			maxOut := fs.Int("max-output-tokens", 0, "cap (and default) for each request's output tokens (0: only gateway.max_output_tokens)")
 			delegate := fs.Bool("delegate", false, "the key acts for clients of its own (X-Emx-Client): each is recorded and gets its own prompt-cache domain (e.g. a rental host agent's renters)")
+			cacheShared := fs.Bool("cache-shared", false, "all of the key's requests share one prompt cache under gateway.cache_isolation (clients that trust each other)")
 			expires := fs.String("expires", "", "when the key stops working: 90d, 720h, 2027-01-31 (default never)")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("key add", pos, 1, 1); err != nil {
@@ -60,7 +61,7 @@ func keyAddCmd() *command {
 					return err
 				}
 				k := keys.Key{Name: pos[0], Role: *role, Team: *team, Models: splitList(*models), RPM: *rpm, TokensPerDay: *tpd,
-					MaxOutputTokens: *maxOut, Delegate: *delegate, Expires: exp}
+					MaxOutputTokens: *maxOut, Delegate: *delegate, CacheShared: *cacheShared, Expires: exp}
 				secret, res, err := settings.AddKey(a.Config(), k)
 				if err != nil {
 					return err
@@ -129,6 +130,7 @@ func keySetCmd() *command {
 			tpd := fs.Int64("tokens-per-day", -1, "tokens per calendar day (0 unlimited)")
 			maxOut := fs.Int("max-output-tokens", -1, "cap (and default) for each request's output tokens (0: only the gateway's)")
 			delegate := fs.String("delegate", "", "on or off: the key acts for clients of its own (X-Emx-Client)")
+			cacheShared := fs.String("cache-shared", "", "on or off: all of the key's requests share one prompt cache")
 			expires := fs.String("expires", "", "90d, 720h, 2027-01-31 or never")
 			return func(e *env, pos, _ []string) error {
 				if err := wantArgs("key set", pos, 1, 1); err != nil {
@@ -176,6 +178,14 @@ func keySetCmd() *command {
 					p.Delegate = &on
 				default:
 					return errs.New(errs.Usage, "key set: --delegate %q (want on or off)", *delegate)
+				}
+				switch *cacheShared {
+				case "":
+				case "on", "off":
+					on := *cacheShared == "on"
+					p.CacheShared = &on
+				default:
+					return errs.New(errs.Usage, "key set: --cache-shared %q (want on or off)", *cacheShared)
 				}
 				a, err := e.app()
 				if err != nil {

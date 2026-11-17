@@ -1,9 +1,13 @@
 package gateway
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 )
 
 func chatPrompt(msgs ...string) []byte {
@@ -81,5 +85,73 @@ func TestHoldForComesFromMeasuredPromptSpeed(t *testing.T) {
 	}
 	if d := c.holdFor("m", 0); d != 0 {
 		t.Fatalf("all of it the client's own: hold %v", d)
+	}
+}
+
+// A prefix counts as everyone's once enough different clients sent it; one client's prompt never does, and
+// sending it many times from one client does not make it common.
+func TestSharedPrefixNeedsEnoughDifferentClients(t *testing.T) {
+	var c cacheIsolation
+	for i := 0; i < cacheMinSamples; i++ {
+		c.learn("m", 4000, 1000, 0, 0, time.Second) // 4 bytes a token
+	}
+	system := strings.Repeat("Shared agent instructions. ", 60) // ~1.6 kB
+	ask := func(question string) promptFP {
+		return fingerprintOf(promptBytes("chat", chatPrompt(system, question)))
+	}
+	for i := 0; i < 10; i++ {
+		c.seenBy("m", "solo", ask("q"), 5)
+	}
+	if _, cov := c.sharedPrefix("m", ask("mine"), 5); cov != 0 {
+		t.Fatalf("one client sending it ten times made %d bytes common", cov)
+	}
+	for _, who := range []string{"a", "b", "c", "d"} {
+		c.seenBy("m", who, ask("question from "+who), 5)
+	}
+	tokens, cov := c.sharedPrefix("m", ask("alice's own question"), 5)
+	if cov < len(system) || cov > len(system)+200 || tokens != int64(cov/4) {
+		t.Fatalf("after 5 clients sent the system prompt: covered %d bytes (%d tokens), want about the %d of the system prompt", cov, tokens, len(system))
+	}
+	if _, cov := c.sharedPrefix("m", ask("x"), 0); cov != 0 {
+		t.Fatal("cache_share_after 0 shares nothing")
+	}
+	if _, cov := c.sharedPrefix("m", fingerprintOf(promptBytes("chat", chatPrompt("A private document", "q"))), 5); cov != 0 {
+		t.Fatalf("an unseen prompt: covered %d", cov)
+	}
+}
+
+// The cache domain: a delegating key's client, or the group it names, or the whole key with cache_shared.
+func TestCacheDomainOfARequest(t *testing.T) {
+	t.Setenv("EMX_HOME", t.TempDir())
+	plain, _ := keys.Add(keys.Key{Name: "plain", Role: keys.RoleUser})
+	host, _ := keys.Add(keys.Key{Name: "host", Role: keys.RoleUser, Delegate: true})
+	team, _ := keys.Add(keys.Key{Name: "team", Role: keys.RoleUser, Delegate: true, CacheShared: true})
+	g, _ := newGateway(t)
+	domain := func(key string, headers map[string]string) string {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		r.Header.Set("Authorization", "Bearer "+key)
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		p, err := g.authenticate(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cacheDomain(p, &store.Request{})
+	}
+	for _, c := range []struct {
+		key     string
+		headers map[string]string
+		want    string
+	}{
+		{plain, map[string]string{"X-Emx-Client": "alice"}, "plain"}, // only a delegating key may name a client
+		{host, nil, "host"},
+		{host, map[string]string{"X-Emx-Client": "alice"}, "host/alice"},
+		{host, map[string]string{"X-Emx-Client": "alice", "X-Emx-Cache-Group": "listing1"}, "host/group:listing1"},
+		{team, map[string]string{"X-Emx-Client": "alice"}, "team"},
+	} {
+		if got := domain(c.key, c.headers); got != c.want {
+			t.Errorf("%v: domain %q, want %q", c.headers, got, c.want)
+		}
 	}
 }

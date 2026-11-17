@@ -47,6 +47,7 @@ gateway:
   max_body_mb: 64            # largest inference request body, MiB (1-256); larger bodies get 413
   max_buffered_mb: 1024      # request bodies held in memory by all in-flight requests, MiB (>= max_body_mb); beyond it 503
   cache_isolation: false     # true: clients cannot see each other's prompt-cache hits (gateway.md)
+  cache_share_after: 5       # ...except prefixes this many clients sent (0: never)
   swap:
     min_residency: 30s       # a model keeps its chips at least this long once ready
     max_residency: 10m       # ...and yields after this long when others wait, even with its own demand

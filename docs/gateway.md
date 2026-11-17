@@ -144,8 +144,25 @@ without the engine's help:
 
 A client is a key, or the client a delegating key acts for (see
 [Access](access.md)): a rental host agent passes each renter as its own
-client. `/v1/models` shows `emx.cache_isolation: true` when it is on. The
-cost: cache hits between clients no longer make answers faster.
+client. `/v1/models` shows `emx.cache_isolation: true` when it is on.
+
+Isolation costs the speed-up of cache hits between clients. Two settings
+give it back where nothing leaks:
+
+- **Common prefixes.** Once a prompt prefix has come from
+  `gateway.cache_share_after` different clients (default 5; 0 never), it
+  counts as every client's own: its cached tokens and its speed-up reach
+  everyone. A popular agent's system prompt or a shared tool definition
+  qualifies quickly; a hit on it says only that several clients use it. A
+  prefix one client sent never does, however often it sends it. The rest of
+  the prompt stays isolated. Someone who controls that many clients can make
+  a prefix common, so raise the number where clients are cheap to create.
+- **Clients that trust each other.** A key with `cache_shared`
+  (`emx key add|set --cache-shared`) is one cache domain with all the clients
+  it acts for. A delegating key can also name a group per request
+  (`X-Emx-Cache-Group`); requests in one group share their cache and are
+  still recorded per client. `lmx rent host --shared-cache <listing>` does
+  that for one rental listing's renters.
 
 ## Placement
 

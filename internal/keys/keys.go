@@ -55,6 +55,9 @@ type Key struct {
 	// behind an app): a request may name one in X-Emx-Client. It is recorded as the request's sub-client and
 	// gets its own prompt-cache domain (gateway.cache_isolation); the key's limits still cover them all.
 	Delegate bool `yaml:"delegate,omitempty" json:"delegate,omitempty"`
+	// CacheShared makes all of the key's requests (and the clients it acts for) one prompt-cache domain
+	// under gateway.cache_isolation: for clients that trust each other, such as one team's private rental.
+	CacheShared bool `yaml:"cache_shared,omitempty" json:"cache_shared,omitempty"`
 	// Disabled keys are refused (kept for their history; enable to restore).
 	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 	// Rotated is when the secret was last replaced; PrevHash keeps the old secret working until PrevExpires.

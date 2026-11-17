@@ -36,6 +36,10 @@ type principal struct {
 	call *mesh.Call
 	// sub is the client a delegating key (keys.Key.Delegate) acts for, from X-Emx-Client ("" for others).
 	sub string
+	// domain is the prompt-cache domain of the caller's requests (gateway.cache_isolation): the key, or the
+	// client it acts for, or a group a delegating key names (X-Emx-Cache-Group); the whole key with
+	// cache_shared. A mesh call brings the one the entry machine chose.
+	domain string
 }
 
 // subClientRe is what a delegated client name may look like (an opaque id a host agent or app assigns).
@@ -214,7 +218,7 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 			}
 			role = call.Role
 		}
-		return &principal{name: call.Client, role: role, call: call, sub: call.Sub}, nil
+		return &principal{name: call.Client, role: role, call: call, sub: call.Sub, domain: call.Domain}, nil
 	}
 	secret := secretOf(r)
 	if g.APIKey != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(g.APIKey)) == 1 {
@@ -229,12 +233,21 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 		case k.Status(now) != "active":
 			return nil, errs.Wrap(errs.Forbidden, errKeyRefused{k.Name, k.Status(now)})
 		}
-		p := &principal{name: k.Name, role: k.Role, key: k}
+		p := &principal{name: k.Name, role: k.Role, key: k, domain: k.Name}
 		if sub := r.Header.Get("X-Emx-Client"); k.Delegate && sub != "" {
 			if !subClientRe.MatchString(sub) {
 				return nil, errs.New(errs.Forbidden, "X-Emx-Client must match %s", subClientRe)
 			}
-			p.sub = sub
+			p.sub, p.domain = sub, k.Name+"/"+sub
+		}
+		if group := r.Header.Get("X-Emx-Cache-Group"); k.Delegate && group != "" {
+			if !subClientRe.MatchString(group) {
+				return nil, errs.New(errs.Forbidden, "X-Emx-Cache-Group must match %s", subClientRe)
+			}
+			p.domain = k.Name + "/group:" + group
+		}
+		if k.CacheShared {
+			p.domain = k.Name
 		}
 		return p, nil
 	}

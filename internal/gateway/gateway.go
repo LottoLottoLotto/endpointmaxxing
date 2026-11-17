@@ -487,7 +487,11 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	if lv.cfg.Gateway.CacheIsolation && !forwarded {
 		if pb := promptBytes(api, body); pb != nil {
 			prompt = fingerprintOf(pb)
-			own, covered := g.iso.ownCached(rec.Model, promptKey(rec.Client, rec.SubClient), prompt)
+			own, covered := g.iso.ownCached(rec.Model, cacheDomain(p, rec), prompt)
+			// A prefix enough clients sent counts as everyone's own.
+			if t, c := g.iso.sharedPrefix(rec.Model, prompt, lv.cfg.Gateway.CacheShareAfter); c > covered {
+				own, covered = max(own, t), c
+			}
 			mw.iso = &isolatedWrite{own: own, covered: covered, ctx: r.Context()}
 		}
 	}
@@ -501,7 +505,8 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 		}
 		g.finish(rec, mw, in, lastErr, aborted != nil, start)
 		if mw.iso != nil && rec.PromptTokens != nil {
-			g.iso.remember(rec.Model, promptKey(rec.Client, rec.SubClient), prompt, *rec.PromptTokens)
+			g.iso.remember(rec.Model, cacheDomain(p, rec), prompt, *rec.PromptTokens)
+			g.iso.seenBy(rec.Model, cacheDomain(p, rec), prompt, lv.cfg.Gateway.CacheShareAfter)
 			if t := mw.ttft(); t != nil {
 				reported := int64(0)
 				if rec.CachedReported != nil {
@@ -523,7 +528,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 			// Another machine may take over when this one answers 5xx (it could not start the model, say),
 			// unless it is the last one there is.
 			last := attempt == maxAttempts-1 || attempt == len(cands)-1
-			call = &meshCall{peer: in.Owner, client: rec.Client, team: rec.Team, sub: rec.SubClient, failover: !last}
+			call = &meshCall{peer: in.Owner, client: rec.Client, team: rec.Team, sub: rec.SubClient, domain: cacheDomain(p, rec), failover: !last}
 		}
 		if mw.iso != nil && mw.status == 0 { // held from when the engine gets the request
 			if d := g.iso.holdFor(rec.Model, len(prompt.b)-mw.iso.covered); d > 0 {
@@ -557,8 +562,8 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 // X-Request-Id, so its logs can be matched to the usage record.
 // meshCall is a forward to another machine of the mesh, on behalf of client (of team).
 type meshCall struct {
-	peer, client, team, sub string
-	failover                bool // a 5xx answer is not passed on: the caller tries the next machine
+	peer, client, team, sub, domain string
+	failover                        bool // a 5xx answer is not passed on: the caller tries the next machine
 }
 
 // errPeerFailed is a peer's 5xx answer, not passed to the client because another machine is tried.
@@ -633,7 +638,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 				}
 			}
 			if call != nil {
-				mesh.Sign(secret, pr.Out.Header, g.meshCfg().Node, mesh.As{Client: call.client, Team: call.team, Sub: call.sub}, http.MethodPost, pr.Out.URL.RequestURI(), body, time.Now())
+				mesh.Sign(secret, pr.Out.Header, g.meshCfg().Node, mesh.As{Client: call.client, Team: call.team, Sub: call.sub, Domain: call.domain}, http.MethodPost, pr.Out.URL.RequestURI(), body, time.Now())
 			}
 		},
 		FlushInterval: -1, // stream SSE tokens as they arrive

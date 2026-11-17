@@ -158,7 +158,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		byName[alias] = e
 		e.setContext(t.MaxModelLen)
 		e.Limits, e.Architecture = t.Limits, t.Architecture
-		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware", "concurrency", "nodes"} {
+		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware", "concurrency", "nodes", "cache_isolation"} {
 			if v, ok := t.EMX[k]; ok {
 				e.EMX[k] = v
 			}
