@@ -83,6 +83,7 @@ type Gateway struct {
 	denials  denialLimit // stored 401 records this minute
 
 	mesh meshState
+	iso  cacheIsolation
 	// sampleErr is the last GPU listing error the sampler logged (only the sampler goroutine uses it).
 	sampleErr string
 
@@ -329,6 +330,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	rec := &store.Request{ID: newID(), ClientRequestID: clip(r.Header.Get("X-Request-Id"), 128), TS: start.UnixMilli(), API: api,
 		Path: clip(r.URL.Path, maxStoredField), UserAgent: clip(r.UserAgent(), maxStoredField), Remote: clientIP(r),
 		Client: clip(p.client(r), maxStoredField)}
+	rec.SubClient = p.sub
 	w.Header().Set("X-Emx-Request-Id", rec.ID)
 	w.Header().Set("X-Request-Id", rec.ID)
 	lv := g.live() // this request keeps one config snapshot from here on
@@ -480,12 +482,36 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mw := &meteredWriter{ResponseWriter: w, start: start, maxBody: logging.BodyMaxBytes, keepBody: keepBodies}
+	// Served here and isolated: what this client's own prompts explain of the engine's prompt cache.
+	var prompt promptFP
+	if lv.cfg.Gateway.CacheIsolation && !forwarded {
+		if pb := promptBytes(api, body); pb != nil {
+			prompt = fingerprintOf(pb)
+			own, covered := g.iso.ownCached(rec.Model, promptKey(rec.Client, rec.SubClient), prompt)
+			mw.iso = &isolatedWrite{own: own, covered: covered, ctx: r.Context()}
+		}
+	}
 	var lastErr error
 	var in *runtime.Instance
 	// Logging runs even when the client aborts mid-stream (ReverseProxy panics with ErrAbortHandler).
 	defer func() {
 		aborted := recover()
+		if aborted == nil {
+			mw.flushIsolated()
+		}
 		g.finish(rec, mw, in, lastErr, aborted != nil, start)
+		if mw.iso != nil && rec.PromptTokens != nil {
+			g.iso.remember(rec.Model, promptKey(rec.Client, rec.SubClient), prompt, *rec.PromptTokens)
+			if t := mw.ttft(); t != nil {
+				reported := int64(0)
+				if rec.CachedReported != nil {
+					reported = *rec.CachedReported
+				} else if rec.CachedTokens != nil {
+					reported = *rec.CachedTokens
+				}
+				g.iso.learn(rec.Model, len(prompt.b), *rec.PromptTokens, reported, mw.iso.own, *t)
+			}
+		}
 		if aborted != nil {
 			panic(aborted)
 		}
@@ -497,7 +523,12 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 			// Another machine may take over when this one answers 5xx (it could not start the model, say),
 			// unless it is the last one there is.
 			last := attempt == maxAttempts-1 || attempt == len(cands)-1
-			call = &meshCall{peer: in.Owner, client: rec.Client, team: rec.Team, failover: !last}
+			call = &meshCall{peer: in.Owner, client: rec.Client, team: rec.Team, sub: rec.SubClient, failover: !last}
+		}
+		if mw.iso != nil && mw.status == 0 { // held from when the engine gets the request
+			if d := g.iso.holdFor(rec.Model, len(prompt.b)-mw.iso.covered); d > 0 {
+				mw.iso.hold = time.Now().Add(d)
+			}
 		}
 		lastErr = g.forward(mw, r, in, api, body, rec.ID, call)
 		if lastErr == nil || mw.status != 0 || r.Context().Err() != nil {
@@ -526,8 +557,8 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 // X-Request-Id, so its logs can be matched to the usage record.
 // meshCall is a forward to another machine of the mesh, on behalf of client (of team).
 type meshCall struct {
-	peer, client, team string
-	failover           bool // a 5xx answer is not passed on: the caller tries the next machine
+	peer, client, team, sub string
+	failover                bool // a 5xx answer is not passed on: the caller tries the next machine
 }
 
 // errPeerFailed is a peer's 5xx answer, not passed to the client because another machine is tried.
@@ -602,7 +633,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 				}
 			}
 			if call != nil {
-				mesh.Sign(secret, pr.Out.Header, g.meshCfg().Node, mesh.As{Client: call.client, Team: call.team}, http.MethodPost, pr.Out.URL.RequestURI(), body, time.Now())
+				mesh.Sign(secret, pr.Out.Header, g.meshCfg().Node, mesh.As{Client: call.client, Team: call.team, Sub: call.sub}, http.MethodPost, pr.Out.URL.RequestURI(), body, time.Now())
 			}
 		},
 		FlushInterval: -1, // stream SSE tokens as they arrive
@@ -611,6 +642,9 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("X-Request-Id") // the client gets the gateway's id, set already
+			if mw.iso != nil && call == nil {
+				resp.Header.Del("Content-Length") // cached-token counts may be rewritten
+			}
 			if call != nil && call.failover && resp.StatusCode >= 500 {
 				head, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 				return errPeerFailed{resp.StatusCode, upstreamError(head)}
@@ -674,6 +708,10 @@ func (g *Gateway) finish(rec *store.Request, mw *meteredWriter, in *runtime.Inst
 		rec.Status, rec.ErrorKind = http.StatusBadGateway, "engine_unreachable"
 	}
 	rec.PromptTokens, rec.CompletionTokens, rec.CachedTokens, rec.ReasoningTokens = u.Prompt, u.Completion, u.Cached, u.Reasoning
+	if mw.iso != nil && u.Cached != nil && *u.Cached > mw.iso.own {
+		// The client saw (and is billed for) the cache its own prompts left; the engine's count is kept.
+		rec.CachedReported, rec.CachedTokens = u.Cached, &mw.iso.own
+	}
 	rec.UsageSource, rec.FinishReason = u.Source, u.Finish
 	if t := mw.ttft(); t != nil {
 		ms := t.Milliseconds()
@@ -756,6 +794,8 @@ type meteredWriter struct {
 	onWrite   func()
 	// peerInstance and peerEngine: what served a request forwarded to another machine of the mesh.
 	peerInstance, peerEngine string
+	// iso, under gateway.cache_isolation, holds the answer back and lowers cached-token counts (cacheiso.go).
+	iso *isolatedWrite
 }
 
 func (w *meteredWriter) WriteHeader(code int) {
@@ -763,6 +803,12 @@ func (w *meteredWriter) WriteHeader(code int) {
 		w.status = code
 		stream := strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream")
 		w.m = meter.New(w.start, stream, 32<<20)
+		if w.iso != nil {
+			w.iso.sse = stream
+			if code < 400 {
+				w.iso.wait() // the headers too: a JSON answer's headers come when it is complete
+			}
+		}
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
@@ -774,9 +820,38 @@ func (w *meteredWriter) Write(p []byte) (int, error) {
 	if w.onWrite != nil {
 		w.onWrite()
 	}
+	w.m.Write(p) // the engine's bytes, as they are: usage is metered from them
+	out := p
+	if iw := w.iso; iw != nil && w.status < 400 {
+		iw.pending = append(iw.pending, p...)
+		if !iw.sse { // a JSON answer is rewritten whole, when it ends (flushIsolated)
+			return len(p), nil
+		}
+		i := bytes.LastIndexByte(iw.pending, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		out = capCachedCounts(iw.pending[:i+1], iw.own)
+		iw.pending = append(iw.pending[:0], iw.pending[i+1:]...)
+	}
+	if err := w.send(out); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// flushIsolated sends what cache isolation still holds when the engine's answer ends.
+func (w *meteredWriter) flushIsolated() {
+	if iw := w.iso; iw != nil && len(iw.pending) > 0 {
+		w.send(capCachedCounts(iw.pending, iw.own))
+		iw.pending = nil
+	}
+}
+
+// send writes to the client and keeps the head of the body when bodies are captured (or it is an error).
+func (w *meteredWriter) send(p []byte) error {
 	n, err := w.ResponseWriter.Write(p)
 	w.n += int64(n)
-	w.m.Write(p[:n])
 	limit := w.maxBody
 	if !w.keepBody {
 		limit = 0
@@ -794,7 +869,7 @@ func (w *meteredWriter) Write(p []byte) (int, error) {
 	} else if n > 0 && w.keepBody {
 		w.truncated = true
 	}
-	return n, err
+	return err
 }
 
 func (w *meteredWriter) Flush() {

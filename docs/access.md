@@ -17,7 +17,16 @@ emx key set alice --expires 2027-01-31 --tokens-per-day 2000000 --max-output-tok
 emx key rotate alice --grace 24h   # new secret printed once; the old one works for 24h
 emx key disable alice              # refused at once, history kept (key enable alice)
 emx key rm alice
+emx key add rentals --models 'qwen3*' --delegate  # acts for clients of its own (X-Emx-Client)
 ```
+
+A **delegating key** (`--delegate`; `emx key set --delegate on|off`) is for a
+program that serves many users with one key, such as a rental host agent or an
+app. Its requests may name the user in `X-Emx-Client` (letters, digits and
+`._:@-`, up to 64). That client is recorded as the request's `sub_client`
+(`emx usage --by sub_client`) and gets its own prompt-cache domain under
+`gateway.cache_isolation`. The key's role, models and limits still cover all
+of its clients together.
 
 - **Open mode:** with no keys and no master key, the gateway is open: every
   caller is admin. Whether it may run open is decided when `serve` starts:

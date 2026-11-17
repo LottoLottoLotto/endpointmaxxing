@@ -13,7 +13,7 @@
 | `~/.config/emx/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |
 | `~/.local/state/emx/instances/` | one JSON record per instance (mode 0600; the only place holding unmasked environment and arguments) |
 | `~/.local/state/emx/logs/` | engine logs (kept after stop) |
-| `~/.local/state/emx/usage.db` | usage database (schema version 7) |
+| `~/.local/state/emx/usage.db` | usage database (schema version 8) |
 | `~/.local/state/emx/audit.jsonl` | audit log, when `logging.audit_file` is set |
 | `~/.local/state/emx/audit.jsonl.head` | the audit log's head anchor (see [Audit file integrity](governance.md#audit-file-integrity)) |
 | `~/.local/share/emx/` | engines installed by `emx engine install` |
@@ -21,9 +21,9 @@
 Set `EMX_HOME` to keep all of these under one directory.
 
 The usage database is migrated when a newer emx first opens it.
-Schema version 7 adds the columns `requests.node` and `requests.mesh_from`
-([Mesh](mesh.md#limits-and-records)); an older emx binary refuses a database
-that this version has migrated.
+Schema version 8 adds `requests.sub_client` and `requests.cached_reported`
+(cache isolation; version 7 added `node` and `mesh_from`); an older emx
+binary refuses a database that this version has migrated.
 
 Here is a `config.yaml` with every setting at its default:
 
@@ -46,6 +46,7 @@ gateway:
   stream_usage: true
   max_body_mb: 64            # largest inference request body, MiB (1-256); larger bodies get 413
   max_buffered_mb: 1024      # request bodies held in memory by all in-flight requests, MiB (>= max_body_mb); beyond it 503
+  cache_isolation: false     # true: clients cannot see each other's prompt-cache hits (gateway.md)
   swap:
     min_residency: 30s       # a model keeps its chips at least this long once ready
     max_residency: 10m       # ...and yields after this long when others wait, even with its own demand

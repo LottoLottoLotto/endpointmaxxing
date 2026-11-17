@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-16
+
 ### Added
 
+- `gateway.cache_isolation`: clients cannot see each other's prompt-cache
+  hits, with any engine. Cached-token counts in responses are lowered to
+  what the client's own earlier prompts explain (the engine's count is kept
+  as `cached_reported`), and answers are held back for the time computing
+  the rest of the prompt takes, so another client's cache does not make
+  them start sooner. See docs/gateway.md.
+- Delegating keys (`emx key add --delegate`): a key that acts for clients of
+  its own names them in `X-Emx-Client`; each is recorded as `sub_client`
+  and is its own cache domain. Mesh calls carry it.
+- The usage database moves to schema version 8 (`sub_client`,
+  `cached_reported`).
 - `/v1/models` shows each model's `emx price` as `emx.price` to admin and
   auditor keys, so a rental listing can be priced from it (`lmx rent
   publish`).
@@ -317,7 +330,8 @@ Entries marked "breaking" can break existing clients.
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.1.4...v0.1.5

@@ -138,6 +138,7 @@ func (g *Gateway) addKey(w http.ResponseWriter, r *http.Request) {
 		RPM             int      `json:"rpm"`
 		TokensPerDay    int64    `json:"tokens_per_day"`
 		MaxOutputTokens int      `json:"max_output_tokens"`
+		Delegate        bool     `json:"delegate"`
 		Expires         string   `json:"expires"`
 	}
 	if err := decodeBody(r, &req); err != nil {
@@ -153,14 +154,14 @@ func (g *Gateway) addKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	k := keys.Key{Name: req.Name, Role: req.Role, Team: req.Team, Models: req.Models, RPM: req.RPM, TokensPerDay: req.TokensPerDay,
-		MaxOutputTokens: req.MaxOutputTokens, Expires: exp}
+		MaxOutputTokens: req.MaxOutputTokens, Delegate: req.Delegate, Expires: exp}
 	secret, res, err := settings.AddKey(g.App.Config(), k)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	g.changed(w, r, http.StatusCreated, res, map[string]any{"name": k.Name, "role": k.Role, "team": k.Team, "models": k.Models,
-		"rpm": k.RPM, "tokens_per_day": k.TokensPerDay, "max_output_tokens": k.MaxOutputTokens, "expires": k.Expires, "secret": secret})
+		"rpm": k.RPM, "tokens_per_day": k.TokensPerDay, "max_output_tokens": k.MaxOutputTokens, "delegate": k.Delegate, "expires": k.Expires, "secret": secret})
 }
 
 func (g *Gateway) patchKey(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +173,7 @@ func (g *Gateway) patchKey(w http.ResponseWriter, r *http.Request) {
 		RPM             *int      `json:"rpm"`
 		TokensPerDay    *int64    `json:"tokens_per_day"`
 		MaxOutputTokens *int      `json:"max_output_tokens"`
+		Delegate        *bool     `json:"delegate"`
 		Expires         *string   `json:"expires"`
 	}
 	if err := decodeBody(r, &req); err != nil {
@@ -185,7 +187,7 @@ func (g *Gateway) patchKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p := settings.KeyPatch{Role: req.Role, Team: req.Team, Models: req.Models, RPM: req.RPM, TokensPerDay: req.TokensPerDay,
-		MaxOutputTokens: req.MaxOutputTokens}
+		MaxOutputTokens: req.MaxOutputTokens, Delegate: req.Delegate}
 	if req.Expires != nil {
 		exp, err := settings.ParseExpiry(*req.Expires)
 		if err != nil {

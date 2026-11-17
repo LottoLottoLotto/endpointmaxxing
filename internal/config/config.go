@@ -113,6 +113,11 @@ type Gateway struct {
 	// DisableSettingsAPI refuses changes to keys, teams, prices, aliases and models through the management
 	// API (they are then made with the CLI on the gateway host); reads stay available.
 	DisableSettingsAPI bool `yaml:"disable_settings_api,omitempty" json:"disable_settings_api,omitempty"`
+	// CacheIsolation keeps clients from learning about each other through the engines' prompt caches: each
+	// client (key, or the client a delegating key acts for) sees and pays for only the cached prompt tokens
+	// its own earlier prompts explain, and an answer sped up by someone else's cache starts no sooner than
+	// one computed in full. Works with every engine; costs the speed-up of cache hits between clients.
+	CacheIsolation bool `yaml:"cache_isolation,omitempty" json:"cache_isolation,omitempty"`
 	// MaxBodyMB bounds one inference request body in MiB (1-256); larger bodies are refused with 413.
 	MaxBodyMB int `yaml:"max_body_mb" json:"max_body_mb"`
 	// MaxBufferedMB bounds the request bodies held in memory by all in-flight requests together, in MiB;

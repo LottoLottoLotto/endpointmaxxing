@@ -51,6 +51,10 @@ type Key struct {
 	Created      time.Time `yaml:"created" json:"created"`
 	// Expires, when set, is when the key stops working.
 	Expires *time.Time `yaml:"expires,omitempty" json:"expires,omitempty"`
+	// Delegate lets the key act for clients of its own (the renters behind a rental host agent, the users
+	// behind an app): a request may name one in X-Emx-Client. It is recorded as the request's sub-client and
+	// gets its own prompt-cache domain (gateway.cache_isolation); the key's limits still cover them all.
+	Delegate bool `yaml:"delegate,omitempty" json:"delegate,omitempty"`
 	// Disabled keys are refused (kept for their history; enable to restore).
 	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 	// Rotated is when the secret was last replaced; PrevHash keeps the old secret working until PrevExpires.

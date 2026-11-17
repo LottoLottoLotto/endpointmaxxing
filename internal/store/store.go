@@ -139,6 +139,10 @@ var migrations = []string{
 	// machine a request forwarded to this gateway came from ('' when a client sent it here).
 	`ALTER TABLE requests ADD COLUMN node TEXT NOT NULL DEFAULT '';
 	ALTER TABLE requests ADD COLUMN mesh_from TEXT NOT NULL DEFAULT '';`,
+	// 8: sub_client is the client a delegating key acted for; cached_reported is the engine's own count of
+	// cached prompt tokens when cache isolation lowered cached_tokens to what the client's own prompts left.
+	`ALTER TABLE requests ADD COLUMN sub_client TEXT NOT NULL DEFAULT '';
+	ALTER TABLE requests ADD COLUMN cached_reported INTEGER;`,
 }
 
 // DB is an open usage database.
@@ -275,6 +279,11 @@ type Request struct {
 	// MeshFrom is the mesh machine that forwarded this request here ("" when a client sent it here). Such a
 	// request is counted against its key's and team's limits on the machine it entered, not here.
 	MeshFrom string `json:"mesh_from,omitempty"`
+	// SubClient is the client a delegating key acted for (X-Emx-Client); Client stays the key.
+	SubClient string `json:"sub_client,omitempty"`
+	// CachedReported is the engine's count of cached prompt tokens when cache isolation kept only the part
+	// the client's own earlier prompts explain (CachedTokens); the rest came from other clients' prompts.
+	CachedReported *int64 `json:"cached_reported,omitempty"`
 
 	// Bodies, when captured, are stored in the bodies table.
 	RequestBody   []byte `json:"-"`
@@ -304,7 +313,7 @@ var ErrorKinds = map[string]string{
 const requestCols = `id, ts, model, instance, engine, api, path, stream, status, error, client, user_agent, remote,
 	prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, usage_source, finish_reason, autostarted,
 	queue_ms, ttft_ms, duration_ms, req_bytes, resp_bytes, category, flags, flag_severity, error_kind, team, cost,
-	client_request_id, node, mesh_from`
+	client_request_id, node, mesh_from, sub_client, cached_reported`
 
 // InsertRequest records r (and its bodies when present).
 func (db *DB) InsertRequest(r *Request) error {
@@ -321,11 +330,11 @@ func (db *DB) InsertRequest(r *Request) error {
 		}
 		flags = string(data)
 	}
-	_, err = tx.Exec(`INSERT INTO requests (`+requestCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	_, err = tx.Exec(`INSERT INTO requests (`+requestCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.TS, r.Model, r.Instance, r.Engine, r.API, r.Path, r.Stream, r.Status, r.Error, r.Client, r.UserAgent, r.Remote,
 		r.PromptTokens, r.CompletionTokens, r.CachedTokens, r.ReasoningTokens, r.UsageSource, r.FinishReason, r.Autostarted,
 		r.QueueMS, r.TTFTMS, r.DurationMS, r.ReqBytes, r.RespBytes, r.Category, flags, r.FlagSeverity, r.ErrorKind, r.Team, r.Cost,
-		sql.NullString{String: r.ClientRequestID, Valid: r.ClientRequestID != ""}, r.Node, r.MeshFrom)
+		sql.NullString{String: r.ClientRequestID, Valid: r.ClientRequestID != ""}, r.Node, r.MeshFrom, r.SubClient, r.CachedReported)
 	if err != nil {
 		return err
 	}
@@ -604,7 +613,7 @@ func (db *DB) Requests(f Filter) ([]Request, error) {
 		if err := rows.Scan(&r.ID, &r.TS, &r.Model, &r.Instance, &r.Engine, &r.API, &r.Path, &r.Stream, &r.Status, &r.Error,
 			&r.Client, &r.UserAgent, &r.Remote, &r.PromptTokens, &r.CompletionTokens, &r.CachedTokens, &r.ReasoningTokens,
 			&r.UsageSource, &r.FinishReason, &r.Autostarted, &r.QueueMS, &r.TTFTMS, &r.DurationMS, &r.ReqBytes, &r.RespBytes,
-			&r.Category, &flags, &r.FlagSeverity, &r.ErrorKind, &r.Team, &r.Cost, &clientID, &r.Node, &r.MeshFrom); err != nil {
+			&r.Category, &flags, &r.FlagSeverity, &r.ErrorKind, &r.Team, &r.Cost, &clientID, &r.Node, &r.MeshFrom, &r.SubClient, &r.CachedReported); err != nil {
 			return nil, err
 		}
 		r.ClientRequestID = clientID.String
@@ -655,6 +664,7 @@ var Groups = map[string]string{
 	"client":        "client",
 	"team":          "team",
 	"node":          "CASE WHEN node = '' THEN '(here)' ELSE node END",
+	"sub_client":    "sub_client",
 	"api":           "api",
 	"category":      "category",
 	"error_kind":    "error_kind",

@@ -113,6 +113,7 @@ type KeyPatch struct {
 	RPM             *int
 	TokensPerDay    *int64
 	MaxOutputTokens *int
+	Delegate        *bool
 	// Expires: set ExpiresSet; a nil Expires then means never.
 	ExpiresSet bool
 	Expires    *time.Time
@@ -148,6 +149,9 @@ func SetKey(cfg *config.Config, name string, p KeyPatch) (keys.Key, Result, erro
 		}
 		if p.MaxOutputTokens != nil {
 			k.MaxOutputTokens = *p.MaxOutputTokens
+		}
+		if p.Delegate != nil {
+			k.Delegate = *p.Delegate
 		}
 		if p.ExpiresSet {
 			k.Expires = p.Expires

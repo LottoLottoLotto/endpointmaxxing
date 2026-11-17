@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -33,7 +34,12 @@ type principal struct {
 	// call is a request another machine of the mesh forwarded (role roleMeshCall): that machine checked the
 	// client's key, model access and limits; name is the client it acts for.
 	call *mesh.Call
+	// sub is the client a delegating key (keys.Key.Delegate) acts for, from X-Emx-Client ("" for others).
+	sub string
 }
+
+// subClientRe is what a delegated client name may look like (an opaque id a host agent or app assigns).
+var subClientRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}$`)
 
 // roleMeshCall is the role of a forwarded mesh call: inference only.
 const roleMeshCall = "mesh"
@@ -208,7 +214,7 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 			}
 			role = call.Role
 		}
-		return &principal{name: call.Client, role: role, call: call}, nil
+		return &principal{name: call.Client, role: role, call: call, sub: call.Sub}, nil
 	}
 	secret := secretOf(r)
 	if g.APIKey != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(g.APIKey)) == 1 {
@@ -223,7 +229,14 @@ func (g *Gateway) authenticate(r *http.Request) (*principal, error) {
 		case k.Status(now) != "active":
 			return nil, errs.Wrap(errs.Forbidden, errKeyRefused{k.Name, k.Status(now)})
 		}
-		return &principal{name: k.Name, role: k.Role, key: k}, nil
+		p := &principal{name: k.Name, role: k.Role, key: k}
+		if sub := r.Header.Get("X-Emx-Client"); k.Delegate && sub != "" {
+			if !subClientRe.MatchString(sub) {
+				return nil, errs.New(errs.Forbidden, "X-Emx-Client must match %s", subClientRe)
+			}
+			p.sub = sub
+		}
+		return p, nil
 	}
 	if g.APIKey == "" && len(byHash) == 0 {
 		if !g.AllowOpen { // decided when serve started: removing the last key must not open a networked gateway

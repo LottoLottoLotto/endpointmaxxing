@@ -284,6 +284,11 @@ func (g *Gateway) modelEntries(ctx context.Context, allows func(string) bool, wi
 		e.EMX["concurrency"] = concurrency(parallel[name], g.maxConcurrency(name), active[name], queued[name])
 	}
 	g.addHistory(byName)
+	if g.App.Config().Gateway.CacheIsolation {
+		for _, e := range byName {
+			e.EMX["cache_isolation"] = true // clients cannot see each other's prompt-cache hits (cacheiso.go)
+		}
+	}
 	if node := g.App.Config().Mesh; node.Enabled() {
 		for _, e := range byName {
 			e.EMX["nodes"] = []string{node.Node}

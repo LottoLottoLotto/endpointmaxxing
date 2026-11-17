@@ -115,6 +115,37 @@ that could be started.
 | `idle_unload` | 0 (never) | stops evictable instances idle this long; a model can override it (`model add --idle-unload 15m`) |
 | `max_body_mb` | 64 | largest request body on inference endpoints, in MiB (1-256); larger bodies get 413 |
 | `max_buffered_mb` | 1024 | request-body memory held by all in-flight requests together, in MiB (at least `max_body_mb`); beyond it the gateway answers 503 with `Retry-After: 1` |
+| `cache_isolation` | false | clients cannot see each other's prompt-cache hits (below) |
+
+### Prompt-cache isolation
+
+Engines reuse the computed start of a prompt they have seen before (prefix
+caching), whoever sent it. With several clients on one model, that leaks:
+a client can learn that someone recently sent a prompt starting the way its
+own does, from the cached-token count in its usage, and from how fast the
+answer starts. `gateway.cache_isolation: true` closes both, for every engine,
+without the engine's help:
+
+- The gateway remembers, per model and client, the last 16 prompts each
+  client sent, with the prompt tokens the engine counted. For a new request,
+  the client's own earlier prompts explain at most so many cached tokens:
+  all of an earlier prompt the new one continues (the next turn of a chat, a
+  longer completions prompt), or the share of one it starts the same way.
+- Cached-token counts in the response (`cached_tokens`,
+  `cache_read_input_tokens`) are lowered to that. The client sees, and is
+  billed for, only the cache its own prompts left. The request record keeps
+  the engine's count as `cached_reported`.
+- The answer's headers and first byte are held back for the time the engine
+  takes to compute the part of the prompt the client's own cache does not
+  explain, at the model's measured prompt speed. An answer sped up by another
+  client's cache starts no sooner than one computed in full; a client's own
+  cache hits stay fast. The speed is learned from requests the engine
+  computed without cache; until a model has 3 of them, answers are not held.
+
+A client is a key, or the client a delegating key acts for (see
+[Access](access.md)): a rental host agent passes each renter as its own
+client. `/v1/models` shows `emx.cache_isolation: true` when it is on. The
+cost: cache hits between clients no longer make answers faster.
 
 ## Placement
 
