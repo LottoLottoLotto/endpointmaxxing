@@ -351,6 +351,10 @@ type Model struct {
 	// Source is a local path (file or directory) or a Hugging Face repo id.
 	Source string `yaml:"source" json:"source"`
 	Format string `yaml:"format" json:"format"`
+	// Origin names the Hugging Face repo the files came from, "<org>/<name>[@<revision>]", for files
+	// downloaded outside the Hugging Face cache. Reported as is as emx.weights.origin in /v1/models (a
+	// source inside the cache is recognized without it).
+	Origin string `yaml:"origin,omitempty" json:"origin,omitempty"`
 	Arch   string `yaml:"arch,omitempty" json:"arch,omitempty"`
 	Quant  string `yaml:"quant,omitempty" json:"quant,omitempty"`
 	// Engine pins the model to one engine; empty routes automatically.
@@ -419,6 +423,9 @@ func (m *Model) Validate() error {
 	if m.VRAMMiB < 0 || m.MaxConcurrency < 0 || m.IdleUnload < 0 || m.Devices < 0 {
 		return fmt.Errorf("model %s: vram_mib, max_concurrency, idle_unload and devices must be >= 0", m.Name)
 	}
+	if _, _, err := m.OriginRef(); err != nil {
+		return fmt.Errorf("model %s: %w", m.Name, err)
+	}
 	for k, v := range m.Flags {
 		f, ok := spec.FlagByKey(k)
 		if !ok {
@@ -429,6 +436,23 @@ func (m *Model) Validate() error {
 		}
 	}
 	return nil
+}
+
+var (
+	originRepoRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	originRevRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
+)
+
+// OriginRef splits Origin into the repo and the revision ("" when not given); all empty when Origin is.
+func (m *Model) OriginRef() (repo, revision string, err error) {
+	if m.Origin == "" {
+		return "", "", nil
+	}
+	repo, revision, hasRev := strings.Cut(m.Origin, "@")
+	if !originRepoRe.MatchString(repo) || (hasRev && !originRevRe.MatchString(revision)) {
+		return "", "", fmt.Errorf("origin %q must be <org>/<name> or <org>/<name>@<revision>", m.Origin)
+	}
+	return repo, revision, nil
 }
 
 // Models is models.yaml.

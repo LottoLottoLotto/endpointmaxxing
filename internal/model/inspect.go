@@ -33,12 +33,18 @@ type Info struct {
 
 var repoRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// IsRepoID reports whether source has the form of a Hugging Face repo id (org/name); a source is one when
+// no local path of that name exists.
+func IsRepoID(source string) bool {
+	return repoRe.MatchString(source) && !strings.HasPrefix(source, ".")
+}
+
 // MissingLocal reports whether source names a local file or directory that does not exist (a Hugging Face
 // repo id is never missing here: it downloads on first use).
 func MissingLocal(source string) bool {
 	p := paths.Expand(source)
 	if _, err := os.Stat(p); err != nil {
-		return os.IsNotExist(err) && !(repoRe.MatchString(source) && !strings.HasPrefix(source, "."))
+		return os.IsNotExist(err) && !IsRepoID(source)
 	}
 	return strataWeightsMissing(p)
 }
@@ -96,7 +102,7 @@ func inspect(source string) (*Info, error) {
 	p := paths.Expand(source)
 	st, err := os.Stat(p)
 	if err != nil {
-		if os.IsNotExist(err) && repoRe.MatchString(source) && !strings.HasPrefix(source, ".") {
+		if os.IsNotExist(err) && IsRepoID(source) {
 			return inspectRepo(source)
 		}
 		// Name the source as the caller wrote it: the expanded path may hold values of environment variables.
@@ -236,8 +242,9 @@ func inspectCheckpoint(source, dir, ref string) (*Info, error) {
 	return info, nil
 }
 
-// inspectRepo resolves a Hugging Face repo id from the local HF cache when present.
-func inspectRepo(repo string) (*Info, error) {
+// HFSnapshot finds repo's snapshot of its main branch in the local Hugging Face cache: the directory and
+// the commit it holds. ok is false when the repo was not downloaded.
+func HFSnapshot(repo string) (dir, revision string, ok bool) {
 	hub := os.Getenv("HF_HUB_CACHE")
 	if hub == "" {
 		hfHome := os.Getenv("HF_HOME")
@@ -247,8 +254,24 @@ func inspectRepo(repo string) (*Info, error) {
 		hub = filepath.Join(hfHome, "hub")
 	}
 	base := filepath.Join(hub, "models--"+strings.ReplaceAll(repo, "/", "--"))
-	if ref, err := os.ReadFile(filepath.Join(base, "refs", "main")); err == nil {
-		snap := filepath.Join(base, "snapshots", strings.TrimSpace(string(ref)))
+	ref, err := os.ReadFile(filepath.Join(base, "refs", "main"))
+	if err != nil {
+		return "", "", false
+	}
+	revision = strings.TrimSpace(string(ref))
+	if revision == "" || strings.ContainsAny(revision, `/\.`) {
+		return "", "", false
+	}
+	dir = filepath.Join(base, "snapshots", revision)
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "", "", false
+	}
+	return dir, revision, true
+}
+
+// inspectRepo resolves a Hugging Face repo id from the local HF cache when present.
+func inspectRepo(repo string) (*Info, error) {
+	if snap, _, ok := HFSnapshot(repo); ok {
 		if _, err := os.Stat(filepath.Join(snap, "config.json")); err == nil {
 			// Engines resolve the repo id against the same cache themselves.
 			return inspectCheckpoint(repo, snap, repo)

@@ -9,11 +9,12 @@
 | `~/.config/emx/config.yaml` | `gateway` (incl. `tls`, `max_output_tokens`, `audit_key_file`), `logging`, `prefer` (engine order per format), per-engine overrides (`bin`, `vars`, `env`, `args`, `memory`), `policy`, `classify`, `pricing`, `teams`, `aliases`, `alerts`, `mesh` |
 | `~/.config/emx/keys.yaml` | gateway API keys (hashes only, mode 0600); on a mesh follower, the copy from `mesh.keys_from` |
 | `~/.config/emx/mesh-shared.yaml` | a mesh follower's copy of the teams, prices and aliases ([Mesh](mesh.md)) |
-| `~/.config/emx/models.yaml` | model registry: source, format, pinned engine, default flags, engine args |
+| `~/.config/emx/models.yaml` | model registry: source, format, pinned engine, default flags, engine args, `origin` (the Hugging Face repo of files downloaded outside its cache, [Gateway](gateway.md)) |
 | `~/.config/emx/engines/*.yaml` | user manifests (new engines, or replacements for builtins) |
 | `~/.local/state/emx/instances/` | one JSON record per instance (mode 0600; the only place holding unmasked environment and arguments) |
 | `~/.local/state/emx/logs/` | engine logs (kept after stop) |
 | `~/.local/state/emx/usage.db` | usage database (schema version 8) |
+| `~/.local/state/emx/weights.json` | sha256 and git SHA-1 of model files by path, size and modification time (`emx.weights` in `/v1/models`; delete it to hash again) |
 | `~/.local/state/emx/audit.jsonl` | audit log, when `logging.audit_file` is set |
 | `~/.local/state/emx/audit.jsonl.head` | the audit log's head anchor (see [Audit file integrity](governance.md#audit-file-integrity)) |
 | `~/.local/share/emx/` | engines installed by `emx engine install` |

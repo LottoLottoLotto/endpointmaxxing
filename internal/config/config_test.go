@@ -57,6 +57,18 @@ func TestStrictFiles(t *testing.T) {
 	if _, err := LoadModels(); err == nil || !strings.Contains(err.Error(), "not a unified flag") {
 		t.Fatalf("unknown flag accepted: %v", err)
 	}
+	os.WriteFile(ModelsPath(), []byte("models:\n  - {name: a, source: /x, format: gguf, origin: not-a-repo}\n"), 0o644)
+	if _, err := LoadModels(); err == nil || !strings.Contains(err.Error(), "origin") {
+		t.Fatalf("bad origin accepted: %v", err)
+	}
+	os.WriteFile(ModelsPath(), []byte("models:\n  - {name: a, source: /x, format: gguf, origin: unsloth/Qwen3-0.6B-GGUF@50968a4468}\n"), 0o644)
+	m, err := LoadModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo, rev, err := m.Models[0].OriginRef(); repo != "unsloth/Qwen3-0.6B-GGUF" || rev != "50968a4468" || err != nil {
+		t.Fatalf("origin: %q %q %v", repo, rev, err)
+	}
 }
 
 func TestBodyLimits(t *testing.T) {

@@ -37,6 +37,7 @@ func (g *Gateway) Run(ctx context.Context) {
 	go g.watchConfig(ctx, 2*time.Second)
 	go g.every(ctx, time.Hour, g.checkKeyExpiry)
 	go g.meshLoop(ctx)
+	go g.every(ctx, time.Minute, g.fingerprintModels) // emx.weights: hash model files before anyone asks
 }
 
 // retention prunes usage records past logging.retention_days, and the admin trail and rotated audit files

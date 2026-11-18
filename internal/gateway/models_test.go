@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +15,9 @@ import (
 
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/keys"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/weights"
 )
 
 // fakeEngine installs a user manifest for the engine id the test instances use. Its binary is `go`, which
@@ -336,5 +341,68 @@ func TestModelListShowsPricesToAdminsOnly(t *testing.T) {
 	}
 	if p := price(user); p != nil {
 		t.Fatalf("a user key sees the price: %v", p)
+	}
+}
+
+// Every entry, aliases too, says which weights it serves: the files' hashes, their id, and the repo they
+// came from as configured. Any key that sees the model sees them.
+func TestModelListCarriesWeights(t *testing.T) {
+	t.Setenv("EMX_HOME", t.TempDir())
+	user, _ := keys.Add(keys.Key{Name: "u", Role: keys.RoleUser})
+	g, srv := newGateway(t)
+	ckpt := filepath.Join(t.TempDir(), "tiny")
+	os.MkdirAll(ckpt, 0o755)
+	os.WriteFile(filepath.Join(ckpt, "config.json"), []byte(`{"architectures":["Qwen3ForCausalLM"]}`), 0o600)
+	os.WriteFile(filepath.Join(ckpt, "model.safetensors"), []byte("tiny weights"), 0o600)
+	if _, err := config.Update(func(c *config.Config) error {
+		c.Aliases = map[string]string{"chat-default": "tiny"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.UpdateModels(func(m *config.Models) error {
+		m.Put(config.Model{Name: "tiny", Source: ckpt, Format: "safetensors", Origin: "org/tiny@0123abcd"})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g.Reload()
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/models?unavailable=1", nil)
+	req.Header.Set("Authorization", "Bearer "+user)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Data []struct {
+			ID  string `json:"id"`
+			EMX struct {
+				Weights *weights.Report `json:"weights"`
+			} `json:"emx"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("tiny weights"))
+	id := sha256.Sum256([]byte(fmt.Sprintf("%x %d\n", sum, len("tiny weights"))))
+	seen := 0
+	for _, m := range out.Data {
+		w := m.EMX.Weights
+		if m.ID != "tiny" && m.ID != "chat-default" {
+			continue
+		}
+		seen++
+		if w == nil || w.Status != weights.StatusReady || w.ID != hex.EncodeToString(id[:]) || len(w.Files) != 2 ||
+			w.Origin == nil || *w.Origin != (weights.Origin{Repo: "org/tiny", Revision: "0123abcd"}) {
+			t.Errorf("%s: weights %+v", m.ID, w)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("tiny and its alias not both listed: %+v", out.Data)
+	}
+	if _, err := os.Stat(filepath.Join(paths.State(), "weights.json")); err != nil {
+		t.Errorf("file hashes are not kept for the next start: %v", err)
 	}
 }

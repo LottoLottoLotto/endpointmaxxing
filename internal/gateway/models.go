@@ -8,11 +8,13 @@ import (
 	"sort"
 	"time"
 
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/config"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/gpu"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/tenstorrent"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/weights"
 )
 
 // modelEntry is one model in GET /v1/models. Besides the OpenAI fields it says what a client choosing a
@@ -158,7 +160,7 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 		byName[alias] = e
 		e.setContext(t.MaxModelLen)
 		e.Limits, e.Architecture = t.Limits, t.Architecture
-		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware", "concurrency", "nodes", "cache_isolation"} {
+		for _, k := range []string{"apis", "images", "load_seconds", "decode_tok_per_sec", "hardware", "concurrency", "nodes", "cache_isolation", "weights"} {
 			if v, ok := t.EMX[k]; ok {
 				e.EMX[k] = v
 			}
@@ -200,8 +202,9 @@ func (g *Gateway) modelEntries(ctx context.Context, allows func(string) bool, wi
 			e.EMX["apis"] = have
 		}
 	}
-	parallel := map[string]int{} // requests each model's engine works on at once, where known
-	active := map[string]int{}   // requests in flight per model
+	parallel := map[string]int{}         // requests each model's engine works on at once, where known
+	active := map[string]int{}           // requests in flight per model
+	sources := map[string]weightSource{} // the files of each model, for emx.weights
 	ins, _ := runtime.List()
 	for _, in := range ins {
 		if !in.Alive() {
@@ -232,6 +235,9 @@ func (g *Gateway) modelEntries(ctx context.Context, allows func(string) bool, wi
 			e.EMX["hardware"] = hw
 			if !in.Hosting {
 				active[n] += busy
+				if in.Model != "" {
+					sources[n] = weightSource{source: in.Model} // started without registering it
+				}
 			}
 			if status == runtime.StatusReady && !in.Hosting {
 				rep := g.instanceReport(ctx, in)
@@ -260,6 +266,7 @@ func (g *Gateway) modelEntries(ctx context.Context, allows func(string) bool, wi
 		}
 		e.EMX["registered"] = true
 		e.EMX["format"] = m.Format
+		sources[m.Name] = weightSourceOf(m)
 		if m.Engine != "" {
 			e.EMX["engine"] = m.Engine
 		}
@@ -283,6 +290,11 @@ func (g *Gateway) modelEntries(ctx context.Context, allows func(string) bool, wi
 	for name, e := range byName {
 		e.EMX["concurrency"] = concurrency(parallel[name], g.maxConcurrency(name), active[name], queued[name])
 	}
+	for name, e := range byName {
+		if s, ok := sources[name]; ok {
+			e.EMX["weights"] = g.weights.Fingerprint(s.source, s.origin) // "hashing" until the files are hashed
+		}
+	}
 	g.addHistory(byName)
 	if g.App.Config().Gateway.CacheIsolation {
 		for _, e := range byName {
@@ -295,6 +307,29 @@ func (g *Gateway) modelEntries(ctx context.Context, allows func(string) bool, wi
 		}
 	}
 	return byName
+}
+
+// weightSource is where a model's files are, and the repo they came from when configured.
+type weightSource struct {
+	source string
+	origin *weights.Origin
+}
+
+func weightSourceOf(m config.Model) weightSource {
+	s := weightSource{source: m.Source}
+	if repo, rev, err := m.OriginRef(); err == nil && repo != "" {
+		s.origin = &weights.Origin{Repo: repo, Revision: rev}
+	}
+	return s
+}
+
+// fingerprintModels has the files of every registered model hashed (in the background), so emx.weights
+// is ready before /v1/models is first asked, and a file replaced since is hashed again.
+func (g *Gateway) fingerprintModels() {
+	for _, m := range g.App.RegisteredModels() {
+		s := weightSourceOf(m)
+		g.weights.Fingerprint(s.source, s.origin)
+	}
 }
 
 // concurrency tells a client how many others it shares a model with. parallel is how many requests the

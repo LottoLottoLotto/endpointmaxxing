@@ -48,6 +48,7 @@ that could be started.
   | `emx.concurrency` | how many requests share the model: `mode` (`single`: one request at a time, each at the engine's full speed; `shared`: several at once, more in total and less for each), `serves` (how many run at the same time before others wait), `parallel` (the engine's slots), `limit` (the gateway's `max_concurrency` for the model, when set), and `active` / `queued` right now | the running engine's report, else the registered `--parallel`; `mode` and `serves` are absent when neither is known |
   | `emx.price` | the model's `emx price`: `prompt`, `completion` and `cached` per 1M tokens, and `currency`; shown to admin and auditor keys only (`lmx rent publish` reads it to price rental listings) | `pricing` in config.yaml |
   | `emx.hardware` | running: `{kind, loaded: true, gpus or chips}`. Stopped: `kind` (`gpu` or `tenstorrent`), `chips` it needs or `need_mib` (declared `vram_mib`, else the peak measured in 30 days), `free_mib` on the roomiest GPU as last sampled, and `free_now` | placement |
+  | `emx.weights` | which weights answer: `status` (`hashing`, `ready` or `error`), and when ready the `id` (the sha256 of the lines `<sha256> <bytes>\n` of the weight files, sorted by sha256: equal for every copy of the same weights, whatever the file names) and `files` (`path` relative to the model's directory, `bytes`, `sha256`, `git_sha1` for files under 10 MiB, and `weight`); `origin` (`{repo, revision}`) when known; `error` says which file could not be read | the model's files (below) |
 
   `free_now: false` does not mean a request fails: the gateway may make room by
   stopping an idle model it started, and it waits for a busy Tenstorrent chip.
@@ -63,6 +64,25 @@ that could be started.
   that points at one. `emx models` shows them with the reason in its STATUS
   column, and `GET /v1/models?unavailable=1` (used by the admin UI) includes
   them with `emx.unavailable`.
+- **Which weights answer.** `emx.weights` fingerprints the model's files the
+  way Hugging Face does: the sha256 of each weight file (`.gguf`,
+  `.safetensors`, `.bin`, `.pt`, `.pth`), which Hugging Face publishes as a
+  large file's `lfs.oid`, and the git blob SHA-1 of each file under 10 MiB, its
+  `oid` for small files. A directory source lists its weights, configs
+  (`*.json`), tokenizers, chat templates (`*.jinja`), `*.txt` and `*.model`
+  files, including subdirectories; READMEs, hidden files, images and files over
+  100 GiB are left out. A split GGUF lists all its shards, a Strata config the
+  GGUF files it names. The gateway hashes the files of every registered model
+  in the background, one file at a time, when it starts and every minute after
+  (hashing a 20 GB file takes tens of seconds), and reports `status: hashing`
+  until done. The hashes are kept in `weights.json` in the state directory by
+  path, size and modification time: a restart does not hash again, a replaced
+  file is hashed again. `origin` is the repo and commit of a source inside the
+  Hugging Face cache (`.../models--<org>--<name>/snapshots/<commit>/...`, or a
+  repo id source found there). For files downloaded elsewhere, say where they
+  came from with `origin: <org>/<name>[@<revision>]` on the model in
+  `models.yaml`; it is reported as written. `lmx rent publish` sends the
+  fingerprint, and the rental site checks it against Hugging Face.
 - `model add`, `engine set` and `key add`/`key rm` take effect without
   restarting the gateway.
 

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,9 +30,11 @@ import (
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/errs"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/mesh"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/meter"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/paths"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/runtime"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/spec"
 	"github.com/LottoLottoLotto/endpointmaxxing/internal/store"
+	"github.com/LottoLottoLotto/endpointmaxxing/internal/weights"
 )
 
 // maxBody is the hard upper bound on a buffered request body (images ride inline as base64);
@@ -84,6 +87,8 @@ type Gateway struct {
 
 	mesh meshState
 	iso  cacheIsolation
+	// weights fingerprints model files for emx.weights in /v1/models (hashing in the background).
+	weights *weights.Tracker
 	// sampleErr is the last GPU listing error the sampler logged (only the sampler goroutine uses it).
 	sampleErr string
 
@@ -115,7 +120,7 @@ func New(a *app.App, logger *log.Logger) *Gateway {
 	g := &Gateway{App: a, Log: logger,
 		startLocks: map[string]*sync.Mutex{}, active: map[string]int{}, lastUsed: map[string]time.Time{},
 		rr: map[string]int{}, waiting: map[string]int{}, status: map[string]*instState{}, metrics: newMetrics(),
-		expiryAlerted: map[string]string{}}
+		expiryAlerted: map[string]string{}, weights: weights.New(filepath.Join(paths.State(), "weights.json"))}
 	g.idle = sync.NewCond(&g.activeMu)
 	g.live()
 	g.lim.byModel = map[string]*limiter{}

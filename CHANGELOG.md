@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-18
+
+### Added
+
+- `/v1/models` entries (aliases too) carry `emx.weights`: the sha256 of each
+  weight file and the git SHA-1 of each small file (what Hugging Face reports
+  for them), an `id` that is equal for every copy of the same weights whatever
+  the file names, and the `origin` repo and commit for a source in the Hugging
+  Face cache. The gateway hashes in the background (`status: hashing` until
+  done) and keeps the hashes in `weights.json` in the state directory, so a
+  restart does not hash again.
+- `origin: <org>/<name>[@<revision>]` on a model in `models.yaml` names the
+  Hugging Face repo of files downloaded outside its cache.
+
 ## [0.3.1] - 2026-11-16
 
 ### Added
@@ -346,7 +360,8 @@ Entries marked "breaking" can break existing clients.
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.0...v0.2.1
