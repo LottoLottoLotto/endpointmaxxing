@@ -490,6 +490,7 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request) {
 	// Served here and isolated: what this client's own prompts explain of the engine's prompt cache.
 	var prompt promptFP
 	if lv.cfg.Gateway.CacheIsolation && !forwarded {
+		body = dropCacheTellOptions(body)
 		if pb := promptBytes(api, body); pb != nil {
 			prompt = fingerprintOf(pb)
 			own, covered := g.iso.ownCached(rec.Model, cacheDomain(p, rec), prompt)
@@ -653,7 +654,7 @@ func (g *Gateway) forward(mw *meteredWriter, r *http.Request, in *runtime.Instan
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("X-Request-Id") // the client gets the gateway's id, set already
 			if mw.iso != nil && call == nil {
-				resp.Header.Del("Content-Length") // cached-token counts may be rewritten
+				resp.Header.Del("Content-Length") // the body may be rewritten (isolateResponse)
 			}
 			if call != nil && call.failover && resp.StatusCode >= 500 {
 				head, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -804,7 +805,8 @@ type meteredWriter struct {
 	onWrite   func()
 	// peerInstance and peerEngine: what served a request forwarded to another machine of the mesh.
 	peerInstance, peerEngine string
-	// iso, under gateway.cache_isolation, holds the answer back and lowers cached-token counts (cacheiso.go).
+	// iso, under gateway.cache_isolation, holds the answer back, lowers cached-token counts and removes the
+	// engine's other cache tells (cacheiso.go).
 	iso *isolatedWrite
 }
 
@@ -841,7 +843,7 @@ func (w *meteredWriter) Write(p []byte) (int, error) {
 		if i < 0 {
 			return len(p), nil
 		}
-		out = capCachedCounts(iw.pending[:i+1], iw.own)
+		out = isolateResponse(iw.pending[:i+1], iw.own, true)
 		iw.pending = append(iw.pending[:0], iw.pending[i+1:]...)
 	}
 	if err := w.send(out); err != nil {
@@ -853,7 +855,7 @@ func (w *meteredWriter) Write(p []byte) (int, error) {
 // flushIsolated sends what cache isolation still holds when the engine's answer ends.
 func (w *meteredWriter) flushIsolated() {
 	if iw := w.iso; iw != nil && len(iw.pending) > 0 {
-		w.send(capCachedCounts(iw.pending, iw.own))
+		w.send(isolateResponse(iw.pending, iw.own, iw.sse))
 		iw.pending = nil
 	}
 }

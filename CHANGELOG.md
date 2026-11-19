@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-18
+
+### Security
+
+- Under `gateway.cache_isolation`, llama.cpp's `timings` (`prompt_n`,
+  `cache_n`, `prompt_ms`, ...), `prompt_progress` and `tokens_cached` no longer
+  reach clients, in JSON answers and stream chunks: they showed prompt-cache
+  hits on other clients' prompts that the lowered cached-token counts hide.
+  The `return_progress` and `timings_per_token` request options are dropped.
+  Anthropic-style usage (`input_tokens` without cache reads) gets what is
+  taken off `cache_read_input_tokens` added to `input_tokens`.
+
 ## [0.3.2] - 2026-11-18
 
 ### Added
@@ -360,7 +372,8 @@ Entries marked "breaking" can break existing clients.
   tail and gained `--key-file`, `--expect-head` and `--expect-count`.
 - Webhook delivery failures are logged without the URL's path.
 
-[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/LottoLottoLotto/endpointmaxxing/compare/v0.2.1...v0.3.0

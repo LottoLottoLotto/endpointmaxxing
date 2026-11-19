@@ -154,7 +154,16 @@ without the engine's help:
 - Cached-token counts in the response (`cached_tokens`,
   `cache_read_input_tokens`) are lowered to that. The client sees, and is
   billed for, only the cache its own prompts left. The request record keeps
-  the engine's count as `cached_reported`.
+  the engine's count as `cached_reported`. In Anthropic-style usage, whose
+  `input_tokens` leave out cache reads, what is taken off
+  `cache_read_input_tokens` is added to `input_tokens`, so the prompt's total
+  stays right and the difference does not show the hit.
+- Engine fields that tell the same another way are removed from responses,
+  JSON and stream chunks alike: llama.cpp's `timings` (`prompt_n`, `cache_n`,
+  `prompt_ms` and the rates), `prompt_progress` and `tokens_cached`. Requests
+  lose the llama.cpp options `return_progress` and `timings_per_token`.
+  Responses that carry none of these fields pass byte for byte apart from the
+  lowered counts; those that do are re-encoded (keys in sorted order).
 - The answer's headers and first byte are held back for the time the engine
   takes to compute the part of the prompt the client's own cache does not
   explain, at the model's measured prompt speed. An answer sped up by another

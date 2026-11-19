@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -153,5 +154,105 @@ func TestCacheDomainOfARequest(t *testing.T) {
 		if got := domain(c.key, c.headers); got != c.want {
 			t.Errorf("%v: domain %q, want %q", c.headers, got, c.want)
 		}
+	}
+}
+
+// isolatedResponse runs an engine's response, cut into the given writes, through an isolated meteredWriter
+// whose client's own prompts explain 100 cached tokens.
+func isolatedResponse(t *testing.T, contentType string, writes ...string) (string, *meteredWriter) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	rec.Header().Set("Content-Type", contentType)
+	mw := &meteredWriter{ResponseWriter: rec, start: time.Now(), iso: &isolatedWrite{own: 100, ctx: context.Background()}}
+	for _, p := range writes {
+		if _, err := mw.Write([]byte(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mw.flushIsolated()
+	return rec.Body.String(), mw
+}
+
+// llama.cpp's timings (prompt_n is the tokens it computed, cache_n the ones it found cached) and
+// prompt_progress tell a cache hit as plainly as cached_tokens: isolation removes them, in a JSON answer and
+// in a stream, and the meter still reads the engine's own counts.
+func TestIsolationDropsEngineCacheTells(t *testing.T) {
+	timings := `"timings":{"cache_n":850,"prompt_n":50,"prompt_ms":12.5,"prompt_per_second":4000,"predicted_n":3,"predicted_ms":30}`
+	usage := `"usage":{"completion_tokens":3,"prompt_tokens":900,"total_tokens":903,"prompt_tokens_details":{"cached_tokens":850}}`
+	body := `{"choices":[{"index":0,"message":{"role":"assistant","content":"<b>\"timings\": hi</b>"},"finish_reason":"stop"}],"created":1,"model":"m",` + usage + `,` + timings + `}` + "\n"
+	got, mw := isolatedResponse(t, "application/json", body[:40], body[40:])
+	for _, bad := range []string{`"timings"`, `cache_n`, `prompt_n"`, `prompt_ms`, `850`} {
+		if strings.Contains(got, bad) {
+			t.Errorf("JSON answer still has %s: %s", bad, got)
+		}
+	}
+	for _, want := range []string{`"cached_tokens":100`, `"prompt_tokens":900`, `"content":"<b>\"timings\": hi</b>"`, `"finish_reason":"stop"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("JSON answer lacks %s: %s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, "}\n") {
+		t.Errorf("trailing newline lost: %q", got)
+	}
+	if u := mw.finish(); u.Cached == nil || *u.Cached != 850 || u.Prompt == nil || *u.Prompt != 900 {
+		t.Errorf("metered from the engine's bytes: %+v", u)
+	}
+
+	chunk := `data: {"choices":[{"index":0,"delta":{"content":"Hi"}}],"model":"m"}` + "\n\n"
+	progress := `data: {"choices":[],"prompt_progress":{"total":900,"cache":850,"processed":900,"time_ms":12}}` + "\n\n"
+	final := `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"model":"m",` + usage + `,` + timings + `}` + "\r\n\r\n"
+	stream := chunk + progress + final + "data: [DONE]\n\n"
+	got, mw = isolatedResponse(t, "text/event-stream", stream[:30], stream[30:len(chunk)+50], stream[len(chunk)+50:len(stream)-3], stream[len(stream)-3:])
+	if !strings.HasPrefix(got, chunk) || !strings.HasSuffix(got, "data: [DONE]\n\n") {
+		t.Errorf("chunks without cache fields must pass as they are: %q", got)
+	}
+	for _, bad := range []string{`"timings"`, `prompt_progress`, `cache_n`, `"cache":850`, `850`} {
+		if strings.Contains(got, bad) {
+			t.Errorf("stream still has %s: %q", bad, got)
+		}
+	}
+	for _, want := range []string{`"cached_tokens":100`, `"prompt_tokens":900`, `"finish_reason":"stop"`, "}\r\n\r\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stream lacks %q: %q", want, got)
+		}
+	}
+	if u := mw.finish(); u.Cached == nil || *u.Cached != 850 {
+		t.Errorf("stream metered from the engine's bytes: %+v", u)
+	}
+}
+
+// Anthropic-style usage counts input_tokens without the cache reads (llama.cpp, vLLM and SGLang copy that):
+// lowering cache_read_input_tokens alone would leave the hit visible as missing input, so it moves there.
+func TestIsolationKeepsAnthropicInputTotal(t *testing.T) {
+	body := `{"type":"message","content":[{"type":"text","text":"ok"}],"usage":{"cache_read_input_tokens":800,"input_tokens":100,"output_tokens":2}}`
+	got, _ := isolatedResponse(t, "application/json", body)
+	for _, want := range []string{`"cache_read_input_tokens":100`, `"input_tokens":800`, `"output_tokens":2`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("JSON answer lacks %s: %s", want, got)
+		}
+	}
+	start := "event: message_start\n" + `data: {"type":"message_start","message":{"id":"x","usage":{"cache_read_input_tokens":800,"input_tokens":100,"output_tokens":0}}}` + "\n\n"
+	delta := "event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}` + "\n\n"
+	got, _ = isolatedResponse(t, "text/event-stream", start+delta)
+	if !strings.Contains(got, `"cache_read_input_tokens":100,"input_tokens":800`) || !strings.HasSuffix(got, delta) || !strings.HasPrefix(got, "event: message_start\ndata: {") {
+		t.Errorf("stream: %q", got)
+	}
+	// Within what the client's own prompts explain, nothing changes.
+	own := `{"usage":{"cache_read_input_tokens":60,"input_tokens":40}}`
+	if got, _ := isolatedResponse(t, "application/json", own); got != `{"usage":{"cache_read_input_tokens":60,"input_tokens":40}}` {
+		t.Errorf("own cache hit rewritten: %s", got)
+	}
+}
+
+// Under isolation, requests do not get llama.cpp's per-batch prompt progress (how many events come tells how
+// much of the prompt was cached) or per-token timings.
+func TestDropCacheTellOptions(t *testing.T) {
+	got := string(dropCacheTellOptions([]byte(`{"model":"m","stream":true,"return_progress":true,"timings_per_token":true,"messages":[]}`)))
+	if strings.Contains(got, "return_progress") || strings.Contains(got, "timings_per_token") || !strings.Contains(got, `"stream":true`) || !strings.Contains(got, `"model":"m"`) {
+		t.Errorf("got %s", got)
+	}
+	plain := `{"model":"m",  "messages":[]}`
+	if got := string(dropCacheTellOptions([]byte(plain))); got != plain {
+		t.Errorf("a request without them changed: %s", got)
 	}
 }

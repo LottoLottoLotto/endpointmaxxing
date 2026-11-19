@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"hash/fnv"
+	"io"
 	"regexp"
 	"slices"
 	"sort"
@@ -28,7 +29,10 @@ import (
 //     an earlier prompt that the new one starts with.
 //   - Cached-token counts in the response (cached_tokens, cache_read_input_tokens) are lowered to `own`; the
 //     engine's count is recorded beside it (cached_reported). What a client sees and pays for is the cache
-//     its own prompts left, never what another client's did.
+//     its own prompts left, never what another client's did. Anthropic-style usage, whose input_tokens
+//     leave out the cache reads, gets the lowered difference added back to input_tokens. Engine fields that
+//     tell the same another way go: llama.cpp's timings (prompt_n, cache_n, prompt_ms: tokens computed and
+//     how fast), prompt_progress and tokens_cached.
 //   - The first byte of the answer is held back until the time the engine would take to compute the part of
 //     the prompt not explained by `own`, at the model's measured prompt speed. An answer sped up by another
 //     client's cache then starts no sooner than one that was not; the client's own cache hits stay fast.
@@ -389,6 +393,158 @@ func capCachedCounts(b []byte, own int64) []byte {
 		}
 		return []byte(`"` + string(sub[1]) + `"` + string(sub[2]) + strconv.FormatInt(own, 10))
 	})
+}
+
+// cacheTellKeys are top-level response fields of engines that report what the prompt cache held: llama.cpp's
+// timings (cache_n, prompt_n, prompt_ms and per-second rates), prompt_progress (return_progress: total,
+// cache, processed) and tokens_cached. Isolation removes them.
+var cacheTellKeys = []string{"timings", "prompt_progress", "tokens_cached"}
+
+// dropCacheTellOptions removes the request options that ask llama.cpp for more of them: return_progress (a
+// prompt_progress event per prompt batch it computes, so their number tells how much of the prompt was
+// cached) and timings_per_token (timings on every chunk).
+func dropCacheTellOptions(body []byte) []byte {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return body
+	}
+	_, progress := m["return_progress"]
+	_, timings := m["timings_per_token"]
+	if !progress && !timings {
+		return body
+	}
+	delete(m, "return_progress")
+	delete(m, "timings_per_token")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// isolateResponse rewrites what an isolated client gets of a response: b is a whole JSON body or, when sse,
+// complete event-stream lines. Cached-token counts are lowered to own, Anthropic-style input_tokens (which
+// leave out the cache reads) get the lowered difference back, and cacheTellKeys are removed. Text without
+// those fields only has its counts lowered, byte for byte; JSON that holds them is re-encoded.
+func isolateResponse(b []byte, own int64, sse bool) []byte {
+	if !hasCacheTell(b) {
+		return capCachedCounts(b, own)
+	}
+	if !sse {
+		if out, ok := isolateJSON(b, own); ok {
+			return out
+		}
+		return capCachedCounts(b, own)
+	}
+	out := make([]byte, 0, len(b))
+	for len(b) > 0 {
+		line := b
+		if i := bytes.IndexByte(b, '\n'); i >= 0 {
+			line = b[:i+1]
+		}
+		b = b[len(line):]
+		if !hasCacheTell(line) {
+			out = append(out, capCachedCounts(line, own)...)
+			continue
+		}
+		payload, found := bytes.CutPrefix(line, []byte("data:"))
+		start := len(line) - len(bytes.TrimLeft(payload, " \t"))
+		if found {
+			if v, ok := isolateJSON(line[start:], own); ok {
+				out = append(append(out, line[:start]...), v...)
+				continue
+			}
+		}
+		out = append(out, capCachedCounts(line, own)...)
+	}
+	return out
+}
+
+func hasCacheTell(b []byte) bool {
+	if bytes.Contains(b, []byte(`"cache_read_input_tokens"`)) {
+		return true
+	}
+	for _, k := range cacheTellKeys {
+		if bytes.Contains(b, []byte(`"`+k+`"`)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isolateJSON rewrites one JSON value (with the whitespace around it kept); false when p is not one.
+func isolateJSON(p []byte, own int64) ([]byte, bool) {
+	body := bytes.TrimSpace(p)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var v any
+	if dec.Decode(&v) != nil {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	if obj, ok := v.(map[string]any); ok {
+		for _, k := range cacheTellKeys {
+			delete(obj, k)
+		}
+		// The Responses API and Anthropic streams nest the answer; llama.cpp puts its fields beside it.
+		for _, k := range []string{"response", "message"} {
+			if inner, ok := obj[k].(map[string]any); ok {
+				for _, t := range cacheTellKeys {
+					delete(inner, t)
+				}
+			}
+		}
+	}
+	lowerCachedCounts(v, own)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(v) != nil {
+		return nil, false
+	}
+	lead := len(p) - len(bytes.TrimLeft(p, " \t\r\n"))
+	trail := p[len(bytes.TrimRight(p, " \t\r\n")):]
+	out := make([]byte, 0, len(p))
+	out = append(out, p[:lead]...)
+	out = append(out, bytes.TrimSuffix(buf.Bytes(), []byte("\n"))...)
+	return append(out, trail...), true
+}
+
+// lowerCachedCounts does capCachedCounts on decoded JSON, everywhere in it, and moves what it takes off an
+// object's cache_read_input_tokens to its input_tokens: Anthropic usage (and llama.cpp's, vLLM's and
+// SGLang's Anthropic APIs) counts input_tokens without the cache reads, so the total prompt stays as it was.
+func lowerCachedCounts(v any, own int64) {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, k := range []string{"cached_tokens", "cache_read_input_tokens"} {
+			n, ok := jsonInt(x[k])
+			if !ok || n <= own {
+				continue
+			}
+			x[k] = json.Number(strconv.FormatInt(own, 10))
+			if in, ok := jsonInt(x["input_tokens"]); ok && k == "cache_read_input_tokens" {
+				x["input_tokens"] = json.Number(strconv.FormatInt(in+n-own, 10))
+			}
+		}
+		for _, e := range x {
+			lowerCachedCounts(e, own)
+		}
+	case []any:
+		for _, e := range x {
+			lowerCachedCounts(e, own)
+		}
+	}
+}
+
+func jsonInt(v any) (int64, bool) {
+	n, ok := v.(json.Number)
+	if !ok {
+		return 0, false
+	}
+	i, err := n.Int64()
+	return i, err == nil
 }
 
 // isolatedWrite is a response's cache-isolation state: the cached tokens the client's own prompts explain
