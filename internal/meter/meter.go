@@ -158,11 +158,22 @@ func (m *Meter) takeUsage(u map[string]any) {
 		}
 	}
 	got := false
-	for _, k := range []string{"prompt_tokens", "input_tokens"} {
-		if v := num(u, k); v != nil {
-			set(&m.u.Prompt, v)
-			got = true
+	if v := num(u, "prompt_tokens"); v != nil {
+		set(&m.u.Prompt, v)
+		got = true
+	}
+	if v := num(u, "input_tokens"); v != nil {
+		// Anthropic's input_tokens leaves out the prompt tokens read from or written to the
+		// cache (cache_read_input_tokens, cache_creation_input_tokens); the Responses API's
+		// includes them (input_tokens_details.cached_tokens is a part). The prompt is the sum.
+		total := *v
+		for _, k := range []string{"cache_read_input_tokens", "cache_creation_input_tokens"} {
+			if c := num(u, k); c != nil {
+				total += *c
+			}
 		}
+		set(&m.u.Prompt, &total)
+		got = true
 	}
 	for _, k := range []string{"completion_tokens", "output_tokens"} {
 		if v := num(u, k); v != nil {

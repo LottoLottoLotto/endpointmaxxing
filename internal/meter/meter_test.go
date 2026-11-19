@@ -81,6 +81,31 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 	}
 }
 
+// Anthropic's input_tokens leaves out cache reads and writes; the prompt is their sum, the cached part
+// the reads. Later events may repeat the counts (message_delta) or carry only output.
+func TestAnthropicUsageWithCacheCountsWholePrompt(t *testing.T) {
+	_, u := feed(t, false, `{"type":"message","stop_reason":"end_turn","usage":{"input_tokens":12,
+		"cache_read_input_tokens":800,"cache_creation_input_tokens":40,"output_tokens":5}}`, 9)
+	eq(t, "prompt", u.Prompt, 852)
+	eq(t, "cached", u.Cached, 800)
+	eq(t, "completion", u.Completion, 5)
+
+	body := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":800,"output_tokens":1}}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":12,"cache_read_input_tokens":800,"output_tokens":9}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":9}}
+
+`
+	_, u = feed(t, true, body, 17)
+	eq(t, "prompt", u.Prompt, 812)
+	eq(t, "cached", u.Cached, 800)
+	eq(t, "completion", u.Completion, 9)
+}
+
 func TestResponsesStream(t *testing.T) {
 	body := `data: {"type":"response.output_text.delta","delta":"Hi"}
 
