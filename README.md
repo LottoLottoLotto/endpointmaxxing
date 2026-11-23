@@ -145,6 +145,14 @@ emx usage --by model --since 7d
   ([Agents](docs/admin-api.md#agents)).
 - **Benchmarks.** `emx bench` measures a served model and publishes the
   result to LocalMaxxing ([Benchmarks](docs/benchmarks.md)).
+- **Rent your models out.** With `lmx rent host`, a LocalMaxxing rental
+  listing serves renters from this gateway over one outbound connection (no
+  open ports), billed per token. Step-by-step guide, from install to payout:
+  [Host a model on LocalMaxxing](https://www.localmaxxing.com/hosting)
+  ([source](https://github.com/LottoLottoLotto/localmaxxing-cli/blob/main/cmd/lmx/skill/references/hosting.md);
+  agents get it with `lmx skill`). The emx side: a delegated key per host
+  agent ([Access](docs/access.md)) and `gateway.cache_isolation`
+  ([Gateway](docs/gateway.md)).
 
 ## Documentation
 
