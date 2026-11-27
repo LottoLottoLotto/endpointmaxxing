@@ -817,17 +817,27 @@ func (w *meteredWriter) WriteHeader(code int) {
 		w.m = meter.New(w.start, stream, 32<<20)
 		if w.iso != nil {
 			w.iso.sse = stream
-			if code < 400 {
-				w.iso.wait() // the headers too: a JSON answer's headers come when it is complete
+			// A JSON answer's headers come when it is complete, so they are held with it. A stream's headers
+			// are sent at once: engines send them on accepting the request, cached prompt or not, so they tell
+			// nothing; its first byte is held instead (Write). Clients and proxies in front of the gateway
+			// then see the response start, rather than a silence that can outlast their timeouts.
+			if code < 400 && !stream {
+				w.iso.wait()
 			}
 		}
 	}
 	w.ResponseWriter.WriteHeader(code)
+	if w.iso != nil && w.iso.sse && code < 400 {
+		w.Flush()
+	}
 }
 
 func (w *meteredWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
+	}
+	if iw := w.iso; iw != nil && iw.sse && w.status < 400 {
+		iw.wait() // a stream's first byte, held as long as an uncached prompt would take (returns at once after)
 	}
 	if w.onWrite != nil {
 		w.onWrite()

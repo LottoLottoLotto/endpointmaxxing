@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -254,5 +255,53 @@ func TestDropCacheTellOptions(t *testing.T) {
 	plain := `{"model":"m",  "messages":[]}`
 	if got := string(dropCacheTellOptions([]byte(plain))); got != plain {
 		t.Errorf("a request without them changed: %s", got)
+	}
+}
+
+// flushRecorder notes when the response was flushed to the client.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushedAt time.Time
+}
+
+func (f *flushRecorder) Flush() {
+	if f.flushedAt.IsZero() {
+		f.flushedAt = time.Now()
+	}
+	f.ResponseRecorder.Flush()
+}
+
+// A stream's headers go out at once (engines send them on accepting a request, cached or not) and only its
+// first byte waits for the hold; a JSON answer's headers wait with it. Clients and proxies in front of the
+// gateway, which drop a request whose response has not started (Cloudflare after 100 s), see it start.
+func TestIsolationHoldsAStreamsFirstByteNotItsHeaders(t *testing.T) {
+	const hold = 150 * time.Millisecond
+	newWriter := func(contentType string) (*meteredWriter, *flushRecorder) {
+		rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+		rec.Header().Set("Content-Type", contentType)
+		return &meteredWriter{ResponseWriter: rec, start: time.Now(), iso: &isolatedWrite{own: 100, hold: time.Now().Add(hold), ctx: context.Background()}}, rec
+	}
+
+	mw, rec := newWriter("text/event-stream")
+	start := time.Now()
+	mw.WriteHeader(http.StatusOK)
+	if waited := time.Since(start); waited > hold/3 {
+		t.Fatalf("stream headers waited %v for the hold", waited)
+	}
+	if rec.flushedAt.IsZero() {
+		t.Fatal("stream headers were not flushed to the client")
+	}
+	if _, err := mw.Write([]byte("data: {\"choices\":[]}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited < hold-10*time.Millisecond {
+		t.Fatalf("first byte sent after %v, before the %v hold", waited, hold)
+	}
+
+	mw, _ = newWriter("application/json")
+	start = time.Now()
+	mw.WriteHeader(http.StatusOK)
+	if waited := time.Since(start); waited < hold-10*time.Millisecond {
+		t.Fatalf("JSON headers sent after %v, before the %v hold", waited, hold)
 	}
 }
