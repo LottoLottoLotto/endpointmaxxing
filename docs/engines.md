@@ -47,18 +47,29 @@ concurrency and vision come from the core, so `--ctx` does not apply;
 
 ```sh
 emx engine install hyperflare            # or: emx engine set hyperflare --bin /path/to/flare
-# A published core, unmodified, at the branch for your GPU (gb202: RTX PRO 6000 Blackwell, gb10: DGX Spark):
-hf download local-inference-lab/Qwen3.8-27B-FLARE --revision gb10
-flare run ~/.cache/huggingface/hub/models--local-inference-lab--Qwen3.8-27B-FLARE/snapshots/<commit>   # once, in a terminal: accept the publisher
-emx model add qwen3.8-27b-flare ~/.cache/huggingface/hub/models--local-inference-lab--Qwen3.8-27B-FLARE/snapshots/<commit> --gpus 0
+# A published core, unmodified, at the branch for your GPU (gb202: RTX PRO 6000 Blackwell, gb10: DGX Spark),
+# as real files: Flare does not load a core directory whose files are symlinks, which the Hugging Face cache uses.
+hf download local-inference-lab/Qwen3.8-27B-FLARE --revision gb10 --local-dir ~/cores/qwen3.8-27b-flare
+flare run ~/cores/qwen3.8-27b-flare      # once, in a terminal: accept the publisher (Ctrl-C after it starts)
+emx model add qwen3.8-27b-flare ~/cores/qwen3.8-27b-flare --gpus 0
 ```
 
 A core is signed, and Flare refuses to run one whose publisher you have not
-accepted; acceptance is interactive, so run the core once with `flare run`
-in a terminal before emx serves it (it is remembered in
-`~/.config/flare/trust.toml`). A core downloaded into the Hugging Face cache
-reports its repo and commit as `emx.weights.origin`, like any other model, so
-its files can be checked against Hugging Face.
+accepted. Acceptance is interactive (Flare shows the signing key, the
+publisher and the license), so run the core once with `flare run` in a
+terminal before emx serves it; it is remembered in
+`~/.config/flare/trust.toml`. Started by emx without that, Flare exits with
+`unattended first use requires --dangerously-approve-key FINGERPRINT
+--dangerously-accept-publisher NAMESPACE`, which `emx logs` shows.
+
+emx refuses a core directory with symlinked files when the model is added. A
+packed core (one file) may stay in the Hugging Face cache, where emx reports
+its repo and commit as `emx.weights.origin`. A core downloaded with
+`--local-dir` has no origin emx can see: name it with `origin:
+<org>/<name>@<commit>` on the model in `models.yaml`, or with `lmx rent publish
+--source <model>=<org>/<name>@<commit>` (the commit is the first line of
+`<dir>/.cache/huggingface/download/model.safetensors.metadata`), so its files
+can be checked against Hugging Face.
 
 ## Tenstorrent
 

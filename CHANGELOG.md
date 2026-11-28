@@ -12,11 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hyperflare` engine: NVIDIA's [Hyperflare](https://github.com/NVIDIA/hyperflare-inference)
   `flare` runtime for SM120/SM121 GPUs. Its models are prepared runtime cores,
   a new `flare-core` format: a packed `.safetensors` file or a core directory,
-  recognized by the format their safetensors headers declare. Cores downloaded
-  unmodified from Hugging Face report their repo and commit in
-  `emx.weights`, so a LocalMaxxing listing serving one can be verified. The
-  engine's API key reaches `flare` through a pipe (`--api-key-file`), never a
-  file or the command line.
+  recognized by the format their safetensors headers declare (`flare`,
+  `flare-snapshot`, `flare-payload`). A core directory with symlinked files
+  (the Hugging Face cache's layout) is refused when added, since Flare does
+  not load one; download it with `--local-dir`. Unmodified cores from Hugging
+  Face can be verified on LocalMaxxing (packed cores in the Hugging Face cache
+  report their origin; others take `origin:` or `lmx rent publish --source`).
+  The engine's API key reaches `flare` through a pipe (`--api-key-file`),
+  never a file or the command line.
 
 ### Changed
 

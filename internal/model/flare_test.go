@@ -56,6 +56,27 @@ func TestInspectFlareCoreDirectory(t *testing.T) {
 	}
 }
 
+// A core directory in the Hugging Face cache (files symlinked to blobs) is refused at registration: Flare
+// opens core files with O_NOFOLLOW and would fail at every start. A packed core symlinked there loads.
+func TestFlareCoreWithSymlinkedFilesIsRefused(t *testing.T) {
+	blobs, snapshot := t.TempDir(), t.TempDir()
+	writeSafetensors(t, filepath.Join(blobs, "primary"), map[string]string{"format": "flare-payload"})
+	writeSafetensors(t, filepath.Join(blobs, "layer"), map[string]string{"format": "flare-payload"})
+	os.Symlink(filepath.Join(blobs, "primary"), filepath.Join(snapshot, "model.safetensors"))
+	os.MkdirAll(filepath.Join(snapshot, "weights"), 0o755)
+	os.Symlink(filepath.Join(blobs, "layer"), filepath.Join(snapshot, "weights", "layer-000.safetensors"))
+	if _, err := Inspect(snapshot); err == nil || !strings.Contains(err.Error(), "--local-dir") {
+		t.Fatalf("got %v", err)
+	}
+
+	writeSafetensors(t, filepath.Join(blobs, "packed"), map[string]string{"format": "flare-snapshot"})
+	packed := filepath.Join(snapshot, "core-tp1.safetensors")
+	os.Symlink(filepath.Join(blobs, "packed"), packed)
+	if info, err := Inspect(packed); err != nil || info.Format != "flare-core" {
+		t.Fatalf("got %+v, %v", info, err)
+	}
+}
+
 // A lone .safetensors file that is not a Hyperflare core (a checkpoint shard) is refused with a pointer to
 // the checkpoint directory, not routed to an engine that cannot load it.
 func TestInspectLoneCheckpointShardIsRefused(t *testing.T) {
