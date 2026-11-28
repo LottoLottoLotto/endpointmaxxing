@@ -111,7 +111,7 @@ flags:                           # unified flag -> engine arguments/env; omitted
   flash_attn: [--flash-attn]                   # bool flags: added only when true
 
 capabilities:
-  formats: [gguf]                # gguf | safetensors | strata-config
+  formats: [gguf]                # gguf | safetensors | strata-config | flare-core
   quantizations: ["*"]           # checkpoint quant methods accepted ("*" = any): config.json quant_method (fp8, gptq, awq, ...)
                                  # or "mlx" for MLX checkpoints; GGUF file types are not checked
   apis: [chat, completions]      # chat | completions | embeddings | responses | messages | rerank
@@ -133,7 +133,7 @@ memory:                          # GPU memory need, for placement (default: weig
 | --- | --- | --- |
 | `weights` | file size × `factor` ÷ GPUs + `overhead_mib` | engines that allocate what they load (llama.cpp) |
 | `fraction` | `--mem-fraction` (or `default_fraction`) × GPU size + `overhead_mib` | engines that preallocate a share (vLLM, SGLang) |
-| `exclusive` | the whole GPU; other emx instances on it are evicted | engines that fill free memory (Strata on CUDA) |
+| `exclusive` | the whole GPU; other emx instances on it are evicted | engines that fill free memory (Strata on CUDA, Hyperflare) |
 | `none` | nothing; placement is skipped | CPU-only builds, non-NVIDIA accelerators |
 
 After an instance becomes ready, emx measures its real GPU footprint.
@@ -177,7 +177,10 @@ container without putting its value on a command line). `sglang` takes its key
 only as an argument, so its manifest launches it with a line of Python
 (`python -c ...`) that reads `SGLANG_API_KEY` and appends `--api-key` to
 SGLang's arguments inside the process: an engine without an environment
-variable for its key can be wrapped the same way.
+variable for its key can be wrapped the same way. `hyperflare` takes its key
+only from a file: its manifest launches it through bash, which reads
+`FLARE_API_KEY` and passes `--api-key-file <(printf %s "$key")`, a pipe only
+the engine can read.
 
 `context` tells the gateway how to report a model's context window in
 `/v1/models`, so that a client does not have to guess it. For a running
@@ -186,8 +189,9 @@ instance the gateway requests `path` on the engine once and reads the number at
 `ctx` flag, divided by the `split_by` flag's value where the engine shares one
 context between parallel slots. The builtin `llama.cpp` and `buun-llama-cpp`
 read `/props` (`default_generation_settings.n_ctx`, split by `parallel`);
-`vllm` and `tt-vllm` read `max_model_len` from `/v1/models`; `strata` reads
-`meta.n_ctx` there. An engine without `context` reports the registered `ctx`
+`vllm` and `tt-vllm` read `max_model_len` from `/v1/models`, and so does
+`hyperflare`; `strata` reads `meta.n_ctx` there. An engine without `context`
+reports the registered `ctx`
 only.
 
 `slots` tells clients how many requests the engine works on at the same time,
@@ -196,14 +200,16 @@ their own number when none is given at launch, so a running instance is asked
 (`path`, `field`); the builtin `llama.cpp` and `buun-llama-cpp` read
 `total_slots` from `/props`, and so does `strata` (whose stopped models report the
 `"parallel"` setting of their Strata config, one request at a time without it). An engine that always serves a fixed number says
-so with `count` (a single-user runtime: `slots: {count: 1}`). Without `slots`,
+so with `count` (a single-user runtime: `slots: {count: 1}`). `hyperflare` reads
+`flare.max_concurrency` from `/v1/models`. Without `slots`,
 the registered `parallel` flag is reported, and nothing when it is not set.
 
 `vision` works the same way for image input: the gateway requests `path` on a
 running instance and reads `field`, which is either true/false or a list of
 input kinds. The builtin `llama.cpp` and `buun-llama-cpp` read
 `modalities.vision` from `/props`; `strata` reads
-`architecture.input_modalities` from `/v1/models`. For a model that is not
+`architecture.input_modalities` from `/v1/models`, and `hyperflare`
+`flare.input_modalities` there. For a model that is not
 running, and for engines without `vision`, the gateway looks at the model's
 own files (a Hugging Face `config.json` with a `vision_config` section).
 

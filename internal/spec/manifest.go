@@ -24,7 +24,7 @@ const Version = "emx.engine/v1"
 // Known model formats and APIs. Manifests may only use these; a new format or
 // API is a spec change, so routing and the gateway stay in agreement.
 var (
-	Formats = []string{"gguf", "safetensors", "strata-config"}
+	Formats = []string{"gguf", "safetensors", "strata-config", "flare-core"}
 	APIs    = map[string]string{
 		"chat":        "/v1/chat/completions",
 		"completions": "/v1/completions",

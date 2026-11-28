@@ -245,7 +245,7 @@ var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._:-]+`)
 // DefaultName derives a model name from a path or repo id.
 func DefaultName(ref string) string {
 	base := filepath.Base(strings.TrimRight(ref, "/"))
-	for _, ext := range []string{".gguf", ".json"} {
+	for _, ext := range []string{".gguf", ".json", ".safetensors"} {
 		base = strings.TrimSuffix(base, ext)
 	}
 	base = strings.TrimPrefix(base, "strata-")

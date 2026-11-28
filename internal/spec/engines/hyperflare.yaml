@@ -1,0 +1,80 @@
+spec: emx.engine/v1
+id: hyperflare
+name: Hyperflare
+description: >-
+  NVIDIA's Rust serving runtime for prepared models on SM120/SM121 GPUs (RTX 50-series, RTX PRO 6000
+  Blackwell, DGX Spark). A model is a prepared runtime core: a packed .safetensors file or a core
+  directory, as `ignition export` writes it or as published on Hugging Face (one branch per GPU kind).
+homepage: https://github.com/NVIDIA/hyperflare-inference
+
+binary:
+  env: FLARE_BIN
+  candidates:
+    - flare
+    - "{data}/engines/hyperflare/flare-cli/target/release/flare"
+  version: [--version]
+
+install:
+  notes: >-
+    Builds the flare executable (needs Rust, a C/C++ toolchain, CMake, NASM and protoc; no CUDA toolkit).
+    Cores are prepared with Ignition from the same repository, or downloaded from Hugging Face. A core's
+    publisher must be accepted once: run `flare run <core>` in a terminal before serving it with emx.
+  steps:
+    - git clone --depth 1 https://github.com/NVIDIA/hyperflare-inference "{data}/engines/hyperflare" || git -C "{data}/engines/hyperflare" pull --ff-only
+    - cargo build --release --manifest-path "{data}/engines/hyperflare/flare-cli/Cargo.toml"
+
+launch:
+  # Flare takes its API key only from a file (--api-key-file). A file on disk would outlive the engine, so
+  # bash hands it the key through a pipe (process substitution) that only the engine process can read.
+  command:
+    - bash
+    - -c
+    - 'if [ -n "$FLARE_API_KEY" ]; then k="$FLARE_API_KEY"; unset FLARE_API_KEY; exec "$0" "$@" --api-key-file <(printf %s "$k"); fi; exec "$0" "$@"'
+    - "{bin}"
+    - run
+    - "{model_path}"
+    - --host
+    - "{host}"
+    - --port
+    - "{port}"
+    - --served-model-name
+    - "{name}"
+  api_key_env: FLARE_API_KEY
+  stop_signal: SIGINT
+  stop_timeout: 60s
+
+health:
+  path: /health
+  timeout: 20m
+
+# The context window, as the server reports it for the core it serves (fixed when the core was prepared).
+context:
+  path: /v1/models
+  field: data.0.max_model_len
+
+# Whether the core was prepared with vision graphs.
+vision:
+  path: /v1/models
+  field: data.0.flare.input_modalities
+
+# How many requests decode together: the core's prepared concurrency, or --max-concurrency.
+slots:
+  path: /v1/models
+  field: data.0.flare.max_concurrency
+
+flags:
+  gpus:
+    env: {CUDA_VISIBLE_DEVICES: "{value}", CUDA_DEVICE_ORDER: PCI_BUS_ID}
+  parallel: [--max-concurrency, "{value}"]
+
+capabilities:
+  formats: [flare-core]
+  quantizations: ["*"]
+  apis: [chat, completions, responses, messages]
+  features: [tensor-parallel, multi-gpu, vision, speculative, kv-quant, prefix-cache]
+
+routing:
+  priority: {flare-core: 100}
+
+# Flare sizes its KV cache to the free memory of the GPUs it is given: it needs whole GPUs.
+memory: {mode: exclusive}

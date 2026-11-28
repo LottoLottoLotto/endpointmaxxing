@@ -74,7 +74,8 @@ func strataWeightsMissing(path string) bool {
 }
 
 // Inspect identifies source: a .gguf file, a directory of GGUF shards or of a
-// Hugging Face checkpoint, a Strata config, or a Hugging Face repo id.
+// Hugging Face checkpoint, a Strata config, a Hyperflare runtime core (a packed
+// .safetensors file or a core directory), or a Hugging Face repo id.
 func Inspect(source string) (*Info, error) {
 	info, err := inspect(source)
 	if info != nil {
@@ -124,8 +125,10 @@ func inspect(source string) (*Info, error) {
 		return inspectGGUF(source, abs)
 	case strings.HasSuffix(abs, ".json"):
 		return inspectStrata(source, abs)
+	case strings.HasSuffix(strings.ToLower(abs), ".safetensors"):
+		return inspectFlareFile(source, abs)
 	}
-	return nil, fmt.Errorf("%s: unrecognized model file (want .gguf, a checkpoint directory, a strata-*.json config or an org/name repo id)", source)
+	return nil, fmt.Errorf("%s: unrecognized model file (want .gguf, a checkpoint directory, a strata-*.json config, a Hyperflare core or an org/name repo id)", source)
 }
 
 func inspectGGUF(source, path string) (*Info, error) {
@@ -151,6 +154,9 @@ var shardRe = regexp.MustCompile(`^(.*)-\d{5}-of-(\d{5})\.gguf$`)
 func inspectDir(source, dir string) (*Info, error) {
 	if _, err := os.Stat(filepath.Join(dir, "config.json")); err == nil {
 		return inspectCheckpoint(source, dir, dir)
+	}
+	if isFlareCoreDir(dir) {
+		return inspectFlareDir(source, dir)
 	}
 	ggufs, _ := filepath.Glob(filepath.Join(dir, "*.gguf"))
 	var main []string

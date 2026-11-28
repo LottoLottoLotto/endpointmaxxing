@@ -15,6 +15,7 @@ describes how Tenstorrent accelerators are handled.
 | `vllm` | safetensors (gguf at low priority) | the venv's `bin/` is put on PATH (ninja for JIT kernels) |
 | `sglang` | safetensors (gguf at low priority) | entry point is a python that can import sglang |
 | `strata` | strata-config | the model is the `strata-<model>.json` that Strata's setup writes; a Tenstorrent build sets `engines.strata.accelerator: {kind: tenstorrent, lock: engine}` |
+| `hyperflare` | flare-core | NVIDIA's [Hyperflare](https://github.com/NVIDIA/hyperflare-inference) `flare` executable on SM120/SM121 GPUs; the model is a prepared runtime core (see below) |
 | `tt-vllm` | safetensors (opt-in with `--engine tt-vllm`) | tt-metal vLLM in docker, one image per model (`--var image=...`), whole Tenstorrent chips |
 | `tt-multihost` | safetensors, bf16 (opt-in with `--engine tt-multihost`) | one tt-metal container keeps several `tt_transformers` models loaded on its chips; its server ships with emx (`engine set tt-multihost --var image=... --var models=...`) |
 
@@ -28,9 +29,36 @@ forwarded). How the engine receives it depends on its manifest
 | `vllm` | environment variable `VLLM_API_KEY` |
 | `llama.cpp`, `buun-llama-cpp` | environment variable `LLAMA_API_KEY` |
 | `strata` | environment variable `STRATA_API_KEY` |
+| `hyperflare` | environment variable `FLARE_API_KEY`. Flare reads its key only from a file, so the manifest starts it through bash, which hands the key to `--api-key-file` as a pipe (`<(...)`): it never lands on disk or the command line |
 | `tt-vllm` | environment variable `VLLM_API_KEY`, forwarded into the container by docker (`-e VLLM_API_KEY`) |
 | `sglang` | environment variable `SGLANG_API_KEY`. SGLang itself only takes the key as an argument, so the manifest starts it through one line of Python that reads the variable and hands the key to SGLang inside the process |
 | `tt-multihost` | no key (a multi-model host takes no flags) |
+
+## Hyperflare
+
+[Hyperflare](https://github.com/NVIDIA/hyperflare-inference) serves prepared
+runtime cores: weights, compiled kernels and captured graphs for one GPU
+kind and tensor-parallel size, made by `ignition export` or downloaded
+from Hugging Face. A core is a single packed `.safetensors` file or a core
+directory (`model.safetensors` with `weights/` and `deployments/`); emx
+recognizes both by the `format` their safetensors headers declare. Context,
+concurrency and vision come from the core, so `--ctx` does not apply;
+`--parallel` lowers the prepared concurrency (`--max-concurrency`).
+
+```sh
+emx engine install hyperflare            # or: emx engine set hyperflare --bin /path/to/flare
+# A published core, unmodified, at the branch for your GPU (gb202: RTX PRO 6000 Blackwell, gb10: DGX Spark):
+hf download local-inference-lab/Qwen3.8-27B-FLARE --revision gb10
+flare run ~/.cache/huggingface/hub/models--local-inference-lab--Qwen3.8-27B-FLARE/snapshots/<commit>   # once, in a terminal: accept the publisher
+emx model add qwen3.8-27b-flare ~/.cache/huggingface/hub/models--local-inference-lab--Qwen3.8-27B-FLARE/snapshots/<commit> --gpus 0
+```
+
+A core is signed, and Flare refuses to run one whose publisher you have not
+accepted; acceptance is interactive, so run the core once with `flare run`
+in a terminal before emx serves it (it is remembered in
+`~/.config/flare/trust.toml`). A core downloaded into the Hugging Face cache
+reports its repo and commit as `emx.weights.origin`, like any other model, so
+its files can be checked against Hugging Face.
 
 ## Tenstorrent
 

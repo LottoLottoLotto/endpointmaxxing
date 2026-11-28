@@ -71,8 +71,9 @@ that could be started.
   `oid` for small files. A directory source lists its weights, configs
   (`*.json`), tokenizers, chat templates (`*.jinja`), `*.txt` and `*.model`
   files, including subdirectories; READMEs, hidden files, images and files over
-  100 GiB are left out. A split GGUF lists all its shards, a Strata config the
-  GGUF files it names. The gateway hashes the files of every registered model
+  1 TiB are left out. A split GGUF lists all its shards, a Strata config the
+  GGUF files it names, a Hyperflare core directory all of its `.safetensors`
+  files. The gateway hashes the files of every registered model
   in the background, one file at a time, when it starts and every minute after
   (hashing a 20 GB file takes tens of seconds), and reports `status: hashing`
   until done. The hashes are kept in `weights.json` in the state directory by

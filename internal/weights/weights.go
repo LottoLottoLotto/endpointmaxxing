@@ -40,8 +40,10 @@ const (
 )
 
 const (
-	gitSHA1Below = 10 << 20  // files smaller than this also get their git blob SHA-1
-	tooLarge     = 100 << 30 // files larger than this are left out
+	gitSHA1Below = 10 << 20 // files smaller than this also get their git blob SHA-1
+	// tooLarge: files larger than this are left out. Packed Hyperflare cores are one file of the whole model
+	// (326 GiB for Step 5 Preview), published on Hugging Face as is.
+	tooLarge = 1 << 40
 	// inlineBelow: when what is left to hash is smaller than this, the caller waits for it (milliseconds)
 	// instead of seeing "hashing".
 	inlineBelow = 32 << 20

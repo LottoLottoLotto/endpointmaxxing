@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `hyperflare` engine: NVIDIA's [Hyperflare](https://github.com/NVIDIA/hyperflare-inference)
+  `flare` runtime for SM120/SM121 GPUs. Its models are prepared runtime cores,
+  a new `flare-core` format: a packed `.safetensors` file or a core directory,
+  recognized by the format their safetensors headers declare. Cores downloaded
+  unmodified from Hugging Face report their repo and commit in
+  `emx.weights`, so a LocalMaxxing listing serving one can be verified. The
+  engine's API key reaches `flare` through a pipe (`--api-key-file`), never a
+  file or the command line.
+
+### Changed
+
+- `emx.weights` fingerprints files up to 1 TiB (was 100 GiB): a packed
+  Hyperflare core is one file of the whole model.
+- A lone `.safetensors` file that is not a Hyperflare core is refused with a
+  pointer to its checkpoint directory instead of "unrecognized model file".
+
 ## [0.3.5] - 2026-11-27
 
 ### Fixed

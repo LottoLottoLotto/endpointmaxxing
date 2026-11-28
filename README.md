@@ -2,8 +2,8 @@
 
 One CLI and one endpoint for every inference engine. The command is `emx`.
 
-Every engine launches differently. llama.cpp, buun-llama-cpp, vLLM, SGLang
-and Strata each have their own binaries, flags, readiness checks and shutdown
+Every engine launches differently. llama.cpp, buun-llama-cpp, vLLM, SGLang,
+Strata and Hyperflare each have their own binaries, flags, readiness checks and shutdown
 behavior. EndpointMaxxing puts a common layer over them: `emx` launches local
 inference engines and fronts them with a single OpenAI- and
 Anthropic-compatible gateway with API keys, roles, quotas, usage accounting,
@@ -103,7 +103,7 @@ emx usage --by model --since 7d
   error instead of silently ignoring it.
 - **Capability routing.** emx inspects each model: it reads GGUF
   metadata, checks a checkpoint's `config.json` for its quantization (GPTQ,
-  FP8, AWQ, MLX and others), and recognizes Strata configs. It then picks the
+  FP8, AWQ, MLX and others), and recognizes Strata configs and Hyperflare cores. It then picks the
   best installed engine that can load the model.
 - **Lifecycle management.** `run`, `ensure`, `ps`, `stop`, `logs` and
   `health` work for every engine. Each instance runs in its own session,
