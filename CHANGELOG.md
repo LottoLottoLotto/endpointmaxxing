@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-27
+
+### Fixed
+
+- Under `gateway.cache_isolation`, a streamed answer's headers are sent at
+  once; only its first byte is held. The headers waited with the first byte,
+  so a long prompt left clients and proxies with no response at all until the
+  prompt was read, and those that drop a silent request (Cloudflare after
+  100 seconds, the LocalMaxxing relay after 120) cut it off. Stream headers
+  reveal nothing to hold back: engines send them on accepting a request, cached
+  prompt or not. A JSON answer's headers still come with the answer.
+
 ## [0.3.4] - 2026-11-19
 
 ### Fixed
